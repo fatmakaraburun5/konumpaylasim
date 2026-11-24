@@ -25,6 +25,7 @@ import * as Notifications from './expoNotifications';
 import { Platform } from 'react-native';
 import { lightColors } from '../../ui/tokens';
 import { isF4PushType } from './f4Push';
+import { isF5PushType } from './f5Push';
 import {
   ACTION_EXTEND,
   CHANNELS,
@@ -119,6 +120,10 @@ async function doConfigure(): Promise<void> {
       const isExpiry = n.request.content.categoryIdentifier === SHARE_EXPIRING_CATEGORY;
       // Faz 4: SOS (ve güvende / gördü) ön planda da afiş + ses (iOS); sessiz modda bile kritik bilgi görünür.
       const type = (n.request.content.data as { type?: unknown } | null | undefined)?.type;
+      // Faz 5: bölge olayı, buluşma önerisi / yanıtı, kural paylaşımı başladı: afiş + ses.
+      if (isF5PushType(type) || type === 'zone_share_started') {
+        return { shouldShowBanner: true, shouldShowList: true, shouldPlaySound: type !== 'meetup_response', shouldSetBadge: false };
+      }
       if (isF4PushType(type)) {
         const isSos = type === 'sos';
         return { shouldShowBanner: true, shouldShowList: true, shouldPlaySound: isSos || type === 'sos_resolved', shouldSetBadge: false, ...(isSos ? { priority: Notifications.AndroidNotificationPriority.MAX } : {}) };

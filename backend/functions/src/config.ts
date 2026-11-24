@@ -138,6 +138,20 @@ export const LIMITS = {
   sosEndedTtlMs: 7 * DAY,
   /** Süresi geçen yer notu belgesinin TTL payı (süpürücü zaten siler; TTL yedek). [Varsayım] */
   placeNoteTtlGraceMs: 7 * DAY,
+
+  // --- Faz 5 ---
+  /** Süresi geçen buluşma önerisi / önbellek taramasında tek çağrıdaki en çok belge. [Varsayım] */
+  f5SweepMax: 500,
+  /** `zone_cooldowns` belgesi son bildirimden bu kadar sonra TTL ile silinir (soğuma 5 dk; pay). [Varsayım] */
+  zoneCooldownTtlMs: DAY,
+  /** `meetup_share`: kullanıcı başına saatte en çok öneri paylaşımı. [Varsayım] */
+  meetupSharePerHour: 20,
+  /** `meetup_respond`: kullanıcı başına saatte en çok yanıt (fikir değiştirme dahil). [Varsayım] */
+  meetupRespondPerHour: 60,
+  /** Süresi geçen buluşma belgesinin TTL payı (süpürücü zaten siler; TTL yedek). [Varsayım] */
+  meetupTtlGraceMs: DAY,
+  /** `occurred_at` en çok bu kadar ileride olabilir; daha ilerisi sunucu saatine kırpılır. */
+  zoneEventFutureSkewMs: MINUTE,
 } as const;
 
 /**

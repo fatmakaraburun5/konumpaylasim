@@ -10,6 +10,7 @@
  *  - Rota: `route` (core `decodePolyline` sonucu) caddelerin üstünde kenarlıklı çizgi olarak çizilir.
  *  - Dolgu (`padding`): Google Maps `mapPadding` gibi; `centerOn` / `fitTo` görünür alanın ortasını kullanır.
  *  - Üst katman (`children`): `MapProjectionContext` ile ekran koordinatına yerleşen görünümler (pinler).
+ *  - Faz 5: `getCenter()` ve `onCameraChange` (bölge düzenleyicide merkez = harita ortası artı işareti).
  */
 import type { LatLng } from '@konum/core';
 import {
@@ -42,6 +43,8 @@ export interface PreviewMapHandle {
   centerOn: (lat: number, lng: number, zoom?: number) => void;
   /** Noktaları kenar boşluğuyla sığdırır (native `fitToCoordinates`). */
   fitTo: (points: readonly LatLng[], margin?: number) => void;
+  /** Faz 5: görünümün (ekranın) ortasındaki nokta (bölge düzenleyici artı işareti). */
+  getCenter: () => LatLng;
 }
 
 export interface PreviewMapProps {
@@ -52,6 +55,8 @@ export interface PreviewMapProps {
   onLongPress?: (p: LatLng) => void;
   /** Kullanıcı haritayı kaydırdı ya da yakınlaştırdı (izleyici "takip"i bırakır). */
   onUserPan?: () => void;
+  /** Faz 5: kamera her değiştiğinde görünüm ortası (native `onRegionChange` karşılığı). */
+  onCameraChange?: (center: LatLng) => void;
   /** Konum gösterilmiyorken harita soluk (izleyici: "Paylaşım sona erdi"). */
   dimmed?: boolean;
   initialZoom?: number;
@@ -147,7 +152,7 @@ interface Camera {
 
 const clampZ = (z: number) => Math.min(MAX_Z, Math.max(MIN_Z, z));
 
-export function PreviewMap({ padding, route, onLongPress, onUserPan, dimmed = false, initialZoom = INITIAL_Z, accessibilityLabel = 'Harita', children, ref }: PreviewMapProps) {
+export function PreviewMap({ padding, route, onLongPress, onUserPan, onCameraChange, dimmed = false, initialZoom = INITIAL_Z, accessibilityLabel = 'Harita', children, ref }: PreviewMapProps) {
   const theme = useTheme();
   const { colors } = theme;
   const dark = theme.scheme === 'dark';
@@ -164,6 +169,8 @@ export function PreviewMap({ padding, route, onLongPress, onUserPan, dimmed = fa
   longPressRef.current = onLongPress;
   const userPanRef = useRef(onUserPan);
   userPanRef.current = onUserPan;
+  const cameraChangeRef = useRef(onCameraChange);
+  cameraChangeRef.current = onCameraChange;
   const anim = useRef<number | null>(null);
   const root = useRef<ComponentRef<typeof View>>(null);
   const geo = useMemo(geometry, []);
@@ -220,9 +227,14 @@ export function PreviewMap({ padding, route, onLongPress, onUserPan, dimmed = fa
         const { vx, vy } = viewportShift();
         animateTo({ cx: (minX + maxX) / 2 - vx / s, cy: (minY + maxY) / 2 - vy / s, z }, 550);
       },
+      getCenter: () => unproject(camRef.current.cx, camRef.current.cy),
     }),
     [animateTo],
   );
+
+  useEffect(() => {
+    cameraChangeRef.current?.(unproject(cam.cx, cam.cy));
+  }, [cam]);
 
   // Google Maps `mapPadding` gibi: alt/üst dolgu değişince (paylaşım kartı, ETA kartı) görünür alanın
   // ortası kayar; içerik de dolgu farkının yarısı kadar kayar, böylece işaretçiler kartların altında kalmaz.

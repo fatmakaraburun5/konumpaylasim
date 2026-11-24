@@ -15,15 +15,22 @@
  *    hemen geri gelir ve tek seferlik ölçümle konum yayınlanır. iOS uygulamayı bölge çıkışında öldürülmüş
  *    olsa bile yeniden başlatır ("Always" izniyle). [Varsayım: cihazda doğrulanmalı]
  *  - Uyarlamalı zamanlayıcı (kalp atışı + OS etkinliği) JS ayaktayken çalışır (adaptive/runtime.ts).
+ *
+ * Faz 5: kayıtlı bölge görevi (`konum-zone-geofence`): varış / ayrılış OS olayı → zoneMonitor (taze konum + sapma
+ * filtresi → `zone_event_report`). iOS'ta bölge varken uyku çiti de bu göreve kayıtlıdır (geofenceRegistry.ts):
+ * `konum-sleep` kimlikli ÇIKIŞ uyku çiti olarak işlenir. zoneMonitor'ün içe aktarılması konum hattının bölge
+ * filtresi bağlantısını (zoneSampleTap) da kurar.
  */
 import { LocationGeofencingEventType, type LocationObject, type LocationRegion } from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
 import { registerOutboxStore } from '../outbox/outboxStore';
 import { expoSqliteOutboxStore } from '../outbox/sqliteOutboxStore';
 import { ensureAdaptiveRuntime } from './adaptive/runtime';
-import { GEOFENCE_TASK_NAME, LOCATION_TASK_NAME, SLEEP_REGION_ID } from './LocationEngine';
+import { GEOFENCE_TASK_NAME, LOCATION_TASK_NAME, SLEEP_REGION_ID, ZONE_GEOFENCE_TASK_NAME } from './LocationEngine';
 import { handleMotionEvent, handleSamples } from './pipeline';
 import { toRawSample } from './trackingOptions';
+import { zoneMonitor } from './zoneMonitor';
+import { zoneIdFromRegion } from './zoneMonitorCore';
 
 registerOutboxStore(expoSqliteOutboxStore());
 
@@ -57,4 +64,24 @@ TaskManager.defineTask<GeofenceTaskData>(GEOFENCE_TASK_NAME, async ({ data, erro
   if (data.region?.identifier && data.region.identifier !== SLEEP_REGION_ID) return;
   ensureAdaptiveRuntime();
   await handleMotionEvent({ type: 'geofence_exit' });
+});
+
+TaskManager.defineTask<GeofenceTaskData>(ZONE_GEOFENCE_TASK_NAME, async ({ data, error }) => {
+  if (error) {
+    if (__DEV__) console.warn('[konum] bölge görevi hatası', error.message);
+    return;
+  }
+  const t = data?.eventType;
+  const event = t === LocationGeofencingEventType.Enter ? 'enter' : t === LocationGeofencingEventType.Exit ? 'exit' : null;
+  if (!event) return;
+  const id = data?.region?.identifier;
+  if (id === SLEEP_REGION_ID) {
+    if (event !== 'exit') return;
+    ensureAdaptiveRuntime();
+    await handleMotionEvent({ type: 'geofence_exit' });
+    return;
+  }
+  const zoneId = zoneIdFromRegion(id);
+  if (!zoneId) return;
+  await zoneMonitor.handleRegionEvent(zoneId, event, Date.now());
 });

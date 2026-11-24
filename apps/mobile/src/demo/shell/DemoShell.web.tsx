@@ -7,6 +7,8 @@
  *    bildirim kartı üstten kayar.
  *  - Faz 3 (Faz3.web.tsx): "FAZ 3 SENARYOLARI" + canlı gösterge, alıcı tarafı önizlemesi, simüle izinler; telefonun
  *    içinde kilit ekranı, push afişi ve iOS sistem izin pencereleri.
+ *  - Faz 5 (Faz5.web.tsx): "FAZ 5 SENARYOLARI" (Ev bölgesi, evden çık / eve var, GPS sapması, Ayşe eve vardı, Ayşe
+ *    buluşma noktası önersin) ve son filtre kararları.
  *  - Faz 4 (Faz4.web.tsx): "FAZ 4 SENARYOLARI" (ping, durum / yer notu, Ayşe SOS + güvende); ping / SOS push'ları
  *    aynı afiş ve kilit ekranında (SOS kırmızı) görünür, dokununca uygulamada ilgili ekran açılır.
  */
@@ -42,6 +44,7 @@ import {
   type ControlRow,
 } from './Faz3.web';
 import { Faz4Section } from './Faz4.web';
+import { Faz5Section } from './Faz5.web';
 
 const WIDE_MIN = 900;
 const SCREEN_W = 390;
@@ -378,6 +381,7 @@ function DemoPanel({ showNotice, onNavigate, padding, footer }: { showNotice: bo
 
       <Faz3Section snap={snap} renderRow={renderRow} />
       <Faz4Section snap={snap} renderRow={renderRow} />
+      <Faz5Section snap={snap} renderRow={renderRow} />
       <PermissionsSection renderRow={renderRow} />
 
       {showNotice ? (

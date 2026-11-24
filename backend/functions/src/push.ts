@@ -23,6 +23,11 @@ import {
   sosPushText,
   sosResolvedPushText,
   turkishGenitive,
+  type MeetupPlace,
+  type ZoneTrigger,
+  meetupPushText,
+  meetupResponsePushText,
+  zoneEventPushText,
 } from '@konum/core';
 import type { DocumentReference, Timestamp } from 'firebase-admin/firestore';
 import type { MulticastMessage } from 'firebase-admin/messaging';
@@ -300,6 +305,77 @@ export function buildSosAckPush(ackerName: string, sosId: string, by: UserId): P
     apns: {
       headers: { 'apns-priority': '10', 'apns-push-type': 'alert' },
       payload: { aps: { category: NOTIFICATION_CHANNELS_F4.sos, 'interruption-level': 'active' } },
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Faz 5: bölge olayı ve buluşma noktası bildirimleri (koordinat YOK)
+// ---------------------------------------------------------------------------
+
+/**
+ * Kural alıcısına: "Erim · Ev konumuna vardı". Yalnızca bölge ADI; merkez / yarıçap / koordinat yok.
+ * Android Faz 4 `ping` kanalı (HIGH), iOS `active`. Aynı göndericinin yeni bölge olayı eskisinin yerine geçer.
+ * [Varsayım] TTL 30 dk: geç gelen "vardı" bildirimi yanıltıcı olur (core `ZONE_LIMITS.maxEventAgeMs` ile aynı).
+ */
+export const ZONE_PUSH_TTL_MS = 30 * 60 * 1000;
+
+export function buildZoneEventPush(senderName: string, from: UserId, zoneName: string, transition: ZoneTrigger): PushMessage {
+  const tag = `zone_${from}`;
+  return {
+    notification: zoneEventPushText(senderName || 'Bir arkadaşın', zoneName, transition),
+    data: { type: 'zone_event', from, zone_name: zoneName, transition },
+    android: {
+      priority: 'high',
+      ttl: ZONE_PUSH_TTL_MS,
+      collapseKey: tag,
+      notification: { channelId: NOTIFICATION_CHANNELS_F4.ping, tag, sound: 'default' },
+    },
+    apns: {
+      headers: { 'apns-priority': '10', 'apns-push-type': 'alert', 'apns-collapse-id': collapseId(tag) },
+      payload: { aps: { category: NOTIFICATION_CHANNELS_F4.ping, sound: 'default', 'interruption-level': 'active' } },
+    },
+  };
+}
+
+/** Alıcıya: "Ayşe · Buluşma noktası önerdi: Moda Kahve". Yerin konumu push'ta YOK (`meetups`'tan okunur). */
+export function buildMeetupPush(fromName: string, m: { meetup_id: string; from: UserId; place: Pick<MeetupPlace, 'name'>; expires_at: number }, now: number = Date.now()): PushMessage {
+  const tag = `meetup_${m.meetup_id}`;
+  return {
+    notification: meetupPushText(fromName || 'Bir arkadaşın', m.place),
+    data: { type: 'meetup', meetup_id: m.meetup_id, from: m.from },
+    android: {
+      priority: 'high',
+      ttl: Math.max(0, m.expires_at - now),
+      notification: { channelId: NOTIFICATION_CHANNELS_F4.ping, tag, sound: 'default' },
+    },
+    apns: {
+      headers: {
+        'apns-priority': '10',
+        'apns-push-type': 'alert',
+        'apns-collapse-id': collapseId(tag),
+        'apns-expiration': String(Math.floor(m.expires_at / 1000)),
+      },
+      payload: { aps: { category: NOTIFICATION_CHANNELS_F4.ping, sound: 'default', 'interruption-level': 'active' } },
+    },
+  };
+}
+
+/** Önerene: "Bora · Moda Kahve için "Geliyorum" dedi". Aynı kişinin yeni yanıtı eskisinin yerine geçer. */
+export function buildMeetupResponsePush(
+  byName: string,
+  m: { meetup_id: string; place: Pick<MeetupPlace, 'name'> },
+  by: UserId,
+  response: 'accepted' | 'declined',
+): PushMessage {
+  const tag = `meetup_${m.meetup_id}_${by}`;
+  return {
+    notification: meetupResponsePushText(byName || 'Bir arkadaşın', response, m.place),
+    data: { type: 'meetup_response', meetup_id: m.meetup_id, by, response },
+    android: { priority: 'high', notification: { channelId: NOTIFICATION_CHANNELS_F4.ping, tag } },
+    apns: {
+      headers: { 'apns-priority': '10', 'apns-push-type': 'alert', 'apns-collapse-id': collapseId(tag) },
+      payload: { aps: { category: NOTIFICATION_CHANNELS_F4.ping, 'interruption-level': 'active' } },
     },
   };
 }

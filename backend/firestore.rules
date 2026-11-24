@@ -1,6 +1,6 @@
 rules_version = '2';
 
-// Konum Firestore kuralları (Faz 1 + Faz 2 + Faz 4).
+// Konum Firestore kuralları (Faz 1 + Faz 2 + Faz 4 + Faz 5).
 //  - Varsayılan: her şey kapalı.
 //  - İstemci sosyal grafiğe ve paylaşımlara YAZMAZ; tüm geçişler Cloud Functions callable'larıyla.
 //  - Okuma yalnızca ilgili taraflara. Kurallar filtre değildir: istemci sorgusu kısıtı taşımalıdır
@@ -9,6 +9,7 @@ rules_version = '2';
 //    outgoing_request_links: istemciye tamamen kapalı (kural yok).
 //  - Faz 2: link_acl_pending, route_cache, geocode_cache, maps_quota, maps_budget, config: istemciye tamamen
 //    kapalı (yalnızca Functions). Google yanıtları yalnızca callable üzerinden döner.
+//  - Faz 5: zone_cooldowns, meetup_cache: istemciye tamamen kapalı (yalnızca Functions).
 service cloud.firestore {
   match /databases/{database}/documents {
 
@@ -28,6 +29,19 @@ service cloud.firestore {
       // Giden arkadaşlık istekleri: yalnızca sahibi okur. Hedef kayıtlı olsun olmasın, engelli olsun olmasın
       // aynı kayıt yazılır ve hedefin uid'ini İÇERMEZ (maskeli telefon / davet kodu).
       match /outgoing_requests/{oid} {
+        allow read: if isSelf(uid);
+        allow write: if false;
+      }
+
+      // Faz 5: kayıtlı bölgeler + kurallar. Merkez ev / iş adresidir: YALNIZCA sahibi okur (kural alıcıları dahil
+      // kimse göremez); yalnızca zone_upsert / zone_delete yazar.
+      match /zones/{zoneId} {
+        allow read: if isSelf(uid);
+        allow write: if false;
+      }
+
+      // Faz 5: bölge olay kaydı (koordinatsız; 30 gün TTL). Yalnızca sahibi okur; yalnızca zone_event_report yazar.
+      match /zone_events/{eventId} {
         allow read: if isSelf(uid);
         allow write: if false;
       }
@@ -106,6 +120,15 @@ service cloud.firestore {
     match /sos_alerts/{sosId} {
       allow read: if signedIn()
         && (resource.data.sender_id == request.auth.uid || request.auth.uid in resource.data.recipient_ids);
+      allow write: if false;
+    }
+
+    // Faz 5: paylaşılan buluşma önerileri. Öneren (sorgu: from == ben) ve alıcılar (sorgu: to array-contains ben)
+    // okur; yalnızca meetup_* callable'ları yazar. [Varsayım] Alıcı diğer alıcıları ve herkesin ETA'sını görür
+    // (öneri grup içindir).
+    match /meetups/{meetupId} {
+      allow read: if signedIn()
+        && (resource.data.from == request.auth.uid || request.auth.uid in resource.data.to);
       allow write: if false;
     }
 

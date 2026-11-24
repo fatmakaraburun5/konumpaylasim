@@ -8,6 +8,8 @@ import { HOUR, MINUTE } from '@konum/core';
 import {
   DEMO_DEFAULT_BATTERY_PCT,
   demoBatteryPct,
+  demoPosition,
+  placeDemoPhone,
   onDemoBatteryChange,
   onDemoEngineChange,
   onDemoMotionChange,
@@ -159,6 +161,27 @@ export const demoControls = {
   /** Ayşe "Güvendeyim" der. Dönen: aktif SOS var mıydı. */
   ayseSafe(): boolean {
     return demoServer().botSosResolve(PEOPLE.ayse.uid);
+  },
+
+  // --- Faz 5 ---------------------------------------------------------------------------------------
+  /**
+   * "Ev bölgemi buraya kaydet (demo)": telefonun şu anki yerinde 150 m Ev bölgesi + "Vardığımda Ayşe'ye bildir" +
+   * "Çıkınca Ayşe ile 1 saat paylaş". Telefon orada "masada" bekler (yürüyüş bölgeden kendiliğinden çıkmasın).
+   * Dönen: bölge kimliği ya da null (Ayşe arkadaş değil).
+   */
+  saveHomeZoneHere(): string | null {
+    const here = demoPosition();
+    placeDemoPhone(here);
+    return demoServer().saveDemoHomeZone(here)?.zone_id ?? null;
+  },
+  /** "Ayşe eve vardı": Ayşe'nin kuralı → bana "Ayşe Ev konumuna vardı" push'u. Dönen: bildirilen kişi sayısı ya da null. */
+  ayseArrivedHome(): number | null {
+    const r = demoServer().botZoneArrive(PEOPLE.ayse.uid);
+    return r ? r.notified : null;
+  },
+  /** "Ayşe buluşma noktası önersin": Ayşe ile benim aramda bir kafe → bana öneri (push + kart). Dönen: meetup_id. */
+  ayseSuggestMeetup(): string | null {
+    return demoServer().botMeetupSuggest(PEOPLE.ayse.uid, demoPosition());
   },
 
   /** Demoyu baştan başlatır: sunucu + uygulamanın kalıcı anahtarları silinir, sayfa yeniden yüklenir. */

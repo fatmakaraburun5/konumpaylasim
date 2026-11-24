@@ -13,6 +13,7 @@ import { demoOnline, onDemoNetworkChange } from '../../demo/web/network';
 import { demoScreenLocked } from '../../demo/web/screen';
 import * as Notifications from './expoNotifications';
 import { f4ForegroundContent } from './f4Push';
+import { f5ForegroundContent, isF5PushType, routeF5Received } from './f5Push';
 
 /** Testlerde de kurulabilen asgari mesaj biçimi (native ile aynı). */
 export interface PushLike {
@@ -46,6 +47,17 @@ async function handleForegroundMessage(m: PushLike): Promise<void> {
   }
   // Faz 4: SOS / güvende / gördü her zaman bildirim kartı; ping yalnızca ekran kilitliyken (uygulama öndeyken
   // native'deki gibi uygulama içi PingToast gösterilir). Kart dokunuşu `respondToDemoNotification` → koordinatör.
+  // Faz 5: bölge olayı / buluşma yanıtı bildirim kartı; buluşma önerisi uygulama içi kart (kilitliyken bildirim).
+  if (isF5PushType(m.data?.type)) {
+    routeF5Received(m.data);
+    const f5 = f5ForegroundContent(m, { includeMeetup: demoScreenLocked() });
+    if (!f5) return;
+    await Notifications.scheduleNotificationAsync({
+      content: { title: f5.title, body: f5.body, data: f5.data, interruptionLevel: f5.interruptionLevel },
+      trigger: { channelId: f5.channelId },
+    });
+    return;
+  }
   const f4 = f4ForegroundContent(m, { includePing: demoScreenLocked() });
   if (!f4) return;
   await Notifications.scheduleNotificationAsync({

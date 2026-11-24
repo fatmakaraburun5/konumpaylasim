@@ -10,11 +10,16 @@
  *  - Faz 3: eşitlenen iz noktaları kesikli `Polyline`; bağlantısı kopmuş olabilecek arkadaşın pini soluk.
  *  - Açık/koyu stil `mapStyleFor(theme)`; cihaz teması değişince stil canlı değişir.
  *  - Faz 4: arkadaş pininde durum notu balonu ve nabız (ping / SOS); yer notu, ping ve SOS işaretleri (`F4Markers`).
+ *  - Faz 5: kendi bölgelerim (`ZoneMapLayer`: soluk daire + emoji) ve buluşma katmanı (`MeetupMapLayer`: numaralı
+ *    öneri pinleri, orta nokta, seçili öneriye kesikli çizgiler, paylaşılan öneri pini).
  */
-import type { LatLng, Ping, PlaceNote, SosAlert, UserId } from '@konum/core';
+import type { LatLng, Ping, PlaceNote, SosAlert, UserId, Zone, ZonePresence } from '@konum/core';
 import { useImperativeHandle, useMemo, useRef, type Ref } from 'react';
 import { StyleSheet, View } from 'react-native';
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE, type EdgePadding, type LongPressEvent } from 'react-native-maps';
+import { MeetupMapLayer } from '../meetup/MeetupMapLayer';
+import type { MeetupMapOverlay } from '../meetup/meetupModel';
+import { ZoneMapLayer } from '../zones/ZoneMapLayer';
 import type { IncomingFriendLocation } from '../../state/incomingStore';
 import { usePermissionsStore } from '../../state/permissionsStore';
 import { mapStyleFor, useTheme } from '../../ui';
@@ -61,6 +66,13 @@ export interface MapCanvasProps {
   /** Canlı pini olmayan aktif SOS göndericilerinin tam konumu. */
   sosPins?: readonly SosAlert[];
   onSosPress?: (a: SosAlert) => void;
+  // --- Faz 5 ---
+  /** Kendi bölgelerim (etkin olanlar): soluk daire + emoji. */
+  zones?: readonly Zone[];
+  zonePresence?: Record<string, ZonePresence>;
+  /** Buluşma noktası katmanı (öneri pinleri, orta nokta, kesikli çizgiler, paylaşılan öneri pini). */
+  meetup?: MeetupMapOverlay | null;
+  onMeetupSelect?: (index: number) => void;
   ref?: Ref<MapCanvasHandle>;
 }
 
@@ -86,6 +98,10 @@ export function MapCanvas({
   onPingPress,
   sosPins = [],
   onSosPress,
+  zones = [],
+  zonePresence,
+  meetup = null,
+  onMeetupSelect,
   ref,
 }: MapCanvasProps) {
   const theme = useTheme();
@@ -134,6 +150,8 @@ export function MapCanvas({
       accessibilityLabel="Harita"
       accessibilityHint="Rota için bir noktaya uzun bas"
     >
+      {/* Faz 5: kendi bölgelerim en altta (soluk daire + emoji). */}
+      {zones.length > 0 ? <ZoneMapLayer zones={zones} presence={zonePresence} /> : null}
       {routeCoords ? (
         <Polyline coordinates={routeCoords} strokeColor={colors.primary} strokeWidth={5} lineCap="round" lineJoin="round" zIndex={0} />
       ) : null}
@@ -190,6 +208,8 @@ export function MapCanvas({
       {sosPins.map((a) => (
         <SosMarker key={`sos:${a.sos_id}`} alert={a} onPress={() => onSosPress?.(a)} />
       ))}
+      {/* Faz 5: buluşma noktası önerileri / paylaşılan öneri. */}
+      {meetup ? <MeetupMapLayer overlay={meetup} onSelect={onMeetupSelect} /> : null}
     </MapView>
   );
 }

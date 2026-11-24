@@ -49,6 +49,14 @@ export const CALLABLES = {
   sosUpdate: 'sos_update',
   sosResolve: 'sos_resolve',
   sosAck: 'sos_ack',
+  // Faz 5
+  zoneUpsert: 'zone_upsert',
+  zoneDelete: 'zone_delete',
+  zoneEventReport: 'zone_event_report',
+  meetupSuggest: 'meetup_suggest',
+  meetupShare: 'meetup_share',
+  meetupRespond: 'meetup_respond',
+  meetupCancel: 'meetup_cancel',
 } as const;
 
 export type CallableName = (typeof CALLABLES)[keyof typeof CALLABLES];
@@ -96,6 +104,19 @@ export const PATHS = {
   sosAlerts: 'sos_alerts',
   sosAlert: (id: string) => `sos_alerts/${id}`,
   /** Firestore: kullanıcının acil durum kişileri `users/{uid}.emergency_contacts` (yalnızca callable yazar). */
+  // --- Faz 5 ---
+  /** Firestore: kayıtlı bölgeler + kurallar (YALNIZCA sahibi okur, callable yazar). Koordinat hassas. */
+  zones: (uid: UserId) => `users/${uid}/zones`,
+  zone: (uid: UserId, zoneId: string) => `users/${uid}/zones/${zoneId}`,
+  /** Firestore: bölge olay kaydı (yalnızca sahibi okur, 30 gün TTL). */
+  zoneEvents: (uid: UserId) => `users/${uid}/zone_events`,
+  /** Firestore: sunucu tarafı bölge soğuma durumu (yalnızca sunucu) `zone_cooldowns/{uid}_{zone_id}_{transition}`. */
+  zoneCooldown: (uid: UserId, zoneId: string, transition: string) => `zone_cooldowns/${uid}_${zoneId}_${transition}`,
+  /** Firestore: paylaşılan buluşma önerileri (gönderen + alıcılar okur, callable yazar). */
+  meetups: 'meetups',
+  meetup: (id: string) => `meetups/${id}`,
+  /** Firestore: buluşma önerisi sunucu önbelleği (yalnızca sunucu), anahtar `meetupCacheKey`. */
+  meetupCache: (key: string) => `meetup_cache/${key}`,
 } as const;
 
 const opId = z.uuid();
@@ -427,6 +448,10 @@ export const ERROR_CODES = {
   sos_not_active: { retryable: false, message: 'Acil durum uyarısı artık aktif değil' },
   note_not_found: { retryable: false, message: 'Not bulunamadı' },
   note_limit_reached: { retryable: false, message: 'Aynı anda en fazla 20 yer notun olabilir' },
+  // Faz 5
+  zone_not_found: { retryable: false, message: 'Bölge bulunamadı' },
+  zone_limit_reached: { retryable: false, message: 'En fazla 15 bölge kaydedebilirsin' },
+  meetup_not_found: { retryable: false, message: 'Buluşma önerisi bulunamadı ya da süresi doldu' },
 } as const;
 export type ErrorCode = keyof typeof ERROR_CODES;
 
@@ -468,7 +493,14 @@ export type PushData =
   /** Alıcıya, görünür: gönderen "Güvendeyim" dedi. */
   | { type: 'sos_resolved'; sos_id: string; sender_id: string }
   /** Gönderene, görünür: alıcı uyarıyı gördü. */
-  | { type: 'sos_ack'; sos_id: string; by: string };
+  | { type: 'sos_ack'; sos_id: string; by: string }
+  // Faz 5
+  /** Kural alıcısına, görünür: "Erim · Ev konumuna vardı". Koordinat YOK, yalnızca bölge adı. */
+  | { type: 'zone_event'; from: string; zone_name: string; transition: string }
+  /** Alıcıya, görünür: buluşma noktası önerisi. Yer adı gövdede; konum `meetups`'tan okunur. */
+  | { type: 'meetup'; meetup_id: string; from: string }
+  /** Önerene, görünür: alıcı yanıt verdi. `response` = accepted | declined. */
+  | { type: 'meetup_response'; meetup_id: string; by: string; response: string };
 
 /** Faz 3 FCM veri türleri (istemci işleyicileri ve sözleşme testi için). */
 export const PUSH_TYPES_F3 = ['battery_low', 'resume_tracking', 'tracking_stalled'] as const satisfies readonly PushData['type'][];
@@ -483,3 +515,6 @@ export const PUSH_TYPES_F4 = ['ping', 'sos', 'sos_resolved', 'sos_ack'] as const
  *  - `ping`: Android IMPORTANCE_HIGH; iOS `active`.
  */
 export const NOTIFICATION_CHANNELS_F4 = { sos: 'sos', ping: 'ping' } as const;
+
+/** Faz 5 FCM veri türleri. */
+export const PUSH_TYPES_F5 = ['zone_event', 'meetup', 'meetup_response'] as const satisfies readonly PushData['type'][];

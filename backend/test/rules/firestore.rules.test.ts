@@ -274,3 +274,42 @@ describe('Faz 4: place_notes / sos_alerts', () => {
     await assertFails(fa.doc(`sos_alerts/${sosId}`).update({ status: 'resolved' }));
   });
 });
+
+// ---------------------------------------------------------------------------
+// Faz 5: bölgeler YALNIZCA sahibine; buluşma önerileri öneren + alıcılara (kimse yazamaz)
+// ---------------------------------------------------------------------------
+
+describe('Faz 5: zones / zone_events / meetups', () => {
+  const zoneId = `z${randomUUID().slice(0, 8)}`;
+  const meetupId = `m${randomUUID().slice(0, 8)}`;
+  beforeAll(async () => {
+    await db().doc(`users/${A}/zones/${zoneId}`).set({ zone_id: zoneId, owner_id: A, kind: 'home', name: 'Ev', emoji: null, center: { lat: 41, lng: 29 }, radius_m: 150, rules: [{ rule_id: 'r1', trigger: 'arrive', action: 'notify', recipient_ids: [B] }], enabled: true, time_zone: 'Europe/Istanbul', created_at: now, updated_at: now });
+    await db().doc(`users/${A}/zone_events/e1`).set({ zone_id: zoneId, transition: 'arrive', occurred_at: now, notified: 1, suppressed: null });
+    await db().doc(`meetups/${meetupId}`).set({ meetup_id: meetupId, from: A, from_name: 'A', to: [B], place: { place_id: null, name: 'Orta nokta', address: null, location: { lat: 41, lng: 29 }, primary_type: null, category: 'midpoint' }, etas: [], meet_at: null, note: null, responses: {}, status: 'active', created_at: now, expires_at: now + 3_600_000 });
+  });
+
+  it('bölge ve olay kaydı: yalnızca sahibi okur (kural alıcısı bile okuyamaz); kimse yazamaz', async () => {
+    const [fa, fb] = await Promise.all([clientFirestore(A), clientFirestore(B)]);
+    await assertSucceeds(fa.doc(`users/${A}/zones/${zoneId}`).get());
+    await assertSucceeds(fa.collection(`users/${A}/zones`).get());
+    await assertSucceeds(fa.collection(`users/${A}/zone_events`).get());
+    await assertFails(fb.doc(`users/${A}/zones/${zoneId}`).get());
+    await assertFails(fb.collection(`users/${A}/zones`).get());
+    await assertFails(fb.collection(`users/${A}/zone_events`).get());
+    await assertFails(fa.doc(`users/${A}/zones/${zoneId}`).update({ radius_m: 500 }));
+    await assertFails(fa.doc(`users/${A}/zones/yeni`).set({ owner_id: A }));
+    await assertFails(fa.doc(`zone_cooldowns/${A}_${zoneId}_arrive`).get());
+  });
+
+  it('buluşma önerisi: öneren ve alıcı okur (sorgular dahil); başkası okuyamaz; kimse yazamaz', async () => {
+    const [fa, fb, fc] = await Promise.all([clientFirestore(A), clientFirestore(B), clientFirestore(C)]);
+    await assertSucceeds(fa.collection('meetups').where('from', '==', A).get());
+    const got = await assertSucceeds(fb.collection('meetups').where('to', 'array-contains', B).get());
+    expect(got.docs.map((d) => d.id)).toContain(meetupId);
+    await assertFails(fc.doc(`meetups/${meetupId}`).get());
+    await assertFails(fc.collection('meetups').where('from', '==', A).get());
+    await assertFails(fb.doc(`meetups/${meetupId}`).update({ [`responses.${B}`]: 'accepted' }));
+    await assertFails(fa.doc(`meetups/${meetupId}`).update({ status: 'cancelled' }));
+    await assertFails(fa.doc('meetup_cache/x').get());
+  });
+});

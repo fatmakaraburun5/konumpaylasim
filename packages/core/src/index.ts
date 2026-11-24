@@ -25,3 +25,6 @@ export * from './simulate';
 export * from './ping';
 export * from './notes';
 export * from './sos';
+// Faz 5: varış/ayrılış tetikleyicileri, buluşma noktası
+export * from './zones';
+export * from './meetup';

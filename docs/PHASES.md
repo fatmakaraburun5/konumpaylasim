@@ -8,7 +8,8 @@ Her faz bir öncekinin sözleşmelerini (packages/core) **genişletir**, değiş
 | 2 | Native Google Maps (stil, yumuşak pin, rota + ETA kartı, adres), QR/token ile paylaşım, salt okunur web haritası, Universal/App Links, anında iptal, Maps maliyet koruması | Kod hazır, emülatörde uçtan uca kabul testi geçti (59/59); gerçek proje ve cihazda deneme bekliyor. Ayrıntı: [`PHASE2.md`](PHASE2.md) |
 | 3 | Arka plan takibi (iOS Always / Android FGS, kademeli izin akışı), hareket sensörüne göre GPS ve gönderim matrisi, uyku çiti, çevrimdışı kuyruk + `live_trail`, son doğrulanmış konum, %15 düşük pil bildirimi, duraksama bekçisi | Kod hazır, emülatörde uçtan uca kabul testi geçti (57/57); yerel modül (Swift/Kotlin) derlenmedi, gerçek cihazda pil ölçümü bekliyor. Ayrıntı: [`PHASE3.md`](PHASE3.md) |
 | 4 | Tek dokunuşla "Buradayım / Yoldayım" ping'i, konum yanına kısa durum notu ve yer notu, tam konumlu SOS (basılı tut + geri sayım, acil kişiler, yüksek öncelikli push, alıcıda tam ekran acil kartı) | Kod hazır; birim, kural ve emülatör testleri geçti, tarayıcı demosunda uçtan uca çalışıyor; gerçek cihazda bildirim davranışı ve Apple Critical Alerts onayı bekliyor. Ayrıntı: [`PHASE4.md`](PHASE4.md) |
-| 5 | Kilit ve ana ekran widget'ları, favoriye tek dokunuşla 1 saat, buluşma noktası (yer notunun üstüne), konum isteği ekranı | Planlandı |
+| 5 | Varış / ayrılış tetikleyicileri (Ev, İş, özel bölgeler; iOS `CLCircularRegion` / Android `GeofencingClient`; "vardığımda bildir", "çıkınca paylaşımı başlat"; GPS sapması filtresi), harita üzerinde "Buluşma noktası" önerisi (orta nokta / adil erişim süresi, Places + Route Matrix, numaralı pinler, paylaşım ve alıcı kartı) | Kod hazır; birim, kural ve emülatör testleri geçti, tarayıcı demosunda uçtan uca çalışıyor; gerçek cihazda bölge algılama ve gerçek Places / Routes anahtarı bekliyor. Ayrıntı: [`PHASE5.md`](PHASE5.md) |
+| 6 | Kilit ve ana ekran widget'ları, favoriye tek dokunuşla 1 saat, konum isteği ekranı | Planlandı |
 
 ## Faz 1 → Faz 2 geçiş noktası
 
@@ -190,3 +191,56 @@ Faz 5'e geçmeden önce Faz 4 gerçek cihazda doğrulanmalı (Faz 3 → Faz 4 li
 - [ ] SOS ile otomatik 1 saatlik canlı paylaşım, SOS push gövdesinde adres, hesap silmede alıcıya bildirim gitmemesi.
 - [ ] Android "Rahatsız Etme erişimi" adımı ve gerekirse tam ekran bildirimi (`USE_FULL_SCREEN_INTENT`, Play politikası).
 - [ ] App Store inceleme notuna SOS'un ne yaptığı ve acil servis yerine geçmediği ("112'yi ara" düğmesi) yazılsın.
+
+**Faz 5 için ek notlar** (Faz 5 kodu bu listeyi beklemeden yazıldı; cihaz testleri Faz 4 dağıtımının üstüne kurulur)
+- [ ] Faz 5 bölge bildirimleri Faz 4'ün `ping` kanalını (Android) ve `active` kesinti düzeyini (iOS) kullanır: Faz 4
+      kanal kurulumu cihazda doğrulanmadan Faz 5 bildirim testi anlamlı değildir.
+- [ ] Faz 3 "Her zaman" / `ACCESS_BACKGROUND_LOCATION` izin akışı cihazda geçmiş olmalı (bölge izleme aynı izni ister).
+- [ ] Google Cloud projesinde **Places API (New)** açılsın ve Maps sunucu anahtarına `places.googleapis.com` +
+      `routes.googleapis.com` (Route Matrix) kısıtı eklensin; Faz 2 bütçe uyarılarına Places SKU'su eklensin.
+
+## Faz 5 (uygulandı)
+
+Kural modeli, tetikleme akışı, GPS sapması filtresi, buluşma hesabı ve gizlilik kararları [`PHASE5.md`](PHASE5.md)
+dosyasındadır. Özet:
+
+| Parça | Ne yapıldı |
+| --- | --- |
+| Bölgeler | Firestore `users/{uid}/zones` (YALNIZCA sahibi okur, `zone_upsert` / `zone_delete` yazar): tür, ad, merkez, 100 m – 2 km yarıçap, ≤ 6 kural; en çok 15 bölge (iOS 20 sınırı − uyku çiti). Bölgelerim ekranı, haritada artı işaretli düzenleyici ve yarıçap dairesi, kural sayfası (şablon, ≤ 10 alıcı, süre, gün, saat aralığı). |
+| Tetikleme | Cihazda OS bölge olayı (görev `konum-zone-geofence`) → taze konum → `zoneFilterReduce` → `zone_event_report` (koordinatsız, kalıcı kuyruk, aynı `op_id`) → sunucu: bayat / kapalı / kural saati / 5 dk soğuma / 60 olay/gün → notify push (`zone_event`, yalnızca bölge adı) ve yanıtta `start_share` → cihaz `share_start`. |
+| GPS sapması | Doğruluk kapısı, histerezis (gri bant), 2 güvenli örnek ≥ 20 sn ya da bekleme, ışınlanma reddi (> 70 m/sn), ters geçiş için 3 dk, aynı yön 10 dk, ilk durum tetiksiz, uzaklaşınca (R + 1 km) hızlı onay. |
+| Buluşma noktası | `meetup_suggest`: merkez (orta nokta / geometrik medyan), arama yarıçapı yayılım/4 (300 m – 3 km), Places Nearby (dar alan maskesi), mod başına Route Matrix (K = 5), adalet puanı `max + 0,5 × (max − min)`, yedek orta nokta + kuş uçuşu ETA, 10 dk kullanıcıya özel önbellek, günde 30 sorgu. `meetup_share/respond/cancel` + `meetups` (öneren ve alıcılar okur, 12 sa). |
+| Harita | Numaralı öneri pinleri, orta nokta, seçili öneriye kesikli çizgiler, benim rotam; alıcı kartında herkesin ETA'sı, canlı ETA, "Yol tarifi", "Geliyorum / Uyamam"; öneren kartında yanıtlar ve iptal. |
+
+Faz 5 kabul ölçütleri (bu depoda): bölge koordinatı kural alıcısına bile okunmaz ✓; push ve olay kaydı koordinat
+taşımaz ✓; arkadaş olmayan alıcı sessizce düşer ✓; tekrar `op_id` yeni push üretmez ✓; soğuma ve bayat olay bastırılır ✓;
+buluşma yedekleri (too_close / too_far / places_unavailable / quota_exceeded / no_results) ✓ (emülatör testleri);
+GPS sapmasında tetik yok, gerçek çıkışta paylaşım başlar, arkadaşın varış bildirimi, buluşma önerisi → alıcı kartı ✓
+(tarayıcı demosu, Playwright 23 denetim).
+
+## Faz 5 → Faz 6 geçiş noktası
+
+Faz 6'ya geçmeden önce Faz 5 gerçek cihazda doğrulanmalı (Faz 4 → Faz 5 listesi önkoşuldur). Senaryolar:
+[`PHASE5.md`](PHASE5.md) §7.1.
+
+**Dağıtım**
+- [ ] `firestore.rules` (`users/{uid}/zones`, `users/{uid}/zone_events`, `meetups`), `firestore.indexes.json` (4 TTL:
+      `zone_events.purge_at`, `zone_cooldowns.purge_at`, `meetups.purge_at`, `meetup_cache.expire_at`) ve 7 yeni callable
+      dağıtılsın. `meetup_suggest` Maps sunucu anahtarı sırrını kullanır.
+- [ ] Places API (New) + Routes API gerçek anahtarla bir kez denensin: `MEETUP_CATEGORY_TYPES` türleri geçerli mi,
+      faturada Nearby Search **Pro** ve Route Matrix öğe sayısı beklenenle aynı mı (`PHASE5.md` §4.1).
+
+**Cihaz testleri** (iOS + en az iki Android üreticisi)
+- [ ] Uygulama kapalıyken (sistemce ve kullanıcı tarafından) evden çıkış / eve varış: alıcıda bildirim, "Çıkınca
+      paylaş" kuralında paylaşımın başlaması (Android 12+ ön plan servisi istisnası).
+- [ ] Kapalı alanda 2 saat sabit telefon: sıfır yanlış tetik. Sınırdaki otoparkta bir gün: en çok bir çıkış + bir varış.
+- [ ] iOS: 15 bölge + aktif paylaşımın uyku çiti birlikte (20 bölge sınırı); uyku çitinin bölge görevine alınması.
+- [ ] Arka plan süresi: OS olayından sonra ikinci taze ölçüm (≤ 25 sn) iOS'ta kesiliyor mu?
+- [ ] Native harita: düzenleyicide harita kaydırma ile merkez seçimi, daire / numaralı pin / kesikli çizgi çizimi.
+
+**Ürün kararları** (`[Varsayım]`'ların kaldırılması)
+- [ ] Bölge koordinatının yalnızca sahibinde kalması ve push'ta yalnızca bölge adı; buluşma hesabı için arkadaş
+      konumunun sunucuya ve Google'a gitmesi (gizlilik metni / Data Safety formu).
+- [ ] Soğuma (5 dk), günlük sınır (60), buluşma kotası (30/gün), varsayılan mod (≤ 2 km Yürüyüş), alıcıların birbirini
+      görmesi, iptalde alıcıya push gitmemesi.
+- [ ] Arkadaşlık bitince aktif buluşma önerisinin iptal edilmesi; proje geneli buluşma bütçe sayacı.

@@ -169,6 +169,19 @@ export function setDemoMotion(mode: DemoMotionMode, now: number = Date.now()): v
   if (demoPerms().motion === 'granted') for (const l of [...activityListeners]) l({ ...act });
 }
 
+/**
+ * Faz 5 demo: telefonu verilen noktaya koyar ve orada "masada" bekletir (bölge senaryoları: "Evden çık" / "Eve var"
+ * yürüyüşü zaman atlamalı oynatılır, sonra telefon varış noktasında durur). Hareket dinleyicileri bilgilendirilir.
+ */
+export function placeDemoPhone(p: LatLng, now: number = Date.now()): void {
+  const act: DemoActivityEvent = { type: 'still', confidence: 'high', at: Math.max(now - ACTIVITY_LEAD_MS, (motion.act?.at ?? 0) + 1) };
+  const next: MotionRec = { mode: 'still', since: now, m0: 0, anchor: { lat: p.lat, lng: p.lng }, act };
+  motion = next;
+  safeStorage.set(MOTION_KEY, JSON.stringify(next));
+  for (const l of [...motionListeners]) l('still');
+  if (demoPerms().motion === 'granted') for (const l of [...activityListeners]) l({ ...act });
+}
+
 /** Simüle GPS ölçümü (kipine göre: yürüyüş, masada, araç). */
 export function demoLocationSample(now: number = Date.now()): RawLocationSample {
   const p = poseAt(motion, now);

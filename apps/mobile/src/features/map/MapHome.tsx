@@ -22,6 +22,11 @@
  *       yer notu pini → PlaceNoteCard (sahibi düzenler / siler) · arkadaş pininde not balonu ve ping/SOS nabzı
  *       SosLauncher (sağ altta basılı tut → geri sayım → gönder → "Uyarı gönderildi") · SosIncomingBanner +
  *       SosIncomingScreen (alıcı tam ekran acil durum kartı)
+ *   └─ Faz 5:
+ *       haritada kendi bölgelerim (soluk daire + emoji) · TopBar menüsünde "Bölgelerim"
+ *       EtaCard "Buluşma noktası öner" (arkadaş hedefi; nokta hedefinde "Buradan buluşma öner") → MeetupSheet
+ *       (karartmasız alt sayfa; haritada numaralı öneri pinleri, orta nokta, seçili öneriye kesikli çizgiler ve
+ *       benim rotam) · paylaşılan öneri → MeetupCard (alıcı: Geliyorum / Uyamam; öneren: yanıtlar) + yer pini
  *
  * Seçim: arkadaş pinine / şeride dokun → o arkadaş; haritaya uzun bas → nokta. Arkadaşın paylaşımı biterse
  * seçim kalkar. Rota ve adres yalnızca EtaCard görünürken istenir (useEta → routesRepo/geocodeRepo).
@@ -41,7 +46,7 @@ import {
 } from '@konum/core';
 import { useNavigation, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, StyleSheet, View, type LayoutChangeEvent } from 'react-native';
+import { ActivityIndicator, Alert, StyleSheet, useWindowDimensions, View, type LayoutChangeEvent } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNow } from '../../lib/useNow';
 import { authStore, useAuthStore } from '../../state/authStore';
@@ -55,6 +60,12 @@ import { useSyncStatus } from '../../state/syncStatusStore';
 import { notesStore, selectPlaceNotes, useNotesStore } from '../../state/notesStore';
 import { pingStore, usePingStore } from '../../state/pingStore';
 import { selectIncomingSos, sosStore, useSosStore } from '../../state/sosStore';
+import { meetupStore, selectMeetups, useMeetupStore } from '../../state/meetupStore';
+import { useZonesStore } from '../../state/zonesStore';
+import { MeetupCard, MeetupPills } from '../meetup/MeetupCard';
+import { participantPoints, type MeetupMapOverlay } from '../meetup/meetupModel';
+import { MeetupSheet, type MeetupSheetHandle } from '../meetup/MeetupSheet';
+import { circleBounds } from '../zones/zoneModel';
 import { Button, cardShadow, IconButton, Text, useTheme } from '../../ui';
 import { LinkQrSheet, type LinkQrSheetHandle } from '../link/LinkQrSheet';
 import { NoteSheet, type NoteSheetHandle } from '../notes/NoteSheet';
@@ -115,7 +126,9 @@ export function MapHome() {
   const sheet = useRef<ShareSheetHandle>(null);
   const qrSheet = useRef<LinkQrSheetHandle>(null);
   const noteSheet = useRef<NoteSheetHandle>(null);
+  const meetupSheet = useRef<MeetupSheetHandle>(null);
   const navigation = useNavigation();
+  const { height: windowH } = useWindowDimensions();
   const [bottomH, setBottomH] = useState(0);
   const [selection, setSelection] = useState<MapSelection>(null);
   const [travelMode, setTravelMode] = useState<TravelMode>('DRIVE');
@@ -161,6 +174,25 @@ export function MapHome() {
     if (selection?.kind === 'note' && !selectedNote) setSelection(null);
   }, [selection, selectedNote]);
 
+  // --- Faz 5: bölgeler, buluşma noktası -------------------------------------------------------
+  const zonesMap = useZonesStore((s) => s.zones);
+  const zonePresence = useZonesStore((s) => s.presence);
+  const mapZones = useMemo(() => Object.values(zonesMap).filter((z) => z.enabled), [zonesMap]);
+  const [meetupOpen, setMeetupOpen] = useState(false);
+  const meetupResult = useMeetupStore((s) => s.result);
+  const meetupSel = useMeetupStore((s) => s.selectedIndex);
+  const meetupInput = useMeetupStore((s) => s.input);
+  const meetupsMap = useMeetupStore((s) => s.meetups);
+  const focusedMeetupId = useMeetupStore((s) => s.focusedMeetupId);
+  const focusedMeetup = focusedMeetupId ? meetupsMap[focusedMeetupId] : undefined;
+  const meetupList = useMemo(() => selectMeetups({ meetups: meetupsMap }, myUid), [meetupsMap, myUid]);
+  const friendPositions = useMemo(() => {
+    const out: Record<string, LatLng> = {};
+    for (const f of incoming) if (!(f.senderId in out)) out[f.senderId] = { lat: f.location.lat, lng: f.location.lng };
+    return out;
+  }, [incoming]);
+  const selectedSuggestion = meetupOpen && meetupResult && meetupSel !== null ? meetupResult.suggestions[meetupSel] : undefined;
+
   const anyRunning = sessions.some((s) => RUNNING.has(s.phase));
   const anyLinkRunning = links.some((l) => LINK_RUNNING.has(l.phase));
   const expiring = sessions.find((s) => s.phase === 'expiring_soon');
@@ -199,12 +231,35 @@ export function MapHome() {
     return null;
   }, [selection, selectedFriend, names]);
   const origin = useMemo(() => (myPosition ? { lat: myPosition.lat, lng: myPosition.lng } : null), [myPosition]);
-  const eta = useRouteEta(target, origin, travelMode, target !== null);
-  const address = useAddress(target, target !== null);
+  // Faz 5: buluşma önerisi seçiliyken / paylaşılan öneri kartı açıkken rota o yere çizilir (route_compute).
+  const meetupTarget: EtaTarget | null = useMemo(() => {
+    if (selectedSuggestion) {
+      const p = selectedSuggestion.place.location;
+      return { key: `meetup:${p.lat.toFixed(5)},${p.lng.toFixed(5)}`, kind: 'pin', title: selectedSuggestion.place.name, position: p };
+    }
+    if (!meetupOpen && focusedMeetup) return { key: `meetup:${focusedMeetup.meetup_id}`, kind: 'pin', title: focusedMeetup.place.name, position: focusedMeetup.place.location };
+    return null;
+  }, [selectedSuggestion, meetupOpen, focusedMeetup]);
+  const routeTarget = meetupTarget ?? (meetupOpen ? null : target);
+  const routeOrigin = useMemo(
+    () => (selectedSuggestion ? (meetupInput?.positionOverrides?.me ?? origin) : origin),
+    [selectedSuggestion, meetupInput, origin],
+  );
+  const routeMode: TravelMode = (selectedSuggestion ? meetupInput?.modes?.me : undefined) ?? travelMode;
+  const meetupOverlay: MeetupMapOverlay | null = useMemo(() => {
+    if (meetupOpen && meetupResult) {
+      const { points } = participantPoints(meetupInput?.friendIds ?? [], origin, friendPositions, meetupInput?.positionOverrides ?? {});
+      return { suggestions: meetupResult.suggestions, center: meetupResult.center, selectedIndex: meetupSel, participants: points, focused: null };
+    }
+    if (!meetupOpen && focusedMeetup) return { suggestions: [], center: null, selectedIndex: null, participants: [], focused: focusedMeetup.place };
+    return null;
+  }, [meetupOpen, meetupResult, meetupSel, meetupInput, origin, friendPositions, focusedMeetup]);
+  const eta = useRouteEta(routeTarget, routeOrigin, routeMode, routeTarget !== null);
+  const address = useAddress(target, target !== null && meetupTarget === null);
   const routePoints = eta.entry && !eta.entry.error ? (eta.entry.result?.points ?? null) : null;
   const etaResult = eta.entry && !eta.entry.error ? (eta.entry.result ?? null) : null;
   // Faz 4: SOS anında haritada açık rota (varsa) pakete eklenir.
-  const sosRoute = useMemo(() => (target ? sosRouteFrom(target.title, etaResult) : null), [target, etaResult]);
+  const sosRoute = useMemo(() => (routeTarget ? sosRouteFrom(routeTarget.title, etaResult) : null), [routeTarget, etaResult]);
   const friendSubtitle = selectedFriend
     ? selectedFriend.freshness === 'stale'
       ? formatAgo(selectedFriend.location.timestamp, incomingNow)
@@ -231,6 +286,7 @@ export function MapHome() {
   }, []);
   const focusFriend = useCallback(
     (f: IncomingFriendLocation) => {
+      meetupStore.getState().focus(null);
       setSelection({ kind: 'friend', shareId: f.shareId });
       map.current?.centerOn(f.location.lat, f.location.lng);
       if (!locationStore.getState().myPosition) ensureMyLocation();
@@ -239,6 +295,7 @@ export function MapHome() {
   );
   const dropPin = useCallback(
     (p: LatLng) => {
+      meetupStore.getState().focus(null);
       setSelection({ kind: 'pin', point: p });
       if (!locationStore.getState().myPosition) ensureMyLocation();
     },
@@ -251,6 +308,7 @@ export function MapHome() {
   const openStatusNote = useCallback(() => noteSheet.current?.present({ mode: 'status' }), []);
   const leaveNoteAt = useCallback((p: LatLng) => noteSheet.current?.present({ mode: 'place', position: { lat: p.lat, lng: p.lng, accuracy: null } }), []);
   const selectNote = useCallback((n: PlaceNote) => {
+    meetupStore.getState().focus(null);
     setSelection({ kind: 'note', noteId: n.note_id });
     map.current?.centerOn(n.position.lat, n.position.lng);
   }, []);
@@ -288,6 +346,39 @@ export function MapHome() {
     },
     [incoming, focusFriend, navigation, router],
   );
+
+  // --- Faz 5 eylemleri ---------------------------------------------------------------------
+  const openMeetup = useCallback((friendIds: string[], pickedPoint: LatLng | null = null) => {
+    meetupStore.getState().focus(null);
+    setSelection(null);
+    meetupSheet.current?.present({ friendIds, pickedPoint });
+  }, []);
+  const fitMeetup = useCallback(
+    (index: number | null) => {
+      const r = meetupStore.getState().result;
+      const input = meetupStore.getState().input;
+      if (!r) return;
+      const { points } = participantPoints(input?.friendIds ?? [], origin, friendPositions, input?.positionOverrides ?? {});
+      const places = index !== null && r.suggestions[index] ? [r.suggestions[index].place.location] : r.suggestions.map((x) => x.place.location);
+      const all = [...points.map((p) => p.position), ...places, r.center];
+      if (all.length > 0) map.current?.fitTo?.(all);
+    },
+    [origin, friendPositions],
+  );
+  // Yeni öneri sonucu gelince katılımcılar + öneriler ekrana sığsın.
+  useEffect(() => {
+    if (meetupOpen && meetupResult) fitMeetup(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [meetupResult, meetupOpen]);
+  // Paylaşılan öneri odaklanınca (push / yeni gelen): seçim kalkar, haritaya dönülür, ben + yer sığar.
+  useEffect(() => {
+    if (!focusedMeetupId) return;
+    setSelection(null);
+    if (!navigation.isFocused()) router.navigate('/');
+    const m = meetupStore.getState().meetups[focusedMeetupId];
+    if (m) map.current?.fitTo?.(origin ? [origin, m.place.location] : circleBounds(m.place.location, 300));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusedMeetupId]);
 
   const recenter = useCallback(() => {
     if (myPosition) map.current?.centerOn(myPosition.lat, myPosition.lng);
@@ -346,7 +437,11 @@ export function MapHome() {
     ]);
   }, [anyLinkRunning, anyRunning, links, sessions]);
 
-  const padding = useMemo(() => ({ top: insets.top + 140, right: 0, bottom: bottomH + 8, left: 0 }), [insets.top, bottomH]);
+  // Buluşma sayfası açıkken alt dolgu sayfanın ilk durağı (%52) kadar: pinler sayfanın üstünde kalsın.
+  const padding = useMemo(
+    () => ({ top: insets.top + 140, right: 0, bottom: meetupOpen ? Math.round(windowH * 0.52) + 8 : bottomH + 8, left: 0 }),
+    [insets.top, bottomH, meetupOpen, windowH],
+  );
   const onBottomLayout = (e: LayoutChangeEvent) => setBottomH(e.nativeEvent.layout.height);
 
   return (
@@ -372,9 +467,16 @@ export function MapHome() {
         onPingPress={(p) => pingStore.getState().highlightFrom(p.from, p.kind)}
         sosPins={sosPinList}
         onSosPress={(a) => sosStore.getState().focus(a.sos_id)}
+        zones={mapZones}
+        zonePresence={zonePresence}
+        meetup={meetupOverlay}
+        onMeetupSelect={(i) => {
+          meetupStore.getState().select(i);
+          fitMeetup(i);
+        }}
       />
 
-      <TopBar profile={profile} onFriends={() => router.push('/friends')} onSignOut={signOut} />
+      <TopBar profile={profile} onFriends={() => router.push('/friends')} onZones={() => router.push('/zones')} onSignOut={signOut} />
       <View style={[styles.strip, { top: insets.top + 72, gap: spacing.xs }]} pointerEvents="box-none">
         <SosIncomingBanner alerts={incomingSos} now={incomingNow} />
         <IncomingStrip items={incoming} names={names} now={incomingNow} onFocus={focusFriend} />
@@ -390,84 +492,104 @@ export function MapHome() {
         ) : null}
       </View>
 
-      <View style={[styles.bottom, { paddingHorizontal: spacing.md, paddingBottom: insets.bottom + spacing.md, gap: spacing.sm }]} onLayout={onBottomLayout} pointerEvents="box-none">
-        <View style={[styles.recenter, { gap: spacing.xs }]} pointerEvents="box-none">
-          <View style={styles.flex} pointerEvents="box-none">
-            {!target && !selectedNote ? <StatusNotePill onPress={openStatusNote} /> : null}
-          </View>
-          {anyRunning && !target ? (
-            <IconButton icon="qr" variant="floating" size={48} accessibilityLabel="QR ile paylaş" onPress={() => sheet.current?.present('link')} />
-          ) : null}
-          <RecenterButton onPress={recenter} disabled={!myPosition} />
-          <SosLauncher route={sosRoute} />
-        </View>
-        {!target ? <BackgroundPermissionHint visible={anyRunning || anyLinkRunning} context={permContext} /> : null}
-        {expiring ? <ExpiryBanner session={expiring} now={shareNow} onExtend={(m) => void extend(expiring.session_id, m)} /> : null}
-        {expiringLink ? (
-          <ExpiryBanner session={expiringLink} now={linkNow} subject="QR bağlantın" onExtend={(m) => void linkStore.getState().extend(expiringLink.link_id, m)} />
-        ) : null}
-        {selectedNote ? (
-          <PlaceNoteCard
-            note={selectedNote}
-            myUid={myUid}
-            names={names}
-            now={incomingNow}
-            deleting={notePending[selectedNote.note_id] === 'deleting'}
-            onEdit={() => noteSheet.current?.present({ mode: 'place', position: selectedNote.position, note: selectedNote })}
-            onDelete={() => deleteNote(selectedNote)}
-            onClose={closeRoute}
-          />
-        ) : target ? (
-          <EtaCard
-            target={target}
-            subtitle={friendSubtitle}
-            mode={travelMode}
-            onModeChange={setTravelMode}
-            eta={eta}
-            address={address}
-            onClose={closeRoute}
-            onRequestLocation={locationGranted ? undefined : ensureMyLocation}
-            locationBlocked={locationBlocked}
-            note={selectedFriend ? (friendNotes[selectedFriend.shareId] ?? null) : null}
-          >
-            {selectedFriend ? (
-              <PingButtons to={selectedFriend.senderId} name={target.title} etaS={etaResult?.duration_s ?? null} />
-            ) : selection?.kind === 'pin' ? (
-              <Button title="📝 Buraya not bırak" variant="secondary" onPress={() => leaveNoteAt(selection.point)} />
+      {meetupOpen ? null : (
+        <View style={[styles.bottom, { paddingHorizontal: spacing.md, paddingBottom: insets.bottom + spacing.md, gap: spacing.sm }]} onLayout={onBottomLayout} pointerEvents="box-none">
+          <View style={[styles.recenter, { gap: spacing.xs }]} pointerEvents="box-none">
+            <View style={styles.flex} pointerEvents="box-none">
+              {!target && !selectedNote ? <StatusNotePill onPress={openStatusNote} /> : null}
+            </View>
+            {anyRunning && !target ? (
+              <IconButton icon="qr" variant="floating" size={48} accessibilityLabel="QR ile paylaş" onPress={() => sheet.current?.present('link')} />
             ) : null}
-          </EtaCard>
-        ) : (
-          <>
-            {sessions.map((s) => (
-              <ActiveShareCard
-                key={s.session_id}
-                session={s}
-                names={names}
-                now={shareNow}
-                trackingError={trackingError}
-                onExtend={(m) => void extend(s.session_id, m)}
-                onStop={() => stop(s.session_id)}
-                onDismiss={() => dismiss(s.session_id)}
-              />
-            ))}
-            {links.map((l) => (
-              <ActiveLinkCard
-                key={l.link_id}
-                link={l}
-                now={linkNow}
-                onShowQr={() => showQr(l.link_id)}
-                onStop={() => (l.phase === 'stopping' ? void linkStore.getState().stop(l.link_id) : stopLink(l.link_id))}
-                onDismiss={() => linkStore.getState().dismiss(l.link_id)}
-              />
-            ))}
-            {!anyRunning ? <ShareButton onPress={() => sheet.current?.present()} /> : null}
-          </>
-        )}
-      </View>
+            <RecenterButton onPress={recenter} disabled={!myPosition} />
+            <SosLauncher route={sosRoute} />
+          </View>
+          {!target ? <BackgroundPermissionHint visible={anyRunning || anyLinkRunning} context={permContext} /> : null}
+          {expiring ? <ExpiryBanner session={expiring} now={shareNow} onExtend={(m) => void extend(expiring.session_id, m)} /> : null}
+          {expiringLink ? (
+            <ExpiryBanner session={expiringLink} now={linkNow} subject="QR bağlantın" onExtend={(m) => void linkStore.getState().extend(expiringLink.link_id, m)} />
+          ) : null}
+          {selectedNote ? (
+            <PlaceNoteCard
+              note={selectedNote}
+              myUid={myUid}
+              names={names}
+              now={incomingNow}
+              deleting={notePending[selectedNote.note_id] === 'deleting'}
+              onEdit={() => noteSheet.current?.present({ mode: 'place', position: selectedNote.position, note: selectedNote })}
+              onDelete={() => deleteNote(selectedNote)}
+              onClose={closeRoute}
+            />
+          ) : target ? (
+            <EtaCard
+              target={target}
+              subtitle={friendSubtitle}
+              mode={travelMode}
+              onModeChange={setTravelMode}
+              eta={eta}
+              address={address}
+              onClose={closeRoute}
+              onRequestLocation={locationGranted ? undefined : ensureMyLocation}
+              locationBlocked={locationBlocked}
+              note={selectedFriend ? (friendNotes[selectedFriend.shareId] ?? null) : null}
+            >
+              {selectedFriend ? (
+                <>
+                  <PingButtons to={selectedFriend.senderId} name={target.title} etaS={etaResult?.duration_s ?? null} />
+                  <Button title="📍 Buluşma noktası öner" variant="secondary" onPress={() => openMeetup([selectedFriend.senderId])} />
+                </>
+              ) : selection?.kind === 'pin' ? (
+                <>
+                  <Button title="📝 Buraya not bırak" variant="secondary" onPress={() => leaveNoteAt(selection.point)} />
+                  <Button title="📍 Buradan buluşma noktası öner" variant="secondary" onPress={() => openMeetup([], selection.point)} />
+                </>
+              ) : null}
+            </EtaCard>
+          ) : focusedMeetup ? (
+            <MeetupCard meetup={focusedMeetup} myUid={myUid} names={names} eta={eta} onClose={() => meetupStore.getState().focus(null)} />
+          ) : (
+            <>
+              <MeetupPills meetups={meetupList} myUid={myUid} onOpen={(m) => meetupStore.getState().focus(m.meetup_id)} />
+              {sessions.map((s) => (
+                <ActiveShareCard
+                  key={s.session_id}
+                  session={s}
+                  names={names}
+                  now={shareNow}
+                  trackingError={trackingError}
+                  onExtend={(m) => void extend(s.session_id, m)}
+                  onStop={() => stop(s.session_id)}
+                  onDismiss={() => dismiss(s.session_id)}
+                />
+              ))}
+              {links.map((l) => (
+                <ActiveLinkCard
+                  key={l.link_id}
+                  link={l}
+                  now={linkNow}
+                  onShowQr={() => showQr(l.link_id)}
+                  onStop={() => (l.phase === 'stopping' ? void linkStore.getState().stop(l.link_id) : stopLink(l.link_id))}
+                  onDismiss={() => linkStore.getState().dismiss(l.link_id)}
+                />
+              ))}
+              {!anyRunning ? <ShareButton onPress={() => sheet.current?.present()} /> : null}
+            </>
+          )}
+        </View>
+      )}
 
       <ShareSheet ref={sheet} onLinkCreated={showQr} />
       <LinkQrSheet ref={qrSheet} />
       <NoteSheet ref={noteSheet} onPlaceSaved={selectNote} onPlaceDeleted={() => setSelection(null)} />
+      <MeetupSheet
+        ref={meetupSheet}
+        friendPositions={friendPositions}
+        myPosition={origin}
+        names={names}
+        onOpenChange={setMeetupOpen}
+        onFocusSuggestion={fitMeetup}
+        onShared={(m) => meetupStore.getState().focus(m.meetup_id)}
+      />
 
       <PingToast names={names} onShowOnMap={showPingOnMap} />
       <SosIncomingScreen onShowOnMap={showSosOnMap} />

@@ -29,9 +29,21 @@
  *  - `sos_alerts/{sos_id}` acil durum uyarıları (gönderen ve `recipient_ids` okur)
  *  - `users/{uid}.emergency_contacts` acil durum kişileri (sahibi okur)
  *  - RTDB `ping_inbox/{to}/{ping_id}` (alıcı okur ve siler)
+ *
+ * Faz 5 (yalnızca callable yazar):
+ *  - `users/{uid}/zones/{zone_id}` kayıtlı bölgeler + kurallar (core `Zone`; YALNIZCA sahibi okur, koordinat hassas)
+ *  - `users/{uid}/zone_events/{op_id}` bölge olay kaydı (core `ZoneEventLog` + `purge_at`, 30 gün; sahibi okur)
+ *  - `meetups/{meetup_id}` paylaşılan buluşma önerileri (core `Meetup` + `purge_at`; `from` ve `to` okur)
+ *  - yalnızca sunucu: `zone_cooldowns/{uid}_{zone_id}_{transition}` (son bildirim anı), `meetup_cache/{anahtar}`
+ *    (öneri yanıtı önbelleği; kullanıcıya özel, `expire_at` TTL), `maps_quota/{uid}_{gün}.meetup` sayacı
  */
 import {
   type EpochMs,
+  type Meetup,
+  type MeetupSuggestResponse,
+  type Zone,
+  type ZoneEventLog,
+  type ZoneTrigger,
   type Friendship,
   type LinkEndReason,
   type LinkShare,
@@ -264,6 +276,96 @@ export function toSosAlert(d: SosAlertDoc | SosAlert): SosAlert {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Faz 5: bölgeler, bölge olayları, buluşma önerileri
+// ---------------------------------------------------------------------------
+
+/** `users/{uid}/zones/{zone_id}`: core Zone (ek alan yok; istemci `parseZone` ile okur). */
+export type ZoneDoc = Zone;
+
+/** `users/{uid}/zone_events/{op_id}`: core ZoneEventLog + TTL. Koordinat YOK. */
+export interface ZoneEventDoc extends ZoneEventLog {
+  /** Olay raporunun sunucuya geldiği an. */
+  reported_at: EpochMs;
+  purge_at: Timestamp;
+}
+
+/** `zone_cooldowns/{uid}_{zone_id}_{transition}` (yalnızca sunucu): son bildirim / paylaşım tetik anı. */
+export interface ZoneCooldownDoc {
+  uid: UserId;
+  zone_id: string;
+  transition: ZoneTrigger;
+  last_at: EpochMs;
+  purge_at: Timestamp;
+}
+
+/** `meetups/{meetup_id}`: core Meetup + TTL. */
+export interface MeetupDoc extends Meetup {
+  updated_at: EpochMs;
+  purge_at: Timestamp;
+}
+
+/** `meetup_cache/{anahtar}` (yalnızca sunucu): kullanıcıya özel öneri yanıtı. */
+export interface MeetupCacheDoc {
+  uid: UserId;
+  response: Omit<MeetupSuggestResponse, 'cached' | 'server_now'>;
+  created_at: EpochMs;
+  /** Süpürücü sorgusu için epoch ms (tek alanlı otomatik dizin). */
+  expires_at: EpochMs;
+  /** TTL politikası alanı. */
+  expire_at: Timestamp;
+}
+
+export function toZone(d: ZoneDoc): Zone {
+  return {
+    zone_id: d.zone_id,
+    owner_id: d.owner_id,
+    kind: d.kind,
+    name: d.name,
+    emoji: d.emoji ?? null,
+    center: { lat: d.center.lat, lng: d.center.lng },
+    radius_m: d.radius_m,
+    rules: (d.rules ?? []).map((r) => ({
+      rule_id: r.rule_id,
+      trigger: r.trigger,
+      action: r.action,
+      recipient_ids: [...r.recipient_ids],
+      share_duration: r.share_duration ?? null,
+      days_mask: r.days_mask,
+      window: r.window ? { from_min: r.window.from_min, to_min: r.window.to_min } : null,
+      enabled: r.enabled,
+    })),
+    enabled: d.enabled,
+    time_zone: d.time_zone,
+    created_at: d.created_at,
+    updated_at: d.updated_at,
+  };
+}
+
+export function toMeetup(d: MeetupDoc | Meetup): Meetup {
+  return {
+    meetup_id: d.meetup_id,
+    from: d.from,
+    from_name: d.from_name,
+    to: [...(d.to ?? [])],
+    place: {
+      place_id: d.place.place_id ?? null,
+      name: d.place.name,
+      address: d.place.address ?? null,
+      location: { lat: d.place.location.lat, lng: d.place.location.lng },
+      primary_type: d.place.primary_type ?? null,
+      category: d.place.category,
+    },
+    etas: (d.etas ?? []).map((e) => ({ key: e.key, duration_s: e.duration_s, distance_m: e.distance_m, estimated: e.estimated })),
+    meet_at: d.meet_at ?? null,
+    note: d.note ?? null,
+    responses: { ...(d.responses ?? {}) },
+    status: d.status,
+    created_at: d.created_at,
+    expires_at: d.expires_at,
+  };
+}
+
 export const COL = {
   users: 'users',
   usersPrivate: 'users_private',
@@ -294,6 +396,12 @@ export const COL = {
   // Faz 4
   placeNotes: PATHS.placeNotes,
   sosAlerts: PATHS.sosAlerts,
+  // Faz 5 (zones / zone_events, users/{uid} alt koleksiyonlarıdır)
+  zones: 'zones',
+  zoneEvents: 'zone_events',
+  zoneCooldowns: 'zone_cooldowns',
+  meetups: PATHS.meetups,
+  meetupCache: 'meetup_cache',
 } as const;
 
 /** Faz 4 RTDB yolları. */
@@ -341,6 +449,15 @@ export const refs = {
   newPlaceNote: () => db().collection(COL.placeNotes).doc(),
   sosAlert: (id: string) => db().doc(PATHS.sosAlert(id)),
   newSosAlert: () => db().collection(COL.sosAlerts).doc(),
+  // Faz 5
+  zones: (uid: UserId) => db().collection(PATHS.zones(uid)),
+  zone: (uid: UserId, zoneId: string) => db().doc(PATHS.zone(uid, zoneId)),
+  zoneEvents: (uid: UserId) => db().collection(PATHS.zoneEvents(uid)),
+  zoneEvent: (uid: UserId, id: string) => db().collection(PATHS.zoneEvents(uid)).doc(id),
+  zoneCooldown: (uid: UserId, zoneId: string, transition: ZoneTrigger) => db().doc(PATHS.zoneCooldown(uid, zoneId, transition)),
+  meetup: (id: string) => db().doc(PATHS.meetup(id)),
+  newMeetup: () => db().collection(COL.meetups).doc(),
+  meetupCache: (key: string) => db().doc(PATHS.meetupCache(key)),
 } as const;
 
 /** Biten belgeler için TTL anı. [Varsayım] 7 gün. */

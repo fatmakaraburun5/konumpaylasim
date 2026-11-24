@@ -29,6 +29,10 @@ const HTTPS_CODE: Record<ErrorCode, FunctionsErrorCode> = {
   sos_not_active: 'failed-precondition',
   note_not_found: 'not-found',
   note_limit_reached: 'resource-exhausted',
+  // Faz 5
+  zone_not_found: 'not-found',
+  zone_limit_reached: 'resource-exhausted',
+  meetup_not_found: 'not-found',
 };
 
 export interface ErrorDetails {

@@ -1,6 +1,6 @@
-# Mimari (Faz 1–4)
+# Mimari (Faz 1–5)
 
-Bu dosya kodun nasıl bir araya geldiğini kısaca anlatır. Ayrıntılar kodda ve alt README'lerdedir. Çelişki olursa `packages/core` geçerlidir. Faz 2 (harita, ETA, QR bağlantısı, web haritası, Maps maliyeti) ayrıntısı: [`PHASE2.md`](PHASE2.md). Faz 3 (arka plan takibi, pil, çevrimdışı kuyruk) ayrıntısı: [`PHASE3.md`](PHASE3.md). Faz 4 (ping, kısa notlar, tam konumlu SOS) ayrıntısı: [`PHASE4.md`](PHASE4.md).
+Bu dosya kodun nasıl bir araya geldiğini kısaca anlatır. Ayrıntılar kodda ve alt README'lerdedir. Çelişki olursa `packages/core` geçerlidir. Faz 2 (harita, ETA, QR bağlantısı, web haritası, Maps maliyeti) ayrıntısı: [`PHASE2.md`](PHASE2.md). Faz 3 (arka plan takibi, pil, çevrimdışı kuyruk) ayrıntısı: [`PHASE3.md`](PHASE3.md). Faz 4 (ping, kısa notlar, tam konumlu SOS) ayrıntısı: [`PHASE4.md`](PHASE4.md). Faz 5 (varış / ayrılış tetikleyicileri, buluşma noktası) ayrıntısı: [`PHASE5.md`](PHASE5.md).
 
 ## Bileşenler
 
@@ -87,6 +87,24 @@ yazar, uygulama kapalıysa push gider. Push koordinat taşımaz, koordinat yetki
 - Mobilde üç depo (`state/{pingStore,notesStore,sosStore}.ts`) ve tek başlatıcı (`services/f4Services.ts`) vardır.
   Çıkışta depolar sıfırlanır.
 
+## Bölge tetikleyicileri ve buluşma noktası (Faz 5)
+
+İki özellik de aynı deseni izler (callable yazar, istemci dinler, push koordinatsız). Yeni olan, kararın bir kısmının
+**cihazda** verilmesidir: geçişi OS bildirir ama sapma filtresi onaylar.
+
+- **Bölgeler:** `zone_upsert/delete` → Firestore `users/{uid}/zones` (yalnızca sahibi okur). `zonesStore` dinler;
+  `f5Services` listeyi `zoneMonitor`'a verir, o da `geofenceRegistry` üzerinden OS'a kaydeder (görev
+  `konum-zone-geofence`, `startGeofencingAsync`; iOS'ta uyku çiti aynı göreve alınır, 20 bölge sınırı).
+- **Tetikleme:** OS olayı → `zoneMonitorCore` (taze konum + core `zoneFilterReduce`, bölge başına kalıcı durum) →
+  `zone_event_report` (kalıcı kuyruk, aynı `op_id`, koordinatsız) → sunucu kural eşler, soğuma / günlük sınır uygular,
+  `zone_event` push'u gönderir ve `start_share` döner → cihaz mevcut `share_start` ile paylaşımı başlatır. Ön plan ve
+  Faz 3 arka plan örnekleri de filtreye beslenir (`pipeline.ts`, `zoneSampleTap.ts`).
+- **Buluşma:** `meetupStore.suggest` (ben + görünen arkadaş konumları) → `meetup_suggest` (merkez, Places Nearby,
+  mod başına Route Matrix, adalet puanı, önbellek / kota / yedek orta nokta; Google yalnızca sunucudan) →
+  `meetup_share` → Firestore `meetups` (öneren + alıcılar) + `meetup` push → alıcı kartı → `meetup_respond`.
+- Mobilde iki depo (`state/{zonesStore,meetupStore}.ts`) ve tek başlatıcı (`services/f5Services.ts`); çıkışta OS
+  bölge kaydı kalkar, kalıcı bölge durumu silinir.
+
 ## Gizlilik modeli
 
 - Alıcı yalnızca `live_locations/{kendi_uid}` altını okur. Gönderenin kime paylaştığını göremez.
@@ -107,6 +125,10 @@ yazar, uygulama kapalıysa push gider. Push koordinat taşımaz, koordinat yetki
   pakette gider. Yer notu varsayılan olarak "yalnızca ben"dir. SOS yalnızca seçilen (≤ 5, hâlâ arkadaş olan) acil
   kişilere gider. SOS push gövdesi adres, doğruluk ve pil taşır, ham koordinat taşımaz (bilinçli istisna). Yetkisiz okuma
   `sos_not_active` / `not_friends` ile bilgi sızdırmadan reddedilir.
+- Faz 5: bölge merkezi (ev / iş adresi) yalnızca sahibine açıktır; kural alıcısı bile okuyamaz. `zone_event_report`
+  koordinat taşımaz, push ve olay kaydı yalnızca bölge adını taşır. Buluşma önerisi için bana görünen arkadaş konumları
+  hesap amacıyla sunucuya ve Google'a gider, saklanmaz (sonuç 10 dk kullanıcıya özel önbellekte). Paylaşılan öneri
+  yalnızca yeri ve paylaşım anındaki ETA'ları taşır.
 
 ## Yollar
 
@@ -136,6 +158,11 @@ yazar, uygulama kapalıysa push gider. Push koordinat taşımaz, koordinat yetki
 | `place_notes/{note_id}` | Firestore | sahibi, `visible_to` | callable (TTL `purge_at`) |
 | `sos_alerts/{sos_id}` | Firestore | gönderen, `recipient_ids` | callable (TTL `purge_at`) |
 | `users/{uid}.emergency_contacts` | Firestore | sahibi | callable (`emergency_contacts_set`, arkadaşlık bitince sunucu) |
+| `users/{uid}/zones/{zone_id}` | Firestore | yalnızca sahibi | callable (`zone_upsert/delete`; arkadaşlık bitince sunucu alıcıyı çıkarır) |
+| `users/{uid}/zone_events/{op_id}` | Firestore | yalnızca sahibi | callable (`zone_event_report`, koordinatsız, 30 gün TTL) |
+| `zone_cooldowns/{uid}_{zone_id}_{transition}` | Firestore | yok | sunucu (son bildirim anı, TTL) |
+| `meetups/{meetup_id}` | Firestore | öneren (`from`), alıcılar (`to`) | callable (`meetup_*`, 12 sa + TTL `purge_at`) |
+| `meetup_cache/{id}` | Firestore | yok | sunucu (10 dk, kullanıcıya özel, TTL `expire_at`) |
 
 ## Bilinen açıklar
 
@@ -149,6 +176,8 @@ yazar, uygulama kapalıysa push gider. Push koordinat taşımaz, koordinat yetki
   Pil tüketimi gerçek cihazda ölçülmedi (`PHASE3.md` §4.3).
 - Faz 4: SOS bildiriminin DND, sessiz mod ve kilit ekranı davranışı gerçek cihazda denenmedi. iOS Critical Alerts Apple
   onayı bekliyor (kapalı). Android'de "Rahatsız Etme erişimi" adımı yok (`PHASE4.md` §7).
+- Faz 5: OS bölge algılama (iOS `CLCircularRegion`, Android `GeofencingClient`), başsız paylaşım başlatma ve native
+  harita katmanları gerçek cihazda denenmedi; Places / Routes gerçek anahtarla denenmedi (`PHASE5.md` §8).
 
 ## Çekirdek iş listesi
 

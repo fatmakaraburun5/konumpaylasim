@@ -6,10 +6,12 @@ import { Avatar, cardShadow, IconButton, MIN_TOUCH, Text, useTheme } from '../..
 export interface TopBarProps {
   profile: UserProfile | null;
   onFriends: () => void;
+  /** Faz 5: "Bölgelerim" ekranı. */
+  onZones?: () => void;
   onSignOut: () => void;
 }
 
-export function TopBar({ profile, onFriends, onSignOut }: TopBarProps) {
+export function TopBar({ profile, onFriends, onZones, onSignOut }: TopBarProps) {
   const { colors, spacing, radius } = useTheme();
   const insets = useSafeAreaInsets();
   const code = profile?.invite_code ? formatInviteCode(profile.invite_code) : null;
@@ -22,6 +24,7 @@ export function TopBar({ profile, onFriends, onSignOut }: TopBarProps) {
   const openMenu = () =>
     Alert.alert(profile?.display_name ?? 'Hesap', undefined, [
       { text: 'Arkadaşlar', onPress: onFriends },
+      ...(onZones ? [{ text: 'Bölgelerim', onPress: onZones }] : []),
       { text: 'Çıkış yap', style: 'destructive', onPress: onSignOut },
       { text: 'Vazgeç', style: 'cancel' },
     ]);

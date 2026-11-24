@@ -22,6 +22,9 @@
  *   Faz 4 (f4Services.ts): ping kutusu, yer notları, SOS uyarıları, acil kişiler, bildirim dokunuşları;
  *   durum notu değişince canlı hedef varsa hemen bir paket yayınlanır (not arkadaş paketlerine eklenir).
  *
+ *   Faz 5 (f5Services.ts): bölgeler + OS bölge kaydı, bölge olayları, buluşma önerileri, ön plan örnekleri → bölge
+ *   filtresi; bağlantı gelince kuyruktaki bölge olayları gönderilir.
+ *
  * Açılış sırası (yayın asla kullanıcının durdurduğu paylaşıma geri dönmez):
  *   1. Kalıcı durdurma niyetleri bu hesaba bağlanır ve reducer'a geri yüklenir (STOP_REQUESTED).
  *   2. Sunucu anlık görüntüsü henüz yoksa, kalıcı hedeflerdeki oturum özeti GEÇİCİ olarak gösterilir:
@@ -97,6 +100,7 @@ import { cancelAllExpiryNotifications, configureNotifications, syncExpiryNotific
 import { registerPushToken } from './notifications/push';
 import { resilientListener, type ListenerHandlers, type ResilientListener } from './resilientListener';
 import { resetF4Stores, startF4Services } from './f4Services';
+import { onF5Connected, resetF5State, startF5Services } from './f5Services';
 import { linkTokenVault } from './security/linkTokenVault';
 
 /**
@@ -346,6 +350,9 @@ export function startSessionServices(uid: UserId): () => void {
     }),
   );
 
+  // Faz 5: bölgeler, bölge olayları, buluşma önerileri.
+  unsubs.push(startF5Services(uid));
+
   unsubs.push(
     listenConnected((c) => {
       if (!c || disposed) return;
@@ -354,6 +361,8 @@ export function startSessionServices(uid: UserId): () => void {
       void linkStore.getState().retryPendingStops();
       // Faz 3: bağlantı geldi → çevrimdışı kuyruğu hemen boşalt (geri çekilme beklenmez).
       void flushOutbox(true);
+      // Faz 5: bekleyen bölge olayları (aynı op_id).
+      onF5Connected();
     }),
   );
 
@@ -668,4 +677,6 @@ onSignedOut(async () => {
   syncStatusStore.getState().reset();
   // Faz 4: ping kutusu, notlar, SOS durumu (kalıcı durum notu clearBackgroundState ile silindi).
   resetF4Stores();
+  // Faz 5: OS bölge kaydı kalkar; bölge önbelleği / filtre / kuyruk (clearBackgroundState de siler) ve bellek durumu.
+  await resetF5State();
 });

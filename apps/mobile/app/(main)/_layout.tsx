@@ -22,6 +22,8 @@ export default function MainLayout() {
     <Stack screenOptions={{ headerShown: false }}>
       <Stack.Screen name="index" />
       <Stack.Screen name="friends" />
+      <Stack.Screen name="zones" />
+      <Stack.Screen name="zone-edit" />
     </Stack>
   );
 }

@@ -1,4 +1,4 @@
-# Konum backend (Faz 1 + Faz 2 + Faz 3)
+# Konum backend (Faz 1 – Faz 5)
 
 Firebase üzerinde Konum backend'i: Firestore ve Realtime Database (RTDB) güvenlik kuralları, Cloud Functions (2nd gen, Node 22) ve emülatörde çalışan testler.
 
@@ -27,6 +27,10 @@ backend/
     src/handlers/maps.ts   Faz 2: route_compute / geocode_reverse (Google vekili, önbellek, kota)
     src/handlers/battery.ts  Faz 3: battery_low_notify (düşüş başına bir kez, yeniden kurma, günlük tavan)
     src/handlers/watchdog.ts Faz 3: uzun paylaşım duraksama bekçisi + live_trail budaması
+    src/handlers/ping.ts, notes.ts, sos.ts  Faz 4: ping, yer notları, acil durum
+    src/handlers/zones.ts    Faz 5: zone_upsert / zone_delete / zone_event_report (bölge tetikleri, soğuma, günlük tavan)
+    src/handlers/meetup.ts   Faz 5: meetup_suggest (Places + Route Matrix vekili, önbellek, kota, yedekler) /
+                             meetup_share / meetup_respond / meetup_cancel
   hosting/
     public/.well-known/    apple-app-site-association + assetlinks.json (Universal Links / App Links)
     assemble.mjs           yayın klasörü: ../apps/web/dist + public → hosting/dist (predeploy)

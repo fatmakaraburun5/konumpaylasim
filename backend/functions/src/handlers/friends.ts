@@ -52,6 +52,7 @@ import {
 } from '../docs';
 import { fail } from '../errors';
 import { needsProfile, readCaller, readPairCascade, readPairF4Cleanup, writePairCascade, writePairF4Cleanup } from '../graph';
+import { readPairZoneCleanup, writePairZoneCleanup } from './zones';
 import { readRateLimit, runOp, writeRateLimit } from '../ops';
 import { buildFriendRequestPush, sendPushToUser } from '../push';
 import type {
@@ -346,9 +347,12 @@ export async function friendshipRemove(
     const links = await readLinksFor(tx, f.id);
     // Faz 4: karşı taraf iki yönde de acil kişi listesinden ve yer notu kitlesinden çıkar.
     const f4 = await readPairF4Cleanup(tx, ctx.uid, other);
+    // Faz 5: karşı taraf iki yönde de bölge kurallarının alıcılarından çıkar.
+    const f5 = await readPairZoneCleanup(tx, ctx.uid, other);
 
     tx.delete(ref);
     writePairF4Cleanup(tx, f4);
+    writePairZoneCleanup(tx, f5, ctx.now);
     // Yalnızca BENİM giden kayıtlarım silinir; karşı tarafınki kendi süresince kalır (ret ile aynı görünüm).
     deleteLinks(
       tx,
@@ -378,8 +382,10 @@ export async function userBlock(ctx: CallCtx, data: z.output<typeof UserBlockSch
     const links = fSnap?.exists ? await readLinksFor(tx, fSnap.id) : [];
     const otherPhone = (otherPrivSnap?.data() as UserPrivateDoc | undefined)?.phone_e164 ?? null;
     const f4 = await readPairF4Cleanup(tx, ctx.uid, other);
+    const f5 = await readPairZoneCleanup(tx, ctx.uid, other);
 
     writePairF4Cleanup(tx, f4);
+    writePairZoneCleanup(tx, f5, ctx.now);
     const blockDocId = refs.block(ctx.uid, other).id;
     if (!blockSnap?.exists) tx.set(refs.block(ctx.uid, other), { blocker_id: ctx.uid, blocked_id: other, created_at: ctx.now });
     if (otherPhone) {

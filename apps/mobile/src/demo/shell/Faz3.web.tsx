@@ -40,6 +40,7 @@ import {
   type DemoSnapshot,
 } from '../controls';
 import { isF4PushType } from '../../services/notifications/f4Push';
+import { isF5PushType } from '../../services/notifications/f5Push';
 import { safeStorage } from '../server/storage';
 import { demoBatteryPct, demoEngineState, demoMotionMode, type DemoEngineState, type DemoMotionMode } from '../web/device';
 import { demoOnline, demoTunnelLeftMs } from '../web/network';
@@ -638,11 +639,15 @@ export function ScreenHostLayer() {
 /** Faz 4: ping / SOS / güvende / gördü push'ları da telefon bildirimi olarak çizilir. */
 const isF4Push = (n: DemoNotification) => isF4PushType(n.data?.type);
 const isSosPush = (n: DemoNotification) => n.data?.type === 'sos';
-const isBatteryPush = (n: DemoNotification) => n.data?.type === 'battery_low' || isF4Push(n);
+/** Faz 5: bölge olayı, buluşma önerisi / yanıtı ve "bölge kuralı paylaşımı başlattı" yerel bildirimi. */
+const isF5Push = (n: DemoNotification) => isF5PushType(n.data?.type) || n.data?.type === 'zone_share_started';
+/** Dokunulunca uygulamadaki gerçek yanıt yoluna giren push'lar (Faz 4 + Faz 5). */
+const isRoutedPush = (n: DemoNotification) => isF4Push(n) || isF5Push(n);
+const isBatteryPush = (n: DemoNotification) => n.data?.type === 'battery_low' || isRoutedPush(n);
 
-/** Bildirime dokunma: Faz 4 push'u uygulamadaki gerçek yanıt yoluna girer (SOS kartı / ping vurgusu). */
+/** Bildirime dokunma: Faz 4/5 push'u uygulamadaki gerçek yanıt yoluna girer (SOS kartı / ping vurgusu / buluşma kartı). */
 function openPush(n: DemoNotification): void {
-  if (isF4Push(n)) respondToDemoNotification(n.identifier);
+  if (isRoutedPush(n)) respondToDemoNotification(n.identifier);
 }
 
 /** Düşük pil (ve Faz 4) push'ları (uygulama ön plandayken yerel bildirimle gösterilir; demo burada çizer). */
@@ -747,8 +752,8 @@ export function LockScreen() {
       <View style={styles.lockList}>
         {d.engine.running && n ? <NoticeCard testID="lock-service-notice" title={n.title} body={n.body} at={null} dark /> : null}
         {pushes.map((p) =>
-          isF4Push(p) ? (
-            // Faz 4: kilit ekranında dokunma → kilit açılır, uygulama ilgili ekranı açar (SOS kartı / ping vurgusu).
+          isRoutedPush(p) ? (
+            // Faz 4/5: kilit ekranında dokunma → kilit açılır, uygulama ilgili ekranı açar (SOS kartı / ping vurgusu).
             <Pressable
               key={p.identifier}
               accessibilityRole="button"

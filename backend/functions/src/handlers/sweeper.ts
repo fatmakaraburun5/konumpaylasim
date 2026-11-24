@@ -19,6 +19,8 @@
  * Faz 4: süresi geçen `ping_inbox` kayıtları (`ping_expiry` dizininden), süresi geçen `place_notes` belgeleri silinir;
  * `SOS_LIMITS.activeMaxMs`'i aşan aktif SOS `resolved / timeout` olur.
  *
+ * Faz 5: süresi geçen `meetups` (iptal edilenler dahil) ve `meetup_cache` belgeleri silinir (TTL yedek).
+ *
  * Bu modül firebase-functions tetikleyicilerine bağlı değildir: testler `sweepExpired({ now })` ve
  * `handleExpiryTask(data, now)` ile enjekte edilen saatle doğrudan çağırır.
  */
@@ -45,6 +47,7 @@ import { sweepExpiredLinks } from './links';
 import { sweepExpiredPlaceNotes } from './notes';
 import { sweepExpiredPings } from './ping';
 import { timeoutActiveSos } from './sos';
+import { sweepExpiredMeetups } from './meetup';
 
 export interface SweepOptions {
   /** Enjekte edilebilir saat (testler); varsayılan `Date.now()`. */
@@ -69,6 +72,9 @@ export interface SweepResult {
   purged_pings: number;
   purged_place_notes: number;
   timed_out_sos_ids: string[];
+  /** Faz 5: silinen süresi geçmiş buluşma önerileri ve öneri önbelleği belgeleri. */
+  purged_meetups: number;
+  purged_meetup_cache: number;
 }
 
 export async function sweepExpired(opts: SweepOptions = {}): Promise<SweepResult> {
@@ -86,6 +92,8 @@ export async function sweepExpired(opts: SweepOptions = {}): Promise<SweepResult
     purged_pings: 0,
     purged_place_notes: 0,
     timed_out_sos_ids: [],
+    purged_meetups: 0,
+    purged_meetup_cache: 0,
   };
 
   // --- paylaşımlar: (status, expires_at) bileşik dizini ---
@@ -150,6 +158,15 @@ export async function sweepExpired(opts: SweepOptions = {}): Promise<SweepResult
   else logger.error('tarama: yer notları silinemedi', { err: String(notes.reason) });
   if (sos.status === 'fulfilled') result.timed_out_sos_ids = sos.value;
   else logger.error('tarama: SOS süre aşımı uygulanamadı', { err: String(sos.reason) });
+
+  // --- Faz 5: buluşma önerileri ve öneri önbelleği ---
+  try {
+    const m = await sweepExpiredMeetups(now);
+    result.purged_meetups = m.meetups;
+    result.purged_meetup_cache = m.cache;
+  } catch (err) {
+    logger.error('tarama: buluşma önerileri silinemedi', { err: String(err) });
+  }
 
   // --- ACL onarımı ---
   result.reconciled_share_ids.push(...(await reconcilePendingAcls(now, batchSize * maxBatches)));

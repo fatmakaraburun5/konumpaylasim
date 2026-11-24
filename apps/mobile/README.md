@@ -133,6 +133,16 @@ Faz 4 (ayrıntı: `docs/PHASE4.md`):
   "Uyarı gönderildi"; botlar birkaç saniyede "Gördü" der. Panel "Ayşe SOS göndersin" → alıcı tam ekran acil kartı,
   "Ayşe güvende" → yeşil kart.
 
+Faz 5 (ayrıntı: `docs/PHASE5.md`):
+
+- **Bölgeler:** panel "Ev bölgemi buraya kaydet (demo)" → Hesap menüsü → "Bölgelerim" (liste, "Şu an buradasın",
+  kural özetleri); satıra dokun → harita + yarıçap dairesi, kural sayfası. Kendin eklemek için "Bölge ekle".
+- **Tetikleyiciler:** "Evden çık" (yürüyüş zaman atlamalı oynatılır → gerçek sapma filtresi → olay → Ayşe ile 1 saatlik
+  paylaşım başlar), "Eve var" (ayrılıştan 3 dk geçmediyse `min_stay` ile bekler), "GPS sapması (tek sıçrama)" (tetik
+  yok); panelin altında "Son filtre kararları" ve gerekçeleri. "Ayşe eve vardı" → "Ayşe Yılmaz · Ev konumuna vardı".
+- **Buluşma noktası:** Ayşe'ye dokun → "📍 Buluşma noktası öner" → kategori, 3 öneri (her iki tarafın ETA'sı),
+  haritada numaralı pinler → "Paylaş". Panel "Ayşe buluşma noktası önersin" → alıcı kartı (Geliyorum / Uyamam).
+
 Tek dosyalık statik derleme (sunucu gerektirmez, dış istek atmaz):
 
 ```bash

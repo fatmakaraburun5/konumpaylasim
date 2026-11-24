@@ -2,7 +2,8 @@ import type { MotionState, RawLocationSample, SleepGeofence, TrackingPlanRow, Tr
 import * as Location from 'expo-location';
 import { AppState, Platform } from 'react-native';
 import { toPlanTaskOptions, type ServiceNotification } from './adaptive/planOptions';
-import { GEOFENCE_TASK_NAME, LOCATION_TASK_NAME, SLEEP_REGION_ID, type LocationEngine } from './LocationEngine';
+import { setSleepRegion } from './geofenceRegistry';
+import { LOCATION_TASK_NAME, type LocationEngine } from './LocationEngine';
 import { toRawSample, toTaskOptions, toWatchOptions } from './trackingOptions';
 
 export class ExpoLocationEngine implements LocationEngine {
@@ -24,20 +25,15 @@ export class ExpoLocationEngine implements LocationEngine {
   /**
    * Uyku çiti: yalnızca ÇIKIŞ bildirilir. iOS CLCircularRegion (~100 m altı güvenilmez, core 100–150 m verir),
    * Android GeofencingClient (ACCESS_BACKGROUND_LOCATION gerekir; yoksa expo-location hata fırlatır → çağıran yutar).
-   * Aynı görev adıyla yeniden çağrı bölge listesini DEĞİŞTİRİR.
+   * Aynı görev adıyla yeniden çağrı bölge listesini DEĞİŞTİRİR. Faz 5: kayıt `geofenceRegistry` üzerinden (iOS'ta
+   * kayıtlı bölgeler varken uyku çiti bölge görevine eklenir; bkz. geofenceRegistry.ts).
    */
   async setSleepGeofence(fence: SleepGeofence | null): Promise<void> {
-    if (fence) {
-      await Location.startGeofencingAsync(GEOFENCE_TASK_NAME, [
-        { identifier: SLEEP_REGION_ID, latitude: fence.lat, longitude: fence.lng, radius: fence.radiusM, notifyOnEnter: false, notifyOnExit: true },
-      ]);
-      return;
-    }
-    await stopGeofencing();
+    await setSleepRegion(fence);
   }
 
   async stopBackground(): Promise<void> {
-    await stopGeofencing();
+    await setSleepRegion(null).catch(() => undefined);
     if (await this.isBackgroundRunning()) await Location.stopLocationUpdatesAsync(LOCATION_TASK_NAME);
   }
 
@@ -81,14 +77,6 @@ export class ExpoLocationEngine implements LocationEngine {
     } finally {
       if (timer) clearTimeout(timer);
     }
-  }
-}
-
-async function stopGeofencing(): Promise<void> {
-  try {
-    if (await Location.hasStartedGeofencingAsync(GEOFENCE_TASK_NAME)) await Location.stopGeofencingAsync(GEOFENCE_TASK_NAME);
-  } catch {
-    // arka plan izni yoksa hasStarted hata fırlatır: kayıtlı çit de olamaz
   }
 }
 

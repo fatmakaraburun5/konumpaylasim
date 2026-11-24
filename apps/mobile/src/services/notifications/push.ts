@@ -28,6 +28,7 @@ import { deleteDeviceToken, saveDeviceToken } from '../firebase/profileRepo';
 import { resumeTracking } from '../location/resume';
 import * as Notifications from './expoNotifications';
 import { f4ForegroundContent, routeF4Open } from './f4Push';
+import { f5ForegroundContent, isF5PushType, routeF5Open, routeF5Received } from './f5Push';
 
 const OWNER_KEY = 'konum.push.owner.v1';
 /** [Varsayım] Çıkışta token silme en çok bu kadar bekletir (çevrimdışıysa çıkış yine yapılır). */
@@ -67,9 +68,11 @@ export async function registerPushToken(uid: UserId): Promise<() => void> {
   // Faz 3: uygulama ÖNDEYKEN gelen FCM bildirimleri sistemce gösterilmez → düşük pil uyarısı yerel bildirimle.
   const unMessage = onMessage(messaging, (m) => void handleForegroundMessage(m).catch(() => undefined));
   // Faz 4: sistemin gösterdiği FCM bildirimine dokunma (arka plan / kapalıyken) → SOS kartı / ping vurgusu.
-  const unOpened = onNotificationOpenedApp(messaging, (m) => void routeF4Open((m as unknown as PushLike).data));
+  // Faz 5: bölge olayı → göndereni vurgula, buluşma önerisi / yanıtı → buluşma kartı.
+  const openRoute = (data: Record<string, unknown> | undefined) => routeF4Open(data) || routeF5Open(data);
+  const unOpened = onNotificationOpenedApp(messaging, (m) => void openRoute((m as unknown as PushLike).data));
   void getInitialNotification(messaging)
-    .then((m) => (m ? routeF4Open((m as unknown as PushLike).data) : false))
+    .then((m) => (m ? openRoute((m as unknown as PushLike).data) : false))
     .catch(() => undefined);
   return () => {
     unRefresh();
@@ -118,6 +121,18 @@ async function handleForegroundMessage(msg: RemoteMessage): Promise<void> {
   }
   // Faz 4: SOS ön planda da sesli gösterilir (iOS'ta setNotificationHandler sos için banner + ses açar).
   // Ping ön planda uygulama içi kartla gösterilir (kutu dinleyicisi), sistem bildirimi gerekmez.
+  // Faz 5: bölge olayı / buluşma yanıtı yerel bildirimle; buluşma önerisi uygulama içi kartla (routeF5Received).
+  if (isF5PushType(m.data?.type)) {
+    routeF5Received(m.data);
+    const f5 = f5ForegroundContent(m);
+    if (f5) {
+      await Notifications.scheduleNotificationAsync({
+        content: { title: f5.title, body: f5.body, data: f5.data, sound: f5.sound ? 'default' : false, interruptionLevel: f5.interruptionLevel },
+        trigger: Platform.OS === 'android' ? { channelId: f5.channelId } : null,
+      });
+    }
+    return;
+  }
   const f4 = f4ForegroundContent(m, { includePing: false });
   if (f4) {
     await Notifications.scheduleNotificationAsync({

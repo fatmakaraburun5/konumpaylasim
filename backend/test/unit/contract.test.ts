@@ -465,3 +465,23 @@ describe('Faz 4: push yükleri ve RTDB düğümleri', () => {
     expect(Object.keys(rules.rules.link_live.$token_hash)).not.toContain('note');
   });
 });
+
+describe('Faz 5: bildirimler koordinat taşımaz', () => {
+  it('zone_event / meetup / meetup_response: data türleri core PUSH_TYPES_F5, Faz 4 ping kanalı, yalnızca ad', async () => {
+    const { PUSH_TYPES_F5 } = await import('@konum/core');
+    const { buildMeetupPush, buildMeetupResponsePush, buildZoneEventPush } = await import('../../functions/src/push');
+    const place = { name: 'Moda Kahve', location: { lat: 40.98765, lng: 29.02345 } };
+    const msgs = [
+      buildZoneEventPush('Erim', 'u1', 'Ev', 'arrive'),
+      buildMeetupPush('Ayşe', { meetup_id: 'm1', from: 'u2', place, expires_at: Date.now() + 60_000 }),
+      buildMeetupResponsePush('Bora', { meetup_id: 'm1', place }, 'u3', 'declined'),
+    ];
+    expect(msgs.map((m) => m.data.type)).toEqual([...PUSH_TYPES_F5]);
+    expect(msgs[0]?.notification).toEqual({ title: 'Erim', body: 'Ev konumuna vardı' });
+    for (const m of msgs) {
+      expect(m.android?.notification?.channelId).toBe(NOTIFICATION_CHANNELS_F4.ping);
+      expect(JSON.stringify(m)).not.toMatch(/40\.98|29\.02|"lat"|"lng"/);
+      for (const v of Object.values(m.data)) expect(typeof v).toBe('string');
+    }
+  });
+});

@@ -348,6 +348,30 @@
       "fieldPath": "purge_at",
       "ttl": true,
       "indexes": []
+    },
+    {
+      "collectionGroup": "zone_events",
+      "fieldPath": "purge_at",
+      "ttl": true,
+      "indexes": []
+    },
+    {
+      "collectionGroup": "zone_cooldowns",
+      "fieldPath": "purge_at",
+      "ttl": true,
+      "indexes": []
+    },
+    {
+      "collectionGroup": "meetups",
+      "fieldPath": "purge_at",
+      "ttl": true,
+      "indexes": []
+    },
+    {
+      "collectionGroup": "meetup_cache",
+      "fieldPath": "expire_at",
+      "ttl": true,
+      "indexes": []
     }
   ]
 }

@@ -6,6 +6,8 @@
  */
 import { defineDemoGeofenceTask, defineDemoLocationTask } from '../../demo/web/device';
 import { handleMotionEvent, handleSamples } from './pipeline';
+// Faz 5: bölge filtresi bağlantısı ve demo kancaları (simüle bölge izleme zoneMonitor.web.ts içinde).
+import './zoneMonitor';
 
 defineDemoLocationTask((samples) => handleSamples(samples, 'task'));
 defineDemoGeofenceTask(() => handleMotionEvent({ type: 'geofence_exit' }));

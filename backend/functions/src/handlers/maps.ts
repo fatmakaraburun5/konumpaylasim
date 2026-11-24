@@ -189,8 +189,9 @@ export async function reserveMapsQuota(uid: string, kind: MapsQuotaKind, now: Ep
 // HTTP
 // ---------------------------------------------------------------------------
 
-async function callGoogle(
-  kind: MapsQuotaKind,
+/** Google HTTP çağrısı (Faz 5 `meetup_suggest` de kullanır). Ağ hatası → `maps_unavailable`; URL / gövde loglanmaz. */
+export async function callGoogle(
+  kind: MapsQuotaKind | 'places' | 'route_matrix',
   deps: MapsDeps,
   url: string,
   init: Parameters<MapsFetch>[1],

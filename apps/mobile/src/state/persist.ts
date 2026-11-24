@@ -31,6 +31,13 @@ const PROFILE_KEY = 'konum.bg.profile.v1';
 const PERMISSION_FLOW_KEY = 'konum.ui.permissionFlowDone.v1';
 /** Faz 4: kendi durum notum (arka plan hattı da okur ve paketlere ekler). Konum İÇERMEZ. */
 const STATUS_NOTE_KEY = 'konum.bg.statusNote.v1';
+/**
+ * Faz 5: bölge izleme (başsız OS bölge olayı da okur). Bölge merkezleri (ev/iş) YALNIZCA bu cihazda; sunucuya giden
+ * olayda koordinat yoktur. Çıkışta silinir.
+ */
+const ZONES_KEY = 'konum.bg.zones.v1';
+const ZONE_FILTER_KEY = 'konum.bg.zoneFilter.v1';
+const ZONE_REPORTS_KEY = 'konum.bg.zoneReports.v1';
 
 /**
  * Yayın hedefi + sunucunun onayladığı oturum özeti. Özet, açılışta sunucu dinleyicisi henüz
@@ -319,6 +326,99 @@ export async function saveStatusNote(v: PersistedStatusNote | null): Promise<voi
  * Durdurma niyetleri (stopIntents) SİLİNMEZ: aynı hesapla tekrar girişte sunucuya yeniden gönderilir.
  */
 export async function clearBackgroundState(): Promise<void> {
-  await withTargetsLock(() => AsyncStorage.multiRemove([TARGETS_KEY, CURSOR_KEY, PROFILE_KEY, STATUS_NOTE_KEY]));
+  await withTargetsLock(() => AsyncStorage.multiRemove([TARGETS_KEY, CURSOR_KEY, PROFILE_KEY, STATUS_NOTE_KEY, ZONES_KEY, ZONE_FILTER_KEY, ZONE_REPORTS_KEY]));
   statusNoteCache = null;
+}
+
+// --- Faz 5: bölge izleme ---------------------------------------------------------------------------
+
+/** OS bölge kaydı ve sapma filtresi için bölgenin asgari kopyası (kurallar ve alıcılar YOK: kararı sunucu verir). */
+export interface PersistedZone {
+  zone_id: string;
+  name: string;
+  center: { lat: number; lng: number };
+  radius_m: number;
+  enabled: boolean;
+}
+
+export interface PersistedZones {
+  uid: UserId | null;
+  zones: PersistedZone[];
+}
+
+const PersistedZonesSchema = z.object({
+  uid: z.string().nullable(),
+  zones: z.array(
+    z.object({
+      zone_id: z.string().min(1),
+      name: z.string(),
+      center: z.object({ lat: z.number(), lng: z.number() }),
+      radius_m: z.number().positive(),
+      enabled: z.boolean(),
+    }),
+  ),
+});
+
+const LatLngAt = z.object({ lat: z.number(), lng: z.number(), at: z.number() });
+const ZoneFilterStateSchema = z.object({
+  presence: z.enum(['unknown', 'inside', 'outside']),
+  candidate: z.object({ to: z.enum(['inside', 'outside']), since: z.number(), samples: z.number(), last_at: z.number() }).nullable(),
+  last_transition: z.object({ to: z.enum(['inside', 'outside']), at: z.number() }).nullable(),
+  last_sample: LatLngAt.nullable(),
+});
+
+/** Bölge başına kalıcı filtre durumu (core `ZoneFilterState`): süreç ölse de bekleme / soğuma korunur. */
+export interface PersistedZoneFilters {
+  uid: UserId | null;
+  states: Record<string, z.infer<typeof ZoneFilterStateSchema>>;
+}
+const PersistedZoneFiltersSchema = z.object({ uid: z.string().nullable(), states: z.record(z.string(), ZoneFilterStateSchema) });
+
+/** Gönderilemeyen (çevrimdışı) bölge olayı: aynı `op_id` ile yeniden denenir. Koordinat YOK. */
+export interface PendingZoneReport {
+  op_id: string;
+  zone_id: string;
+  transition: 'arrive' | 'leave';
+  occurred_at: number;
+  accuracy_m: number | null;
+  created_at: number;
+  attempts: number;
+}
+export interface PersistedZoneReports {
+  uid: UserId | null;
+  reports: PendingZoneReport[];
+}
+const PersistedZoneReportsSchema = z.object({
+  uid: z.string().nullable(),
+  reports: z.array(
+    z.object({
+      op_id: z.string().min(1),
+      zone_id: z.string().min(1),
+      transition: z.enum(['arrive', 'leave']),
+      occurred_at: z.number(),
+      accuracy_m: z.number().nullable(),
+      created_at: z.number(),
+      attempts: z.number(),
+    }),
+  ),
+});
+
+const write = async (key: string, v: unknown): Promise<void> => {
+  try {
+    await AsyncStorage.setItem(key, JSON.stringify(v));
+  } catch {
+    // disk yazılamadı: bellek durumu bu çalıştırma için yeterli
+  }
+};
+
+export const loadZoneCache = (): Promise<PersistedZones> => read(ZONES_KEY, PersistedZonesSchema, { uid: null, zones: [] });
+export const saveZoneCache = (v: PersistedZones): Promise<void> => write(ZONES_KEY, v);
+export const loadZoneFilters = (): Promise<PersistedZoneFilters> => read(ZONE_FILTER_KEY, PersistedZoneFiltersSchema, { uid: null, states: {} });
+export const saveZoneFilters = (v: PersistedZoneFilters): Promise<void> => write(ZONE_FILTER_KEY, v);
+export const loadZoneReports = (): Promise<PersistedZoneReports> => read(ZONE_REPORTS_KEY, PersistedZoneReportsSchema, { uid: null, reports: [] });
+export const saveZoneReports = (v: PersistedZoneReports): Promise<void> => write(ZONE_REPORTS_KEY, v);
+
+/** Faz 5: bölge izleme durumunu siler (çıkış). */
+export async function clearZoneState(): Promise<void> {
+  await AsyncStorage.multiRemove([ZONES_KEY, ZONE_FILTER_KEY, ZONE_REPORTS_KEY]).catch(() => undefined);
 }

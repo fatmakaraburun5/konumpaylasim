@@ -12,6 +12,8 @@ export const LOCATION_TASK_NAME = 'konum-location-updates';
 export const GEOFENCE_TASK_NAME = 'konum-sleep-geofence';
 /** Uyku çitinin bölge kimliği. */
 export const SLEEP_REGION_ID = 'konum-sleep';
+/** Faz 5: kayıtlı bölgeler (Ev / İş …) varış / ayrılış görevi (uyku çitinden ayrı). */
+export const ZONE_GEOFENCE_TASK_NAME = 'konum-zone-geofence';
 
 export interface LocationEngine {
   /**

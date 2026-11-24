@@ -5,6 +5,7 @@
  *
  * Faz 4: "Acil durum kişileri" kartı (EmergencyContactsSheet ile düzenlenir; SOS bu kişilere gider) ve her arkadaş
  * satırında tek dokunuşla "📍 Buradayım / 🚶 Yoldayım" (konum paylaşımı olmasa da gönderilebilir).
+ * Faz 5: "Bölgelerim" kartı (varış / ayrılış kuralları ekranına giriş).
  */
 import { formatInviteCode, SOS_LIMITS } from '@konum/core';
 import { useRouter } from 'expo-router';
@@ -97,6 +98,14 @@ export function FriendsScreen() {
             onPress={() => contactsSheet.current?.present(false)}
             disabled={friends.length === 0}
           />
+        </View>
+
+        <View style={card} testID="zones-card">
+          <Text variant="heading">Bölgelerim</Text>
+          <Text variant="label" color="textSecondary">
+            Eve vardığında ya da işten çıktığında seçtiğin arkadaşlarına haber ver veya paylaşımı kendiliğinden başlat.
+          </Text>
+          <Button title="Bölgelerimi aç" variant="secondary" onPress={() => router.push('/zones')} />
         </View>
 
         <View style={card}>

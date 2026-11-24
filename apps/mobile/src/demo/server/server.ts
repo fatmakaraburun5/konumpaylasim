@@ -43,10 +43,22 @@
  *  - Canlı paketlerde isteğe bağlı durum notu (`note` 1..60 + `note_exp`, ikisi birlikte); `link_live`'a not gitmez.
  *  - Demo paneli: Ayşe / Mehmet ping, Ayşe durum notu, park yeri notu, Ayşe SOS + "güvende".
  *
+ * Faz 5 (backend `zone_*` / `meetup_*` callable'larıyla aynı anlam; SPEC "Callable'lar"):
+ *  - `zone_upsert / delete`: `users/{uid}/zones` (yalnızca sahibi okur), en çok 15 bölge, kural alıcıları kabul edilmiş
+ *    arkadaşlar (diğerleri SESSİZCE düşer, alıcısız kural silinir), düzenlemede `created_at` korunur.
+ *  - `zone_event_report`: eski olay `stale`, kapalı bölge `disabled`, kural penceresi (`localClock`, bölgenin dilimi)
+ *    `outside_window`, aynı bölge + yön 5 dk `cooldown`, günlük 60 `daily_limit`; notify → alıcılara `zone_event` push'u
+ *    (koordinat YOK), start_share → yanıtta. Her olay `zone_events`'e loglanır.
+ *  - `meetup_suggest`: merkez + yayılım → too_close / too_far → önbellek (10 dk, kota yemez) → günlük kota → "Google yanıt
+ *    vermesin" (places_unavailable) → sahte Places (`fakePlaces.ts`) → en yakın K → mod başına sahte Route Matrix →
+ *    `rankMeetupCandidates`; boş hücre `fallbackEta` (estimated). `meetup_share / respond / cancel`: `meetups` + push.
+ *  - Demo paneli: Ayşe eve vardı (bot kuralı → bana zone_event), Ayşe buluşma noktası önersin (bana meetup → kart).
+ *
  * Durum tarayıcıda `localStorage`'a yazılır (erişilemezse yalnızca bellekte kalır). Sunucu saati = cihaz saati.
  */
 import {
   EmergencyContactsSetRequestSchema,
+  geohashEncode,
   isSosActive,
   NOTE_LIMITS,
   PING_LIMITS,
@@ -155,8 +167,54 @@ import {
   type UserId,
   type UserProfile,
 } from '@konum/core';
+import {
+  fallbackEta,
+  isMeetupActive,
+  localClock,
+  matchZoneRules,
+  MEETUP_LIMITS,
+  meetupCacheKey,
+  meetupCenter,
+  MeetupCancelRequestSchema,
+  meetupPushText,
+  MeetupRespondRequestSchema,
+  meetupResponsePushText,
+  meetupScore,
+  MeetupShareRequestSchema,
+  meetupSpreadM,
+  MeetupSuggestRequestSchema,
+  nearestCandidates,
+  parsePlacesNearbyResponse,
+  parseRouteMatrixResponse,
+  placesNearbyRequestBody,
+  rankMeetupCandidates,
+  routeMatrixRequestBody,
+  searchRadiusM,
+  ZONE_EVENT_LOG_TTL_MS,
+  ZONE_LIMITS,
+  ZoneDeleteRequestSchema,
+  ZoneEventReportRequestSchema,
+  zoneEventPushText,
+  ZoneUpsertRequestSchema,
+  type Meetup,
+  type MeetupCategory,
+  type MeetupEta,
+  type MeetupParticipant,
+  type MeetupResponse,
+  type MeetupSuggestion,
+  type MeetupSuggestResponse,
+  type TravelMode,
+  type Zone,
+  type ZoneDeleteResponse,
+  type ZoneEventLog,
+  type ZoneEventReportResponse,
+  type ZoneRule,
+  type ZoneTrigger,
+  type ZoneUpsertResponse,
+} from '@konum/core';
 import { z } from 'zod';
 import { fakeComputeRoutes, fakeReverseGeocode } from './fakeGoogle';
+import { fakePlacesNearby, fakeRouteMatrix } from './fakePlaces';
 import { safeStorage } from './storage';
 import {
   AYSE_PATH,
@@ -287,6 +345,15 @@ interface MapsQuotaRec {
   geocode: number;
   route_hits: number;
   geocode_hits: number;
+  /** Faz 5: buluşma noktası sorguları (Places + matris) ve önbellek isabetleri. */
+  meetup?: number;
+  meetup_hits?: number;
+}
+
+/** Faz 5: `zone_events` kaydı (+ demo kimliği). */
+interface ZoneEventRec extends ZoneEventLog {
+  id: string;
+  purge_at: EpochMs;
 }
 
 type BotKind = 'walker' | 'heartbeat' | 'stale' | 'idle';
@@ -377,6 +444,19 @@ interface Db {
   emergency: Record<UserId, UserId[]>;
   /** Bot durum notları (bot paketlerine eklenir). */
   bot_notes: Record<UserId, StatusNote>;
+  // --- Faz 5 (eski kayıtlarda yok: `withPhase5` tamamlar) ---
+  /** Firestore `users/{uid}/zones/{zone_id}`. */
+  zones: Record<UserId, Record<string, Zone>>;
+  /** Firestore `users/{uid}/zone_events` (en yeni önde). */
+  zone_events: Record<UserId, ZoneEventRec[]>;
+  /** `zone_cooldowns/{uid}_{zone_id}_{transition}` → son bildirim anı; günlük sayaç `{uid}_{gün}`. */
+  zone_cooldowns: Record<string, EpochMs>;
+  zone_daily: Record<string, number>;
+  /** Firestore `meetups/{meetup_id}` ve `meetup_cache/{key}`. */
+  meetups: Record<string, Meetup>;
+  meetup_cache: Record<string, { response: MeetupSuggestResponse; expire_at: EpochMs }>;
+  /** Demo: bot alıcının otomatik "Geliyorum" anı (`{meetup_id}|{uid}` → an). */
+  meetup_auto: Record<string, EpochMs>;
 }
 
 /** Faz 1'de kaydedilmiş demo durumuna Faz 2 alanlarını ekler (demo verisi silinmeden). */
@@ -410,6 +490,18 @@ function withPhase4(db: Db): Db {
     db.emergency[PEOPLE.ayse.uid] ??= [DEMO_ME];
     db.emergency[PEOPLE.mehmet.uid] ??= [DEMO_ME];
   }
+  return db;
+}
+
+/** Faz 4 kaydına Faz 5 alanlarını ekler (demo verisi silinmeden). */
+function withPhase5(db: Db): Db {
+  db.zones ??= {};
+  db.zone_events ??= {};
+  db.zone_cooldowns ??= {};
+  db.zone_daily ??= {};
+  db.meetups ??= {};
+  db.meetup_cache ??= {};
+  db.meetup_auto ??= {};
   return db;
 }
 
@@ -461,6 +553,10 @@ const TRANSPORT: Record<ErrorCode, string> = {
   sos_not_active: 'failed-precondition',
   note_not_found: 'not-found',
   note_limit_reached: 'resource-exhausted',
+  // Faz 5
+  zone_not_found: 'not-found',
+  zone_limit_reached: 'resource-exhausted',
+  meetup_not_found: 'not-found',
 };
 
 /** RTDB kural reddi (RNFB `database/permission-denied` ile aynı biçim). */
@@ -568,6 +664,16 @@ export interface DemoSnapshot {
     placeNotesForMe: number;
     pingsForMe: number;
   };
+  /** Faz 5: demo Ev bölgem, son bölge olayım, aktif buluşma önerileri ve bugünkü öneri kotası. */
+  f5: {
+    homeZone: { zone_id: string; name: string; center: LatLng; radius_m: number; rules: number; enabled: boolean } | null;
+    myZones: number;
+    lastZoneEvent: { zone_name: string; transition: ZoneTrigger; at: EpochMs; notified: number; suppressed: string | null } | null;
+    activeMeetups: number;
+    meetupQueries: number;
+    meetupHits: number;
+    meetupLimit: number;
+  };
 }
 
 export class DemoServer {
@@ -604,7 +710,7 @@ export class DemoServer {
       if (!db || db.v !== DB_VERSION || !db.users || !db.users[DEMO_ME]) return null;
       const cutoff = Date.now() - DAY;
       for (const [k, op] of Object.entries(db.ops)) if (op.at < cutoff) delete db.ops[k];
-      return withPhase4(withPhase3(withPhase2(db)));
+      return withPhase5(withPhase4(withPhase3(withPhase2(db))));
     } catch {
       return null;
     }
@@ -692,6 +798,13 @@ export class DemoServer {
       sos_auto_ack: {},
       emergency: {},
       bot_notes: {},
+      zones: {},
+      zone_events: {},
+      zone_cooldowns: {},
+      zone_daily: {},
+      meetups: {},
+      meetup_cache: {},
+      meetup_auto: {},
     };
     this.db = db;
     withPhase4(db);
@@ -1076,6 +1189,7 @@ export class DemoServer {
       }
     }
     if (this.sweepPhase4(now)) changed = true;
+    if (this.sweepPhase5(now)) changed = true;
     if (now - this.lastPrune > MINUTE) {
       this.lastPrune = now;
       if (this.prunePhase2(now)) changed = true;
@@ -1563,6 +1677,21 @@ export class DemoServer {
         return this.sosResolveCall(payload, uid, now);
       case 'sos_ack':
         return this.sosAckCall(payload, uid, now);
+      // Faz 5
+      case 'zone_upsert':
+        return this.zoneUpsertCall(payload, uid, now);
+      case 'zone_delete':
+        return this.zoneDeleteCall(payload, uid, now);
+      case 'zone_event_report':
+        return this.zoneEventReportCall(payload, uid, now);
+      case 'meetup_suggest':
+        return this.meetupSuggestCall(payload, uid, now);
+      case 'meetup_share':
+        return this.meetupShareCall(payload, uid, now);
+      case 'meetup_respond':
+        return this.meetupRespondCall(payload, uid, now);
+      case 'meetup_cancel':
+        return this.meetupCancelCall(payload, uid, now);
       default:
         return fail('invalid_argument', `Demo sunucusunda yok: ${name}`);
     }
@@ -1751,6 +1880,8 @@ export class DemoServer {
     for (const [a, b] of [[uid, other], [other, uid]] as const) {
       const list = this.db.emergency[a];
       if (list) this.db.emergency[a] = list.filter((x) => x !== b);
+      // Faz 5: iki tarafın bölge kurallarından karşı taraf çıkarılır (alıcısız kural silinir).
+      this.dropZoneRecipient(a, b, now);
     }
     for (const id of [shareId(uid, other), shareId(other, uid)]) {
       const s = this.db.shares[id];
@@ -2129,6 +2260,290 @@ export class DemoServer {
     return Object.values(this.db.sos)
       .filter((a) => (field === 'sender_id' ? a.sender_id === uid : a.recipient_ids.includes(uid)))
       .sort((a, b) => a.created_at - b.created_at);
+  }
+
+  // --- Faz 5: bölgeler (geofence) ve buluşma noktası ------------------------------------------------
+
+  /** Süpürücü: süresi geçen buluşma önerileri (1 gün sonra), önbellek, eski bölge olayları ve soğumalar. */
+  private sweepPhase5(now: EpochMs): boolean {
+    let changed = false;
+    for (const m of Object.values(this.db.meetups)) {
+      if (m.expires_at + DAY <= now) {
+        delete this.db.meetups[m.meetup_id];
+        changed = true;
+      }
+    }
+    for (const [k, c] of Object.entries(this.db.meetup_cache)) {
+      if (c.expire_at <= now) {
+        delete this.db.meetup_cache[k];
+        changed = true;
+      }
+    }
+    for (const [uid, list] of Object.entries(this.db.zone_events)) {
+      const kept = list.filter((e) => e.purge_at > now);
+      if (kept.length !== list.length) {
+        this.db.zone_events[uid] = kept;
+        changed = true;
+      }
+    }
+    for (const [k, at] of Object.entries(this.db.zone_cooldowns)) {
+      if (now - at > DAY) {
+        delete this.db.zone_cooldowns[k];
+        changed = true;
+      }
+    }
+    for (const [key, at] of Object.entries(this.db.meetup_auto)) {
+      if (at > now) continue;
+      delete this.db.meetup_auto[key];
+      const [id, who] = key.split('|');
+      const m = id ? this.db.meetups[id] : undefined;
+      if (m && who && m.to.includes(who) && isMeetupActive(m, now) && !m.responses[who]) {
+        m.responses = { ...m.responses, [who]: 'accepted' };
+        const data: Extract<PushData, { type: 'meetup_response' }> = { type: 'meetup_response', meetup_id: m.meetup_id, by: who, response: 'accepted' };
+        this.push(m.from, { notification: meetupResponsePushText(this.nameOf(who), 'accepted', m.place), data });
+      }
+      changed = true;
+    }
+    return changed;
+  }
+
+  /** Arkadaşlık bitti: `owner`'ın kurallarından `other` çıkar; alıcısı kalmayan kural silinir. */
+  private dropZoneRecipient(owner: UserId, other: UserId, now: EpochMs): void {
+    for (const z of Object.values(this.db.zones[owner] ?? {})) {
+      if (!z.rules.some((r) => r.recipient_ids.includes(other))) continue;
+      z.rules = z.rules.map((r) => ({ ...r, recipient_ids: r.recipient_ids.filter((u) => u !== other) })).filter((r) => r.recipient_ids.length > 0);
+      z.updated_at = now;
+    }
+  }
+
+  zonesOf(uid: UserId): Zone[] {
+    return Object.values(this.db.zones[uid] ?? {}).sort((a, b) => a.created_at - b.created_at);
+  }
+
+  zoneEventsOf(uid: UserId, max: number): ZoneEventLog[] {
+    return (this.db.zone_events[uid] ?? []).slice(0, max).map(({ id: _id, purge_at: _p, ...e }) => e);
+  }
+
+  /** Firestore `meetups where from == uid` / `where to array-contains uid`. */
+  meetupsWhere(field: 'from' | 'to', uid: UserId): Meetup[] {
+    return Object.values(this.db.meetups)
+      .filter((m) => (field === 'from' ? m.from === uid : m.to.includes(uid)))
+      .sort((a, b) => b.created_at - a.created_at);
+  }
+
+  private zoneUpsertCall(payload: unknown, uid: UserId, now: EpochMs): ZoneUpsertResponse {
+    const req = this.parse(ZoneUpsertRequestSchema, payload);
+    return this.upsertZone(uid, req, now);
+  }
+
+  private upsertZone(uid: UserId, req: z.output<typeof ZoneUpsertRequestSchema>, now: EpochMs): ZoneUpsertResponse {
+    const name = sanitizeNoteText(req.name, ZONE_LIMITS.nameMaxChars);
+    if (!name) return fail('invalid_argument');
+    const mine = (this.db.zones[uid] ??= {});
+    const existing = req.zone_id ? mine[req.zone_id] : undefined;
+    if (req.zone_id && !existing) return fail('zone_not_found');
+    if (!existing && Object.keys(mine).length >= ZONE_LIMITS.maxZones) return fail('zone_limit_reached');
+    const dropped = new Set<UserId>();
+    const rules: ZoneRule[] = [];
+    for (const r of req.rules) {
+      const kept = [...new Set(r.recipient_ids)].filter((u) => {
+        const ok = u !== uid && this.areFriends(uid, u);
+        if (!ok) dropped.add(u);
+        return ok;
+      });
+      // Alıcısı kalmayan kural silinir.
+      if (kept.length > 0) rules.push({ ...r, recipient_ids: kept });
+    }
+    const zone: Zone = {
+      zone_id: existing?.zone_id ?? `z${randomHex32().slice(0, 19)}`,
+      owner_id: uid,
+      kind: req.kind,
+      name,
+      emoji: req.emoji ? sanitizeNoteText(req.emoji, 8) : null,
+      center: { lat: Math.round(req.center.lat * 1e6) / 1e6, lng: Math.round(req.center.lng * 1e6) / 1e6 },
+      radius_m: Math.round(req.radius_m),
+      rules,
+      enabled: req.enabled,
+      time_zone: req.time_zone,
+      created_at: existing?.created_at ?? now,
+      updated_at: now,
+    };
+    mine[zone.zone_id] = zone;
+    return { zone, dropped_recipient_ids: [...dropped], server_now: now };
+  }
+
+  private zoneDeleteCall(payload: unknown, uid: UserId, now: EpochMs): ZoneDeleteResponse {
+    const req = this.parse(ZoneDeleteRequestSchema, payload);
+    const mine = this.db.zones[uid] ?? {};
+    const deleted = !!mine[req.zone_id];
+    delete mine[req.zone_id];
+    for (const t of ['arrive', 'leave']) delete this.db.zone_cooldowns[`${uid}_${req.zone_id}_${t}`];
+    return { zone_id: req.zone_id, deleted, server_now: now };
+  }
+
+  private zoneEventReportCall(payload: unknown, uid: UserId, now: EpochMs): ZoneEventReportResponse {
+    const req = this.parse(ZoneEventReportRequestSchema, payload);
+    return this.zoneEventNow(uid, req.zone_id, req.transition, req.occurred_at, now);
+  }
+
+  /** Backend `zone_event_report` (koordinat almaz, push'a ve loga koordinat girmez). */
+  private zoneEventNow(uid: UserId, zoneId: string, transition: ZoneTrigger, occurredAt: EpochMs, now: EpochMs): ZoneEventReportResponse {
+    const zone = this.db.zones[uid]?.[zoneId];
+    if (!zone) return fail('zone_not_found');
+    const occurred = occurredAt > now + MINUTE ? now : occurredAt;
+    const respond = (r: Omit<ZoneEventReportResponse, 'server_now'>): ZoneEventReportResponse => {
+      const list = (this.db.zone_events[uid] ??= []);
+      list.unshift({ id: randomHex32().slice(0, 20), zone_id: zoneId, transition, occurred_at: occurred, notified: r.notified, suppressed: r.suppressed, purge_at: now + ZONE_EVENT_LOG_TTL_MS });
+      if (list.length > 200) list.length = 200;
+      return { ...r, server_now: now };
+    };
+    if (now - occurred > ZONE_LIMITS.maxEventAgeMs) return respond({ notified: 0, start_share: [], suppressed: 'stale' });
+    if (!zone.enabled) return respond({ notified: 0, start_share: [], suppressed: 'disabled' });
+    const offsetMin = offsetFnForTimeZone(zone.time_zone)(occurred);
+    const rules = matchZoneRules(zone, transition, localClock(occurred, offsetMin));
+    if (rules.length === 0) return respond({ notified: 0, start_share: [], suppressed: 'outside_window' });
+    const start_share = rules
+      .filter((r) => r.action === 'start_share' && r.share_duration)
+      .map((r) => ({ rule_id: r.rule_id, recipient_ids: r.recipient_ids.filter((u) => this.areFriends(uid, u)), duration: r.share_duration as DurationChoice }))
+      .filter((r) => r.recipient_ids.length > 0);
+    const notifyTo = [...new Set(rules.filter((r) => r.action === 'notify').flatMap((r) => r.recipient_ids))].filter((u) => this.areFriends(uid, u));
+    if (notifyTo.length === 0) return respond({ notified: 0, start_share, suppressed: null });
+    const cdKey = `${uid}_${zoneId}_${transition}`;
+    const last = this.db.zone_cooldowns[cdKey];
+    if (last !== undefined && now - last < ZONE_LIMITS.serverCooldownMs) return respond({ notified: 0, start_share, suppressed: 'cooldown' });
+    const dayKey = `${uid}_${quotaDay(now)}`;
+    const today = this.db.zone_daily[dayKey] ?? 0;
+    if (today >= ZONE_LIMITS.maxEventsPerDay) return respond({ notified: 0, start_share, suppressed: 'daily_limit' });
+    const text = zoneEventPushText(this.nameOf(uid), zone.name, transition);
+    const data: Extract<PushData, { type: 'zone_event' }> = { type: 'zone_event', from: uid, zone_name: zone.name, transition };
+    for (const to of notifyTo) this.push(to, { notification: text, data });
+    this.db.zone_cooldowns[cdKey] = now;
+    this.db.zone_daily[dayKey] = today + 1;
+    return respond({ notified: notifyTo.length, start_share, suppressed: null });
+  }
+
+  private midpointSuggestion(center: LatLng, participants: readonly MeetupParticipant[]): MeetupSuggestion {
+    const etas: MeetupEta[] = participants.map((p) => ({ key: p.key, ...fallbackEta(p.position, center, p.mode), estimated: true }));
+    return {
+      place: { place_id: null, name: 'Orta nokta', address: null, location: center, primary_type: null, category: 'midpoint' },
+      etas,
+      ...meetupScore(etas),
+    };
+  }
+
+  private meetupSuggestCall(payload: unknown, uid: UserId, now: EpochMs): MeetupSuggestResponse {
+    const req = this.parse(MeetupSuggestRequestSchema, payload);
+    const keys = req.participants.map((p) => p.key);
+    if (new Set(keys).size !== keys.length || !keys.includes('me')) return fail('invalid_argument');
+    return this.suggestMeetup(uid, req.participants, req.category, now);
+  }
+
+  /** Backend `meetup_suggest` (SPEC sırası: yedekler → önbellek → kota → anahtar → Places → matris → sıralama). */
+  private suggestMeetup(uid: UserId, participants: readonly MeetupParticipant[], category: MeetupCategory, now: EpochMs): MeetupSuggestResponse {
+    const points = participants.map((p) => p.position);
+    const center = meetupCenter(points);
+    const spread = meetupSpreadM(center, points);
+    const radius = searchRadiusM(spread);
+    const out = (suggestions: MeetupSuggestion[], fallback: MeetupSuggestResponse['fallback'], cached = false): MeetupSuggestResponse => ({
+      center,
+      search_radius_m: radius,
+      suggestions,
+      fallback,
+      cached,
+      server_now: now,
+    });
+    const midpoint = () => [this.midpointSuggestion(center, participants)];
+    if (spread * 2 < MEETUP_LIMITS.tooCloseM) return out(midpoint(), 'too_close');
+    if (spread > MEETUP_LIMITS.maxSpreadM) return out([], 'too_far');
+    // Backend `meetupCacheDocId` gibi: önbellek kullanıcıya ve katılımcı ANAHTARLARINA özel. Yanıttaki ETA anahtarları
+    // çağırana göredir ('me'); aynı hücrelerdeki başka bir çağıranın (ör. bot) isteği bu kaydı kullanmamalı.
+    const keyed = participants.map((p) => `${p.key}@${geohashEncode(p.position.lat, p.position.lng, 6)}:${p.mode}`).sort();
+    const key = `${uid}|${meetupCacheKey(center, category, participants)}|${keyed.join(',')}`;
+    const hit = this.db.meetup_cache[key];
+    const q = this.quota(uid, now);
+    if (hit && hit.expire_at > now) {
+      q.meetup_hits = (q.meetup_hits ?? 0) + 1;
+      return { ...clone(hit.response), cached: true, server_now: now };
+    }
+    if ((q.meetup ?? 0) >= MEETUP_LIMITS.perUserDailyLimit) return out(midpoint(), 'quota_exceeded');
+    if (this.db.maps_down) return out(midpoint(), 'places_unavailable');
+    q.meetup = (q.meetup ?? 0) + 1;
+    const placesRes = fakePlacesNearby(placesNearbyRequestBody(center, radius, category));
+    if (placesRes.status !== 200) return out(midpoint(), 'places_unavailable');
+    const places = parsePlacesNearbyResponse(placesRes.json, category);
+    if (places.length === 0) return out(midpoint(), 'no_results');
+    const top = nearestCandidates(places, center);
+    // Mod başına tek matris (aynı moddaki katılımcılar kaynak, adaylar hedef).
+    const cells = new Map<string, { duration_s: number; distance_m: number } | null>();
+    const modes = [...new Set(participants.map((p) => p.mode))] as TravelMode[];
+    for (const mode of modes) {
+      const origins = participants.filter((p) => p.mode === mode);
+      const r = fakeRouteMatrix(routeMatrixRequestBody(origins.map((p) => p.position), top.map((t) => t.location), mode));
+      const grid = r.status === 200 ? parseRouteMatrixResponse(r.json, origins.length, top.length) : [];
+      origins.forEach((p, oi) => top.forEach((_t, di) => cells.set(`${p.key}|${di}`, grid[oi]?.[di] ?? null)));
+    }
+    const candidates = top.map((place, di) => ({
+      place,
+      etas: participants.map((p): MeetupEta => {
+        const c = cells.get(`${p.key}|${di}`);
+        return c ? { key: p.key, duration_s: c.duration_s, distance_m: c.distance_m, estimated: false } : { key: p.key, ...fallbackEta(p.position, place.location, p.mode), estimated: true };
+      }),
+    }));
+    const res = out(rankMeetupCandidates(candidates, participants.map((p) => p.key), center), null);
+    this.db.meetup_cache[key] = { response: clone(res), expire_at: now + MEETUP_LIMITS.cacheTtlMs };
+    return res;
+  }
+
+  private meetupShareCall(payload: unknown, uid: UserId, now: EpochMs): MeetupResponse {
+    const req = this.parse(MeetupShareRequestSchema, payload);
+    return { meetup: this.shareMeetup(uid, req, now), server_now: now };
+  }
+
+  /** Backend `meetup_share`: alıcılar kabul edilmiş arkadaş (değilse sessizce düşer), 'me' → gönderenin uid'i. */
+  private shareMeetup(uid: UserId, req: z.output<typeof MeetupShareRequestSchema>, now: EpochMs): Meetup {
+    const to = [...new Set(req.to)].filter((u) => u !== uid && this.areFriends(uid, u));
+    if (to.length === 0) return fail('not_friends');
+    const m: Meetup = {
+      meetup_id: `m${randomHex32().slice(0, 19)}`,
+      from: uid,
+      from_name: this.nameOf(uid),
+      to,
+      place: req.place,
+      etas: req.etas.map((e) => ({ ...e, key: e.key === 'me' ? uid : e.key })),
+      meet_at: req.meet_at,
+      note: req.note ? sanitizeNoteText(req.note, 120) : null,
+      responses: {},
+      status: 'active',
+      created_at: now,
+      expires_at: now + MEETUP_LIMITS.shareTtlMs,
+    };
+    this.db.meetups[m.meetup_id] = m;
+    const data: Extract<PushData, { type: 'meetup' }> = { type: 'meetup', meetup_id: m.meetup_id, from: uid };
+    for (const r of to) {
+      this.push(r, { notification: meetupPushText(m.from_name, m.place), data });
+      // Demo: bot alıcılar birkaç saniye sonra "Geliyorum" der.
+      if (this.db.bots[r]) this.db.meetup_auto[`${m.meetup_id}|${r}`] = now + 6 * SECOND;
+    }
+    return m;
+  }
+
+  private meetupRespondCall(payload: unknown, uid: UserId, now: EpochMs): MeetupResponse {
+    const req = this.parse(MeetupRespondRequestSchema, payload);
+    const m = this.db.meetups[req.meetup_id];
+    if (!m || !m.to.includes(uid) || !isMeetupActive(m, now)) return fail('meetup_not_found');
+    m.responses = { ...m.responses, [uid]: req.response };
+    const data: Extract<PushData, { type: 'meetup_response' }> = { type: 'meetup_response', meetup_id: m.meetup_id, by: uid, response: req.response };
+    this.push(m.from, { notification: meetupResponsePushText(this.nameOf(uid), req.response, m.place), data });
+    return { meetup: m, server_now: now };
+  }
+
+  private meetupCancelCall(payload: unknown, uid: UserId, now: EpochMs): MeetupResponse {
+    const req = this.parse(MeetupCancelRequestSchema, payload);
+    const m = this.db.meetups[req.meetup_id];
+    if (!m || m.from !== uid) return fail('meetup_not_found');
+    // [Varsayım] Alıcılara push yok; kart dinleyiciyle kapanır.
+    m.status = 'cancelled';
+    return { meetup: m, server_now: now };
   }
 
   // --- Faz 2: bağlantı (QR) paylaşımı -------------------------------------------------------------
@@ -2639,6 +3054,125 @@ export class DemoServer {
     };
   }
 
+  // --- Faz 5 demo paneli ------------------------------------------------------------------------
+
+  /** Demo Ev bölgem (ad "Ev", tür home). */
+  private myHomeZone(): Zone | null {
+    return Object.values(this.db.zones[DEMO_ME] ?? {}).find((z) => z.kind === 'home') ?? null;
+  }
+
+  /**
+   * "Ev bölgemi buraya kaydet (demo)": verilen noktada 150 m Ev bölgesi + "Vardığımda Ayşe'ye bildir" + "Çıkınca Ayşe
+   * ile 1 saat paylaş" (her gün, gün boyu). Varsa aynı bölge güncellenir. Dönen: bölge ya da null (Ayşe arkadaş değil).
+   */
+  saveDemoHomeZone(at: LatLng): Zone | null {
+    const now = Date.now();
+    const ayse = PEOPLE.ayse.uid;
+    if (!this.areFriends(DEMO_ME, ayse)) return null;
+    const existing = this.myHomeZone();
+    const res = this.upsertZone(
+      DEMO_ME,
+      {
+        op_id: uuidV4(),
+        zone_id: existing?.zone_id ?? null,
+        kind: 'home',
+        name: 'Ev',
+        emoji: '🏠',
+        center: at,
+        radius_m: ZONE_LIMITS.defaultRadiusM,
+        rules: [
+          { rule_id: uuidV4(), trigger: 'arrive', action: 'notify', recipient_ids: [ayse], share_duration: null, days_mask: 127, window: null, enabled: true },
+          { rule_id: uuidV4(), trigger: 'leave', action: 'start_share', recipient_ids: [ayse], share_duration: { kind: 'preset', preset: 'h1' }, days_mask: 127, window: null, enabled: true },
+        ],
+        enabled: true,
+        time_zone: this.db.users[DEMO_ME]?.time_zone ?? DEFAULT_TZ,
+      },
+      now,
+    );
+    // Yeni kurulumda eski soğumalar senaryoyu bastırmasın.
+    for (const t of ['arrive', 'leave']) delete this.db.zone_cooldowns[`${DEMO_ME}_${res.zone.zone_id}_${t}`];
+    this.commit();
+    return res.zone;
+  }
+
+  /** "Ayşe eve vardı": Ayşe'nin Ev bölgesi (kuralı: vardığımda Deniz'e bildir) → bana `zone_event` push'u. */
+  botZoneArrive(bot: UserId): ZoneEventReportResponse | null {
+    const now = Date.now();
+    if (!this.areFriends(bot, DEMO_ME)) return null;
+    let home = Object.values(this.db.zones[bot] ?? {}).find((z) => z.kind === 'home');
+    if (!home) {
+      const at = this.db.bots[bot]?.spot ?? (AYSE_PATH[0] as LatLng);
+      home = this.upsertZone(
+        bot,
+        {
+          op_id: uuidV4(),
+          zone_id: null,
+          kind: 'home',
+          name: 'Ev',
+          emoji: '🏠',
+          center: { lat: at.lat, lng: at.lng },
+          radius_m: ZONE_LIMITS.defaultRadiusM,
+          rules: [{ rule_id: uuidV4(), trigger: 'arrive', action: 'notify', recipient_ids: [DEMO_ME], share_duration: null, days_mask: 127, window: null, enabled: true }],
+          enabled: true,
+          time_zone: DEFAULT_TZ,
+        },
+        now,
+      ).zone;
+    }
+    // Demo: tekrar denenebilsin diye sunucu soğuması atlanır (filtre ve kurallar aynı).
+    delete this.db.zone_cooldowns[`${bot}_${home.zone_id}_arrive`];
+    try {
+      const r = this.zoneEventNow(bot, home.zone_id, 'arrive', now, now);
+      this.commit();
+      return r;
+    } catch {
+      return null;
+    }
+  }
+
+  /** "Ayşe buluşma noktası önersin": Ayşe + ben (`myPos`) için kafe önerisi → ilki bana paylaşılır (push + kart). */
+  botMeetupSuggest(bot: UserId, myPos: LatLng): string | null {
+    const now = Date.now();
+    if (!this.areFriends(bot, DEMO_ME)) return null;
+    const pos = this.botPosition(bot);
+    try {
+      const participants: MeetupParticipant[] = [
+        { key: 'me', position: { lat: pos.lat, lng: pos.lng }, mode: 'WALK' },
+        { key: DEMO_ME, position: { lat: myPos.lat, lng: myPos.lng }, mode: 'WALK' },
+      ];
+      const res = this.suggestMeetup(bot, participants, 'cafe', now);
+      const best = res.suggestions[0];
+      if (!best) return null;
+      const m = this.shareMeetup(
+        bot,
+        { op_id: uuidV4(), to: [DEMO_ME], place: best.place, etas: best.etas, meet_at: now + 30 * MINUTE, note: 'Kahve içelim mi? ☕' },
+        now,
+      );
+      this.commit();
+      return m.meetup_id;
+    } catch {
+      return null;
+    }
+  }
+
+  private f5View(): DemoSnapshot['f5'] {
+    const now = Date.now();
+    const home = this.myHomeZone();
+    const last = (this.db.zone_events[DEMO_ME] ?? [])[0];
+    const q = this.db.maps_quota[`${DEMO_ME}_${quotaDay(now)}`];
+    return {
+      homeZone: home ? { zone_id: home.zone_id, name: home.name, center: home.center, radius_m: home.radius_m, rules: home.rules.length, enabled: home.enabled } : null,
+      myZones: Object.keys(this.db.zones[DEMO_ME] ?? {}).length,
+      lastZoneEvent: last
+        ? { zone_name: this.db.zones[DEMO_ME]?.[last.zone_id]?.name ?? 'Bölge', transition: last.transition, at: last.occurred_at, notified: last.notified, suppressed: last.suppressed }
+        : null,
+      activeMeetups: Object.values(this.db.meetups).filter((m) => isMeetupActive(m, now) && (m.from === DEMO_ME || m.to.includes(DEMO_ME))).length,
+      meetupQueries: q?.meetup ?? 0,
+      meetupHits: q?.meetup_hits ?? 0,
+      meetupLimit: MEETUP_LIMITS.perUserDailyLimit,
+    };
+  }
+
   private receiverView(): DemoSnapshot['receiverView'] {
     const candidates = [PEOPLE.ayse.uid, ...Object.keys(this.db.live).filter((r) => r !== DEMO_ME && r !== PEOPLE.ayse.uid).sort()];
     for (const r of candidates) {
@@ -2685,6 +3219,7 @@ export class DemoServer {
       batteryNotice: this.db.battery_notice,
       receiverView: this.receiverView(),
       f4: this.f4View(),
+      f5: this.f5View(),
       mapsDown: this.db.maps_down,
       maps: {
         route: q?.route ?? 0,

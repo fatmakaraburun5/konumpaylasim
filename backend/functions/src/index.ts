@@ -1,5 +1,5 @@
 /**
- * Konum Cloud Functions giriş noktası (Faz 1 + Faz 2 + Faz 3 + Faz 4). Dışa aktarılan adlar core `CALLABLES` ile birebir aynıdır
+ * Konum Cloud Functions giriş noktası (Faz 1 + Faz 2 + Faz 3 + Faz 4 + Faz 5). Dışa aktarılan adlar core `CALLABLES` ile birebir aynıdır
  * (istemci `httpsCallable(functions, 'share_start')` çağırır, bölge europe-west1).
  *
  * Burada YALNIZCA fonksiyon tanımları dışa aktarılır; saf mantık `handlers/*` içindedir.
@@ -27,6 +27,14 @@ import {
   SosResolveRequestSchema,
   SosSendRequestSchema,
   SosUpdateRequestSchema,
+  // Faz 5
+  MeetupCancelRequestSchema,
+  MeetupRespondRequestSchema,
+  MeetupShareRequestSchema,
+  MeetupSuggestRequestSchema,
+  ZoneDeleteRequestSchema,
+  ZoneEventReportRequestSchema,
+  ZoneUpsertRequestSchema,
 } from '@konum/core';
 import { setGlobalOptions } from 'firebase-functions';
 import { onDocumentWritten } from 'firebase-functions/firestore';
@@ -56,6 +64,8 @@ import { sweepStalls } from './handlers/watchdog';
 import { placeNoteDelete, placeNoteUpsert } from './handlers/notes';
 import { pingSend } from './handlers/ping';
 import { emergencyContactsSet, sosAck, sosResolve, sosSend, sosUpdate } from './handlers/sos';
+import { meetupCancel, meetupRespond, meetupShare, meetupSuggest } from './handlers/meetup';
+import { zoneDelete, zoneEventReport, zoneUpsert } from './handlers/zones';
 import {
   AccountDeleteSchema,
   BatteryLowNotifySchema,
@@ -121,6 +131,18 @@ export const sos_update = callable('sos_update', SosUpdateRequestSchema, (ctx, d
 export const sos_resolve = callable('sos_resolve', SosResolveRequestSchema, (ctx, data) => sosResolve(ctx, data));
 export const sos_ack = callable('sos_ack', SosAckRequestSchema, (ctx, data) => sosAck(ctx, data));
 
+// --- Faz 5: bölgeler (varış / ayrılış tetikleyicileri) ve buluşma noktası ---
+export const zone_upsert = callable('zone_upsert', ZoneUpsertRequestSchema, zoneUpsert);
+export const zone_delete = callable('zone_delete', ZoneDeleteRequestSchema, zoneDelete);
+export const zone_event_report = callable('zone_event_report', ZoneEventReportRequestSchema, (ctx, data) => zoneEventReport(ctx, data));
+/** Places API (New) + Routes computeRouteMatrix sunucu vekili: Maps secret'ı gerekir. */
+export const meetup_suggest = callable('meetup_suggest', MeetupSuggestRequestSchema, (ctx, data) => meetupSuggest(ctx, data), {
+  secrets: MAPS_CALLABLE_SECRETS,
+});
+export const meetup_share = callable('meetup_share', MeetupShareRequestSchema, (ctx, data) => meetupShare(ctx, data));
+export const meetup_respond = callable('meetup_respond', MeetupRespondRequestSchema, (ctx, data) => meetupRespond(ctx, data));
+export const meetup_cancel = callable('meetup_cancel', MeetupCancelRequestSchema, meetupCancel);
+
 // --- arka plan ---
 
 /**
@@ -134,7 +156,8 @@ export const share_expiry_sweeper = onSchedule(
     const r = await sweepExpired({ audit: isAuditSlot(Number.isFinite(at) ? at : Date.now()) });
     const links = r.ended_link_ids.length + r.reconciled_link_ids.length + r.purged_link_tombstones;
     const f4 = r.purged_pings + r.purged_place_notes + r.timed_out_sos_ids.length;
-    if (r.ended_share_ids.length || r.expired_request_ids.length || r.reconciled_share_ids.length || r.purged_tombstones || links || f4) {
+    const f5 = r.purged_meetups + r.purged_meetup_cache;
+    if (r.ended_share_ids.length || r.expired_request_ids.length || r.reconciled_share_ids.length || r.purged_tombstones || links || f4 || f5) {
       logger.info('bakım taraması', {
         shares: r.ended_share_ids.length,
         requests: r.expired_request_ids.length,
@@ -146,6 +169,8 @@ export const share_expiry_sweeper = onSchedule(
         pings: r.purged_pings,
         place_notes: r.purged_place_notes,
         sos_timeouts: r.timed_out_sos_ids.length,
+        meetups: r.purged_meetups,
+        meetup_cache: r.purged_meetup_cache,
       });
     }
   },

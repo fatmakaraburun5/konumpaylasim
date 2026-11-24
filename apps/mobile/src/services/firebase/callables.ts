@@ -75,6 +75,31 @@ import {
   type SosSendRequest,
   type SosSendResponse,
   type SosUpdateRequest,
+  // Faz 5
+  MeetupCancelRequestSchema,
+  MeetupRespondRequestSchema,
+  MeetupResponseSchema,
+  MeetupShareRequestSchema,
+  MeetupSuggestRequestSchema,
+  MeetupSuggestResponseSchema,
+  ZoneDeleteRequestSchema,
+  ZoneDeleteResponseSchema,
+  ZoneEventReportRequestSchema,
+  ZoneEventReportResponseSchema,
+  ZoneUpsertRequestSchema,
+  ZoneUpsertResponseSchema,
+  type MeetupCancelRequest,
+  type MeetupRespondRequest,
+  type MeetupResponse,
+  type MeetupShareRequest,
+  type MeetupSuggestRequest,
+  type MeetupSuggestResponse,
+  type ZoneDeleteRequest,
+  type ZoneDeleteResponse,
+  type ZoneEventReportRequest,
+  type ZoneEventReportResponse,
+  type ZoneUpsertRequest,
+  type ZoneUpsertResponse,
 } from '@konum/core';
 import { z } from 'zod';
 import { KonumError, toKonumError } from '../../lib/errors';
@@ -308,3 +333,54 @@ export interface SosApi {
   sosAck: typeof sosAck;
 }
 export const sosApi: SosApi = { emergencyContactsSet, sosSend, sosUpdate, sosResolve, sosAck };
+
+// --- Faz 5: bölgeler (geofence) ve buluşma noktası ---------------------------------------------------
+
+/**
+ * Faz 5 callable'ları (core `CALLABLES.zoneUpsert` … `meetupCancel`; istek/yanıt şemaları core'dan). Hepsi `op_id`
+ * taşır. `zone_event_report` çevrimdışıysa zoneMonitor'ün kalıcı kuyruğundan AYNI op_id ile yeniden denenir
+ * (sunucu bir kez uygular: ikinci bildirim gitmez, aynı `start_share` yanıtı döner).
+ */
+export function zoneUpsert(input: WithOp<ZoneUpsertRequest>): Promise<ZoneUpsertResponse> {
+  return invoke(CALLABLES.zoneUpsert, ZoneUpsertRequestSchema, { ...input, op_id: input.op_id ?? uuidV4() }, ZoneUpsertResponseSchema);
+}
+
+export function zoneDelete(input: WithOp<ZoneDeleteRequest>): Promise<ZoneDeleteResponse> {
+  return invoke(CALLABLES.zoneDelete, ZoneDeleteRequestSchema, { ...input, op_id: input.op_id ?? uuidV4() }, ZoneDeleteResponseSchema);
+}
+
+export function zoneEventReport(input: WithOp<ZoneEventReportRequest>): Promise<ZoneEventReportResponse> {
+  return invoke(CALLABLES.zoneEventReport, ZoneEventReportRequestSchema, { ...input, op_id: input.op_id ?? uuidV4() }, ZoneEventReportResponseSchema);
+}
+
+export function meetupSuggest(input: WithOp<MeetupSuggestRequest>): Promise<MeetupSuggestResponse> {
+  return invoke(CALLABLES.meetupSuggest, MeetupSuggestRequestSchema, { ...input, op_id: input.op_id ?? uuidV4() }, MeetupSuggestResponseSchema);
+}
+
+export function meetupShare(input: WithOp<MeetupShareRequest>): Promise<MeetupResponse> {
+  return invoke(CALLABLES.meetupShare, MeetupShareRequestSchema, { ...input, op_id: input.op_id ?? uuidV4() }, MeetupResponseSchema);
+}
+
+export function meetupRespond(input: WithOp<MeetupRespondRequest>): Promise<MeetupResponse> {
+  return invoke(CALLABLES.meetupRespond, MeetupRespondRequestSchema, { ...input, op_id: input.op_id ?? uuidV4() }, MeetupResponseSchema);
+}
+
+export function meetupCancel(input: WithOp<MeetupCancelRequest>): Promise<MeetupResponse> {
+  return invoke(CALLABLES.meetupCancel, MeetupCancelRequestSchema, { ...input, op_id: input.op_id ?? uuidV4() }, MeetupResponseSchema);
+}
+
+/** Faz 5 depolarının bağımlılıkları (testlerde sahte uygulanır). */
+export interface ZonesApi {
+  zoneUpsert: typeof zoneUpsert;
+  zoneDelete: typeof zoneDelete;
+  zoneEventReport: typeof zoneEventReport;
+}
+export const zonesApi: ZonesApi = { zoneUpsert, zoneDelete, zoneEventReport };
+
+export interface MeetupApi {
+  meetupSuggest: typeof meetupSuggest;
+  meetupShare: typeof meetupShare;
+  meetupRespond: typeof meetupRespond;
+  meetupCancel: typeof meetupCancel;
+}
+export const meetupApi: MeetupApi = { meetupSuggest, meetupShare, meetupRespond, meetupCancel };

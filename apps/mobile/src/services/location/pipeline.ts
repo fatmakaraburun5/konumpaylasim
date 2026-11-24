@@ -91,6 +91,7 @@ import { readDeviceStatus } from './deviceStatus';
 import { locationEngine } from './ExpoLocationEngine';
 import type { LocationEngine } from './LocationEngine';
 import { getBackgroundPermissionsAsync } from './locationPermissions';
+import { tapZoneSamples } from './zoneSampleTap';
 
 export type SampleSource = 'task' | 'watch' | 'heartbeat';
 
@@ -691,6 +692,8 @@ async function processSamples(
 const defaultPipeline = createSamplePipeline();
 
 export function handleSamples(raws: readonly RawLocationSample[], source: SampleSource): Promise<void> {
+  // Faz 5: arka plan görevi / nabız örnekleri bölge filtresine de gider (ön plan izleme ayrıca beslenir, f5Services).
+  if (source !== 'watch') tapZoneSamples(raws, source);
   return defaultPipeline.handleSamples(raws, source);
 }
 
