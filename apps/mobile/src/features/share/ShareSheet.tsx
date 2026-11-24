@@ -45,6 +45,10 @@ export interface ShareSheetProps {
 const LINK_FOREVER_TEXT =
   'Bağlantıya ya da QR koda sahip herkes, sen durdurana kadar konumunu görebilir. Haftada bir hatırlatma alırsın. Emin misin?';
 
+/** [Varsayım] Bağlantı yokken QR oluşturmayı ~3 dk boyunca 5 sn'de bir yeniden dene (sayfa açık kaldıkça). */
+const LINK_AUTO_RETRY_MS = 5_000;
+const LINK_AUTO_RETRY_MAX = 36;
+
 export function ShareSheet({ onLinkCreated, ref }: ShareSheetProps) {
   const theme = useTheme();
   const { colors, spacing } = theme;
@@ -62,7 +66,11 @@ export function ShareSheet({ onLinkCreated, ref }: ShareSheetProps) {
   const [error, setError] = useState<string | null>(null);
   const [permVisible, setPermVisible] = useState(false);
 
+  // QR oluşturma bağlantı yokken gerçekten yeniden denenir; sayfa kapanınca / hedef değişince deneme iptal olur.
+  const runId = useRef(0);
+
   const reset = useCallback(() => {
+    runId.current++;
     setAudience('friends');
     setSelected(new Set());
     setDuration(EMPTY_DURATION);
@@ -83,6 +91,8 @@ export function ShareSheet({ onLinkCreated, ref }: ShareSheetProps) {
   );
 
   const changeAudience = useCallback((a: ShareAudience) => {
+    runId.current++;
+    setStarting(false);
     setAudience(a);
     // Seçenek kümeleri farklı ("Özel süre" bağlantıda yok): süre seçimi sıfırlanır.
     setDuration(EMPTY_DURATION);
@@ -106,15 +116,27 @@ export function ShareSheet({ onLinkCreated, ref }: ShareSheetProps) {
     setStarting(true);
     setError(null);
     if (isLink) {
-      const created = await linkStore.getState().create(duration.choice);
-      setStarting(false);
-      if (!created.ok) {
-        setError(created.error.message);
-        return;
+      const run = ++runId.current;
+      const choice = duration.choice;
+      for (let attempt = 0; ; attempt++) {
+        // Aynı süre seçimiyle tekrar: linkStore aynı op_id'yi kullanır, sunucuda tek bağlantı oluşur.
+        const created = await linkStore.getState().create(choice);
+        if (run !== runId.current) return;
+        if (created.ok) {
+          setStarting(false);
+          sheet.current?.dismiss();
+          onLinkCreated?.(created.linkId);
+          return;
+        }
+        if (created.error.code !== 'unavailable' || attempt >= LINK_AUTO_RETRY_MAX) {
+          setStarting(false);
+          setError(created.error.code === 'unavailable' ? 'Bağlantı yok. İnternetini kontrol edip tekrar dene.' : created.error.message);
+          return;
+        }
+        setError('Bağlantı yok. İnternet gelince QR kendiliğinden oluşturulacak…');
+        await new Promise((r) => setTimeout(r, LINK_AUTO_RETRY_MS));
+        if (run !== runId.current) return;
       }
-      sheet.current?.dismiss();
-      onLinkCreated?.(created.linkId);
-      return;
     }
     const res = await sharingStore.getState().startShare([...selected], duration.choice);
     setStarting(false);
