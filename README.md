@@ -1,6 +1,6 @@
 # Konum
 
-Arkadaşlarla süreli canlı konum paylaşan iOS ve Android uygulaması. Bu depo Faz 1, Faz 2 ve Faz 3'ün çalıştırılabilir kodudur: ortak çekirdek paket, Expo (React Native) mobil uygulama, Firebase backend ve QR bağlantıları için salt okunur web haritası. Faz 3 haftalık ve süresiz paylaşımlar için arka plan takibini, harekete göre pil optimizasyonunu, çevrimdışı kuyruğu ve %15 düşük pil bildirimini ekler.
+Arkadaşlarla süreli canlı konum paylaşan iOS ve Android uygulaması. Bu depo Faz 1–4'ün çalıştırılabilir kodudur: ortak çekirdek paket, Expo (React Native) mobil uygulama, Firebase backend ve QR bağlantıları için salt okunur web haritası. Faz 3 haftalık ve süresiz paylaşımlar için arka plan takibini, harekete göre pil optimizasyonunu, çevrimdışı kuyruğu ve %15 düşük pil bildirimini ekler. Faz 4 harita üzerinden tek dokunuşla "Buradayım / Yoldayım" sinyalini, konum yanına kısa durum ve yer notlarını ve tam konumlu SOS'u (basılı tut + geri sayım, acil kişiler, yüksek öncelikli bildirim, alıcıda tam ekran acil kartı) ekler.
 
 ## Yapı
 
@@ -10,15 +10,18 @@ konum/
                    callable sözleşmeleri, Türkçe biçimlendirme. Mobil ve backend aynı kodu kullanır.
   apps/mobile/     Expo SDK 58 + expo-router. Native Google Maps (açık/koyu stil, yumuşak pin), rota + ETA kartı,
                    paylaşım başlatma, süre seçimi, uzatma, QR bağlantısı ve izleyicisi (app/s/[token]),
-                   arka plan konum görevi, bildirimler, arkadaşlar.
+                   arka plan konum görevi, bildirimler, arkadaşlar, ping, durum/yer notu, SOS.
   apps/web/        Vite + React salt okunur web haritası: https://<alan>/s/<token> (uygulaması olmayanlar için).
   backend/         Firestore + RTDB kuralları, Cloud Functions (europe-west1), Maps vekili, Hosting
                    (Universal/App Links dosyaları), emülatör testleri.
   docs/
-    PHASES.md        Faz tablosu, Faz 1 → 2, Faz 2 → 3 ve Faz 3 → 4 geçiş noktaları
+    PHASES.md        Faz tablosu, Faz 1 → 2, Faz 2 → 3, Faz 3 → 4 ve Faz 4 → 5 geçiş noktaları
     PHASE2.md        Faz 2: harita ve ETA kartı, süre yaşam döngüsü, QR token ve iptal, Maps maliyet/kota kuralları
     PHASE3.md        Faz 3: iOS/Android arka plan ve izin mimarisi, hareket × pil takip matrisi, çevrimdışı kuyruk,
                      son doğrulanmış konum, %15 düşük pil akışı, saha ve simülasyon test senaryoları
+    PHASE4.md        Faz 4: ping, durum ve yer notu, SOS veri modelleri; gerçek zamanlı/push akışı; SOS acil
+                     ekranı ve bildirim davranışı (iOS critical/time-sensitive, Android sos kanalı, DND);
+                     yanlış tetiklemeyi önleyen UX; gizlilik kararları
     ARCHITECTURE.md  Bileşenler, konum ve bağlantı akışı, gizlilik modeli, yollar
     BACKEND_SPEC.md  İlk Firebase önerisi (core ve kod ile çeliştiğinde core geçerlidir)
 ```
@@ -37,7 +40,9 @@ Giriş için herhangi bir cep numarası ve **demo kodu 123456** yeterli. Firebas
 arkadaşlar ve konumları, harita çizimi, arka plan konum takibi ve gerçek bildirimler simüle edilir; yanındaki
 "Demo kontrolleri" paneliyle süre bitişi, arkadaşlık isteği gibi durumlar tetiklenir. Faz 2 de önizlemede çalışır:
 arkadaşa dokununca rota + ETA kartı ve adres, Paylaş → "Bağlantı (QR)" ile QR, +30 dk / +1 saat, "Bağlantıyı önizle" ile
-salt okunur izleyici ve panelden iptal ("Google yanıt vermesin" anahtarı servis kesintisini dener). `npm run web:export`
+salt okunur izleyici ve panelden iptal ("Google yanıt vermesin" anahtarı servis kesintisini dener). Faz 4 için
+paneldeki "FAZ 4 SENARYOLARI": Ayşe "Buradayım", Mehmet "Yoldayım", Ayşe durum notu, park yeri notu, "Ayşe SOS
+göndersin" (tam ekran acil kartı) ve "Ayşe güvende"; kendi SOS'un için haritadaki kırmızı düğmeyi basılı tut. `npm run web:export`
 tek dosyalık statik sürümü `apps/mobile/dist-web/` altına üretir. Ayrıntı: `apps/mobile/README.md`.
 
 ## Testleri çalıştırma
@@ -48,11 +53,11 @@ Gerekenler: Node 22. Backend emülatörleri için Java 11 veya üstü.
 # Çekirdek (197 test; Faz 3 simülasyon tablosu: npx vitest run test/simulate.test.ts)
 cd packages/core && npm ci && npm test && npm run typecheck
 
-# Mobil (147 test, 18 dosya) + yerel JS paketleri
+# Mobil (166 test, 21 dosya) + yerel JS paketleri
 cd apps/mobile && npm ci && npm run typecheck && npm test
 EXPO_OFFLINE=1 CI=1 npx expo export --platform android --output-dir /tmp/konum-android
 
-# Backend (182 test, 17 dosya; Auth, Firestore, RTDB ve Functions emülatörlerini açar)
+# Backend (195 test, 18 dosya; Auth, Firestore, RTDB ve Functions emülatörlerini açar)
 cd backend && npm ci && npm --prefix functions ci && npm test
 
 # Web haritası (53 test) + derleme + Playwright duman testi (sahte veri, 80 denetim)
@@ -82,4 +87,4 @@ Bedeli: Google'a bağımlılık ve yoğun kullanımda RTDB maliyeti. Konum yazma
 
 ## Durum
 
-Faz 1, Faz 2 ve Faz 3'ün kodu hazır; birim, kural, emülatör ve uçtan uca testler geçiyor. Henüz gerçek bir Firebase projesine dağıtılmadı, gerçek Google Maps anahtarlarıyla ve gerçek cihazda denenmedi; alan adı, Apple Team ID ve imza parmak izleri yer tutucu. Faz 3'ün hareket etkinliği yerel modülü (Swift/Kotlin) bu ortamda derlenmedi ve pil tüketimi gerçek cihazda ölçülmedi. Sıradaki adımlar `docs/PHASES.md` içindeki geçiş listelerindedir ("Faz 3 → Faz 4" gerçek cihazda pil ölçümünü içerir).
+Faz 1–4'ün kodu hazır; birim, kural, emülatör ve uçtan uca testler geçiyor. Henüz gerçek bir Firebase projesine dağıtılmadı, gerçek Google Maps anahtarlarıyla ve gerçek cihazda denenmedi; alan adı, Apple Team ID ve imza parmak izleri yer tutucu. Faz 3'ün hareket etkinliği yerel modülü (Swift/Kotlin) bu ortamda derlenmedi ve pil tüketimi gerçek cihazda ölçülmedi. Faz 4'ün SOS bildirim davranışı (Rahatsız Etme, sessiz mod, kilit ekranı) gerçek cihazda denenmedi; iOS Critical Alerts yetkisi Apple onayı beklediği için kapalı. Sıradaki adımlar `docs/PHASES.md` içindeki geçiş listelerindedir ("Faz 3 → Faz 4" gerçek cihazda pil ölçümünü, "Faz 4 → Faz 5" SOS'un cihaz testlerini içerir).

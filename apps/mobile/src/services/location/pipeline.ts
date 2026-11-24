@@ -39,6 +39,7 @@ import {
   serverNow,
   safeRecordedAt,
   shouldPublish,
+  statusNoteExtras,
   uuidV4,
   type AppPhase,
   type DeviceStatus,
@@ -50,6 +51,7 @@ import {
   type OutboxTarget,
   type RawLocationSample,
   type ShareId,
+  type StatusNote,
   type TrackingProfileId,
   type UserId,
 } from '@konum/core';
@@ -68,6 +70,7 @@ import {
   clearCursor,
   inTargetsLock,
   loadCursor,
+  loadStatusNote,
   loadTargets,
   refreshLinkTargetExpiries,
   refreshTargetExpiries,
@@ -146,6 +149,11 @@ export interface PipelineDeps {
   /** Bekleyen callable (düşük pil) çağrısı. */
   callPending: (c: PendingCall) => Promise<CallOutcome>;
   newOpId: () => string;
+  /**
+   * Faz 4: kendi durum notum (kalıcı; arka plan görevi de okur). Arkadaş paketlerine `note` + `note_exp` olarak
+   * eklenir; bağlantı (QR) paketlerine EKLENMEZ. Not değişince (etiket farklı) yayın zorlanır.
+   */
+  statusNote: (uid: UserId) => Promise<StatusNote | null>;
 }
 
 /** Firebase Auth: oturum yerelden geri yüklenene kadar bekle; zaman aşımında "bilinmiyor". */
@@ -221,6 +229,10 @@ const defaultDeps = (getDeps: () => PipelineDeps): PipelineDeps => ({
   canUseGeofence: cachedGeofencePermission(),
   callPending: callPendingFirebase,
   newOpId: uuidV4,
+  statusNote: async (uid) => {
+    const p = await loadStatusNote();
+    return p && p.uid === uid ? p.note : null;
+  },
 });
 
 export interface SamplePipeline {
@@ -550,7 +562,11 @@ async function processSamples(
   const cursor = await loadCursor();
   if (cursor.authMissingSince !== null) await saveCursor({ authMissingSince: null });
   const key = combinedTargetsKey(targets, linkTargets);
-  const force = cursor.lastTargetsKey !== key || needsHeartbeatAnnounce(obs.lastSentHb, plan) || lowFired.length > 0;
+  // Faz 4: durum notu (süresi geçmişse boş). Not eklendi / değişti / kalktı → hemen yayın (alıcı hemen görsün).
+  const noteExtras = targets.length ? statusNoteExtras(await d.statusNote(uid).catch(() => null), now) : {};
+  const noteKey = noteExtras.note ?? '';
+  const noteChanged = targets.length > 0 && (cursor.lastNoteKey ?? '') !== noteKey;
+  const force = cursor.lastTargetsKey !== key || needsHeartbeatAnnounce(obs.lastSentHb, plan) || lowFired.length > 0 || noteChanged;
   const decision = shouldPublish(cursor.lastPublished, { sample: norm.sample, battery_pct: pct, activity }, plan.profile, now, force);
   let lastLiveTs = cursor.lastLiveTs;
 
@@ -581,9 +597,11 @@ async function processSamples(
 
     // Arkadaşlar ve bağlantılar AYRI yazmalarla: birinin kural reddi diğerini düşürmez.
     const extras = { hb };
+    // Faz 4: not yalnızca arkadaş paketlerine (bağlantı izleyicilerine gitmez).
+    const friendExtras = { hb, ...noteExtras };
     const friendResult: PublishResult | null = finalTargets.length
       ? await publishSample(
-          { sample: norm.sample, device, senderId: uid, targets: finalTargets, now, activity, extras },
+          { sample: norm.sample, device, senderId: uid, targets: finalTargets, now, activity, extras: friendExtras },
           { ...d.publisherDeps(uid, nowFn), isAllowed: (id) => !d.isBlocked(id) },
         )
       : null;
@@ -645,7 +663,12 @@ async function processSamples(
     if (failedTargets.length) await d.outbox.enqueue(uid, queueSample, failedTargets, now);
     if (sentFriends.length || sentLinks.length) {
       lastLiveTs = Math.max(lastLiveTs ?? -Infinity, norm.sample.timestamp);
-      await saveCursor({ lastPublished, lastTargetsKey: combinedTargetsKey(sentFriends, sentLinks), lastLiveTs });
+      await saveCursor({
+        lastPublished,
+        lastTargetsKey: combinedTargetsKey(sentFriends, sentLinks),
+        lastLiveTs,
+        ...(sentFriends.length ? { lastNoteKey: noteKey } : {}),
+      });
     } else if (failedTargets.length) {
       await saveCursor({ lastPublished, lastTargetsKey: key });
     }

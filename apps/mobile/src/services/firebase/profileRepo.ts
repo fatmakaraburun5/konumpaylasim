@@ -2,7 +2,7 @@
  * Firestore okuyucuları: kendi profilim (`users/{uid}`, yalnızca sahibi okur) ve arkadaşlıklarım
  * (`friendships`, iki kısıtlı sorgu) ve giden isteklerim (`users/{uid}/outgoing_requests`). FCM token kaydı (`devices/{uid}/tokens`, sahibi yazar).
  */
-import { PATHS, type Friendship, type UserId, type UserProfile } from '@konum/core';
+import { PATHS, SOS_LIMITS, type Friendship, type UserId, type UserProfile } from '@konum/core';
 import {
   collection,
   deleteDoc,
@@ -71,6 +71,27 @@ export function listenFriendships(uid: UserId, cb: (list: Friendship[]) => void,
     unA();
     unP();
   };
+}
+
+/**
+ * Faz 4: acil durum kişilerim `users/{ben}.emergency_contacts` (yalnızca `emergency_contacts_set` callable'ı yazar;
+ * belgeyi yalnızca sahibi okur). Alan yoksa boş liste.
+ */
+export function listenEmergencyContacts(uid: UserId, cb: (ids: UserId[]) => void, onError?: (e: Error) => void): () => void {
+  return onSnapshot(
+    doc(getFirestore(), PATHS.user(uid)),
+    (snap) => cb(snap.exists() ? emergencyContactsOf(snap.data()) : []),
+    (e) => onError?.(e),
+  );
+}
+
+/** Belgedeki listeyi savunmalı okur (geçersiz kimlikler atlanır, en çok core `SOS_LIMITS.maxContacts`). */
+export function emergencyContactsOf(data: unknown): UserId[] {
+  const raw = (data as { emergency_contacts?: unknown } | null | undefined)?.emergency_contacts;
+  if (!Array.isArray(raw)) return [];
+  const out: UserId[] = [];
+  for (const v of raw) if (typeof v === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(v) && !out.includes(v)) out.push(v);
+  return out.slice(0, SOS_LIMITS.maxContacts);
 }
 
 /** Gönderdiğim arkadaşlık istekleri: yalnızca maskeli etiket taşır, hedefin uid'ini içermez. */

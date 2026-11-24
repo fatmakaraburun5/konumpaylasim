@@ -19,6 +19,9 @@
  *   Durdurma niyeti / bağlantı durdurma        → kuyruktan o hedeflerin noktaları HEMEN silinir
  *   Takip başladı                             → uyarlamalı zamanlayıcı + OS etkinliği (adaptive/runtime)
  *
+ *   Faz 4 (f4Services.ts): ping kutusu, yer notları, SOS uyarıları, acil kişiler, bildirim dokunuşları;
+ *   durum notu değişince canlı hedef varsa hemen bir paket yayınlanır (not arkadaş paketlerine eklenir).
+ *
  * Açılış sırası (yayın asla kullanıcının durdurduğu paylaşıma geri dönmez):
  *   1. Kalıcı durdurma niyetleri bu hesaba bağlanır ve reducer'a geri yüklenir (STOP_REQUESTED).
  *   2. Sunucu anlık görüntüsü henüz yoksa, kalıcı hedeflerdeki oturum özeti GEÇİCİ olarak gösterilir:
@@ -93,6 +96,7 @@ import { handleExpiryResponse, type ExtendRoutes, type ExtendViaStore } from './
 import { cancelAllExpiryNotifications, configureNotifications, syncExpiryNotifications } from './notifications/expiryNotifications';
 import { registerPushToken } from './notifications/push';
 import { resilientListener, type ListenerHandlers, type ResilientListener } from './resilientListener';
+import { resetF4Stores, startF4Services } from './f4Services';
 import { linkTokenVault } from './security/linkTokenVault';
 
 /**
@@ -325,6 +329,22 @@ export function startSessionServices(uid: UserId): () => void {
   });
 
   void registerPushToken(uid).then((u) => (disposed ? u() : unsubs.push(u)));
+
+  // Faz 4: ping / not / SOS dinleyicileri. Durum notu değişince tek ölçüm alınıp hemen yayınlanır (hat notu ekler
+  // ve not değiştiği için yayını zorlar).
+  unsubs.push(
+    startF4Services(uid, {
+      hasLiveTargets: () => hasLiveTargets(),
+      publishNow: () => {
+        void locationEngine
+          .getCurrentSample()
+          .then((raw) => {
+            if (raw && !disposed && hasLiveTargets()) void handleSamples([raw], 'heartbeat');
+          })
+          .catch(() => undefined);
+      },
+    }),
+  );
 
   unsubs.push(
     listenConnected((c) => {
@@ -646,4 +666,6 @@ onSignedOut(async () => {
   friendsStore.getState().reset();
   locationStore.getState().reset();
   syncStatusStore.getState().reset();
+  // Faz 4: ping kutusu, notlar, SOS durumu (kalıcı durum notu clearBackgroundState ile silindi).
+  resetF4Stores();
 });

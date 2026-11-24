@@ -15,12 +15,20 @@
  *  - Faz 2: `route_cache/{key}`, `geocode_cache/{cell}` Google yanıt önbellekleri (`expire_at` TTL)
  *  - Faz 2: `maps_quota/{uid}_{gün}`, `maps_budget/{gün}_{parça}` günlük Maps sayaçları; `config/maps` bütçe / kapatma
  *  - Faz 3: `battery_alerts/{uid}_{session_id}` düşük pil bildirimi durumu (bir kez / yeniden kurma; `purge_at` TTL)
+ *  - Faz 4 (RTDB): `ping_expiry/{ping_id}` = `{to, from, expires_at}` süpürücü dizini (`ping_inbox` iki seviyeli olduğu
+ *    için süresi geçen pingler buradan bulunur; istemciye kapalı)
  *
  * Faz 2'de gönderenin okuyabildiği koleksiyon:
  *  - `link_shares/{link_id}` bağlantı (QR) paylaşımları (yalnızca `sender_id == ben` sorgusuyla)
  *
  * İstemcinin okuyabildiği ek koleksiyon:
  *  - `users/{uid}/outgoing_requests/{oid}` giden arkadaşlık istekleri (maskeli etiket; hedef uid'i YOK)
+ *
+ * Faz 4 (yalnızca callable yazar):
+ *  - `place_notes/{note_id}` yer notları (sahibi ve `visible_to` okur)
+ *  - `sos_alerts/{sos_id}` acil durum uyarıları (gönderen ve `recipient_ids` okur)
+ *  - `users/{uid}.emergency_contacts` acil durum kişileri (sahibi okur)
+ *  - RTDB `ping_inbox/{to}/{ping_id}` (alıcı okur ve siler)
  */
 import {
   type EpochMs,
@@ -31,7 +39,9 @@ import {
   type LocationRequest,
   type LocationShare,
   type OutgoingShareView,
+  type PlaceNote,
   type PublicProfile,
+  type SosAlert,
   type UserId,
   type UserProfile,
   PATHS,
@@ -104,6 +114,8 @@ export interface UserDoc extends UserProfile {
   inactivity_state?: InactivityState;
   /** account_delete başladı: yeni paylaşım/istek kabul edilmez. */
   deleting?: boolean;
+  /** Faz 4: acil durum kişileri (en çok 5, sıralı; yalnızca `emergency_contacts_set` yazar). */
+  emergency_contacts?: UserId[];
 }
 
 export interface BlockDoc {
@@ -192,6 +204,66 @@ export interface DeletedUserDoc {
   purge_at: Timestamp;
 }
 
+// ---------------------------------------------------------------------------
+// Faz 4: yer notları, acil durum, ping
+// ---------------------------------------------------------------------------
+
+/** `place_notes/{note_id}`: core PlaceNote + TTL alanı (istemci `purge_at`'i okumaz). */
+export interface PlaceNoteDoc extends PlaceNote {
+  purge_at: Timestamp;
+}
+
+/** `sos_alerts/{sos_id}`: core SosAlert + TTL alanı. */
+export interface SosAlertDoc extends SosAlert {
+  purge_at: Timestamp;
+}
+
+/** RTDB `ping_expiry/{ping_id}`: süpürücü ve hesap silme dizini (yalnızca sunucu). */
+export interface PingExpiryEntry {
+  to: UserId;
+  from: UserId;
+  expires_at: EpochMs;
+}
+
+export function toPlaceNote(d: PlaceNoteDoc | PlaceNote): PlaceNote {
+  return {
+    note_id: d.note_id,
+    owner_id: d.owner_id,
+    emoji: d.emoji ?? null,
+    text: d.text,
+    position: { lat: d.position.lat, lng: d.position.lng, accuracy: d.position.accuracy ?? null },
+    visible_to: [...(d.visible_to ?? [])],
+    created_at: d.created_at,
+    updated_at: d.updated_at,
+    expires_at: d.expires_at,
+  };
+}
+
+export function toSosAlert(d: SosAlertDoc | SosAlert): SosAlert {
+  return {
+    sos_id: d.sos_id,
+    sender_id: d.sender_id,
+    sender_name: d.sender_name,
+    recipient_ids: [...(d.recipient_ids ?? [])],
+    status: d.status,
+    resolve_reason: d.resolve_reason ?? null,
+    message: d.message,
+    location: { lat: d.location.lat, lng: d.location.lng, accuracy: d.location.accuracy, timestamp: d.location.timestamp },
+    address: d.address ?? null,
+    maps_url: d.maps_url,
+    battery_pct: d.battery_pct ?? null,
+    is_charging: d.is_charging ?? null,
+    route: d.route
+      ? { destination_label: d.route.destination_label ?? null, eta_s: d.route.eta_s, distance_m: d.route.distance_m }
+      : null,
+    created_at: d.created_at,
+    updated_at: d.updated_at,
+    resolved_at: d.resolved_at ?? null,
+    acks: { ...(d.acks ?? {}) },
+    update_count: d.update_count ?? 0,
+  };
+}
+
 export const COL = {
   users: 'users',
   usersPrivate: 'users_private',
@@ -219,6 +291,17 @@ export const COL = {
   config: 'config',
   // Faz 3
   batteryAlerts: 'battery_alerts',
+  // Faz 4
+  placeNotes: PATHS.placeNotes,
+  sosAlerts: PATHS.sosAlerts,
+} as const;
+
+/** Faz 4 RTDB yolları. */
+export const RTDB_F4 = {
+  pingInbox: (to: UserId) => PATHS.pingInbox(to),
+  ping: (to: UserId, pingId: string) => `${PATHS.pingInbox(to)}/${pingId}`,
+  pingExpiryRoot: 'ping_expiry',
+  pingExpiry: (pingId: string) => `ping_expiry/${pingId}`,
 } as const;
 
 export const refs = {
@@ -253,6 +336,11 @@ export const refs = {
   mapsConfig: () => db().collection(COL.config).doc('maps'),
   // Faz 3
   batteryAlert: (uid: UserId, sessionId: string) => db().collection(COL.batteryAlerts).doc(`${uid}_${sessionId}`),
+  // Faz 4
+  placeNote: (id: string) => db().doc(PATHS.placeNote(id)),
+  newPlaceNote: () => db().collection(COL.placeNotes).doc(),
+  sosAlert: (id: string) => db().doc(PATHS.sosAlert(id)),
+  newSosAlert: () => db().collection(COL.sosAlerts).doc(),
 } as const;
 
 /** Biten belgeler için TTL anı. [Varsayım] 7 gün. */

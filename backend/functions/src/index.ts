@@ -1,5 +1,5 @@
 /**
- * Konum Cloud Functions giriş noktası (Faz 1 + Faz 2 + Faz 3). Dışa aktarılan adlar core `CALLABLES` ile birebir aynıdır
+ * Konum Cloud Functions giriş noktası (Faz 1 + Faz 2 + Faz 3 + Faz 4). Dışa aktarılan adlar core `CALLABLES` ile birebir aynıdır
  * (istemci `httpsCallable(functions, 'share_start')` çağırır, bölge europe-west1).
  *
  * Burada YALNIZCA fonksiyon tanımları dışa aktarılır; saf mantık `handlers/*` içindedir.
@@ -18,6 +18,15 @@ import {
   ShareRevokeRequestSchema,
   ShareStartRequestSchema,
   ShareStopRequestSchema,
+  // Faz 4
+  EmergencyContactsSetRequestSchema,
+  PingSendRequestSchema,
+  PlaceNoteDeleteRequestSchema,
+  PlaceNoteUpsertRequestSchema,
+  SosAckRequestSchema,
+  SosResolveRequestSchema,
+  SosSendRequestSchema,
+  SosUpdateRequestSchema,
 } from '@konum/core';
 import { setGlobalOptions } from 'firebase-functions';
 import { onDocumentWritten } from 'firebase-functions/firestore';
@@ -44,6 +53,9 @@ import { shareExtend, shareRevoke, shareStart, shareStop } from './handlers/shar
 import { handleExpiryTask, isAuditSlot, sweepExpired } from './handlers/sweeper';
 import { accountDelete, inviteCodeRegenerate, sweepInactive, userBootstrap } from './handlers/user';
 import { sweepStalls } from './handlers/watchdog';
+import { placeNoteDelete, placeNoteUpsert } from './handlers/notes';
+import { pingSend } from './handlers/ping';
+import { emergencyContactsSet, sosAck, sosResolve, sosSend, sosUpdate } from './handlers/sos';
 import {
   AccountDeleteSchema,
   BatteryLowNotifySchema,
@@ -98,6 +110,17 @@ export const geocode_reverse = callable('geocode_reverse', GeocodeReverseRequest
 // --- Faz 3: düşük pil bildirimi ---
 export const battery_low_notify = callable('battery_low_notify', BatteryLowNotifySchema, (ctx, data) => batteryLowNotify(ctx, data));
 
+// --- Faz 4: ping, yer notu, acil durum ---
+export const ping_send = callable('ping_send', PingSendRequestSchema, (ctx, data) => pingSend(ctx, data));
+export const place_note_upsert = callable('place_note_upsert', PlaceNoteUpsertRequestSchema, placeNoteUpsert);
+export const place_note_delete = callable('place_note_delete', PlaceNoteDeleteRequestSchema, placeNoteDelete);
+export const emergency_contacts_set = callable('emergency_contacts_set', EmergencyContactsSetRequestSchema, emergencyContactsSet);
+/** Adres sunucuda aranabilir (önbellek → Google, ≤ 2 sn, kota dışı): Maps secret'ı gerekir. */
+export const sos_send = callable('sos_send', SosSendRequestSchema, (ctx, data) => sosSend(ctx, data), { secrets: MAPS_CALLABLE_SECRETS });
+export const sos_update = callable('sos_update', SosUpdateRequestSchema, (ctx, data) => sosUpdate(ctx, data), { secrets: MAPS_CALLABLE_SECRETS });
+export const sos_resolve = callable('sos_resolve', SosResolveRequestSchema, (ctx, data) => sosResolve(ctx, data));
+export const sos_ack = callable('sos_ack', SosAckRequestSchema, (ctx, data) => sosAck(ctx, data));
+
 // --- arka plan ---
 
 /**
@@ -110,7 +133,8 @@ export const share_expiry_sweeper = onSchedule(
     const at = Date.parse(event.scheduleTime);
     const r = await sweepExpired({ audit: isAuditSlot(Number.isFinite(at) ? at : Date.now()) });
     const links = r.ended_link_ids.length + r.reconciled_link_ids.length + r.purged_link_tombstones;
-    if (r.ended_share_ids.length || r.expired_request_ids.length || r.reconciled_share_ids.length || r.purged_tombstones || links) {
+    const f4 = r.purged_pings + r.purged_place_notes + r.timed_out_sos_ids.length;
+    if (r.ended_share_ids.length || r.expired_request_ids.length || r.reconciled_share_ids.length || r.purged_tombstones || links || f4) {
       logger.info('bakım taraması', {
         shares: r.ended_share_ids.length,
         requests: r.expired_request_ids.length,
@@ -119,6 +143,9 @@ export const share_expiry_sweeper = onSchedule(
         links: r.ended_link_ids.length,
         reconciled_links: r.reconciled_link_ids.length,
         link_tombstones: r.purged_link_tombstones,
+        pings: r.purged_pings,
+        place_notes: r.purged_place_notes,
+        sos_timeouts: r.timed_out_sos_ids.length,
       });
     }
   },

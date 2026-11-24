@@ -123,6 +123,16 @@ Faz 2 de önizlemede denenebilir:
   ve bugünkü rota / adres sayaçları (günlük sınır 200 / 100, önbellek isabeti sayılmaz). "Bitişe 2 dk kalsın"
   QR bağlantılarını da kısaltır; bitmek üzere bildirimi bağlantılar için de çıkar.
 
+Faz 4 (ayrıntı: `docs/PHASE4.md`):
+
+- **Ping:** panel "Ayşe 'Buradayım' göndersin" → üstte kayan kart + pinde nabız; kendin göndermek için arkadaşa dokun
+  → EtaCard'da "📍 Buradayım" / "🚶 Yoldayım" (ya da Arkadaşlar ekranındaki küçük düğmeler).
+- **Notlar:** sol alttaki "Not ekle" → durum notu (hazır çipler, süre); haritaya uzun bas → EtaCard "📝 Buraya not
+  bırak" → yer notu. Panelden Ayşe'nin durum notu (pin altında balon) ve park yeri notu (not pini + alt kart).
+- **SOS:** sağ alttaki kırmızı düğmeyi 1,5 sn basılı tut → (ilk seferde acil kişi seçimi) → 5 sn geri sayım →
+  "Uyarı gönderildi"; botlar birkaç saniyede "Gördü" der. Panel "Ayşe SOS göndersin" → alıcı tam ekran acil kartı,
+  "Ayşe güvende" → yeşil kart.
+
 Tek dosyalık statik derleme (sunucu gerektirmez, dış istek atmaz):
 
 ```bash

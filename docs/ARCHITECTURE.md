@@ -1,6 +1,6 @@
-# Mimari (Faz 1–3)
+# Mimari (Faz 1–4)
 
-Bu dosya kodun nasıl bir araya geldiğini kısaca anlatır. Ayrıntılar kodda ve alt README'lerdedir. Çelişki olursa `packages/core` geçerlidir. Faz 2 (harita, ETA, QR bağlantısı, web haritası, Maps maliyeti) ayrıntısı: [`PHASE2.md`](PHASE2.md). Faz 3 (arka plan takibi, pil, çevrimdışı kuyruk) ayrıntısı: [`PHASE3.md`](PHASE3.md).
+Bu dosya kodun nasıl bir araya geldiğini kısaca anlatır. Ayrıntılar kodda ve alt README'lerdedir. Çelişki olursa `packages/core` geçerlidir. Faz 2 (harita, ETA, QR bağlantısı, web haritası, Maps maliyeti) ayrıntısı: [`PHASE2.md`](PHASE2.md). Faz 3 (arka plan takibi, pil, çevrimdışı kuyruk) ayrıntısı: [`PHASE3.md`](PHASE3.md). Faz 4 (ping, kısa notlar, tam konumlu SOS) ayrıntısı: [`PHASE4.md`](PHASE4.md).
 
 ## Bileşenler
 
@@ -70,6 +70,23 @@ Konum yolunda hiç Cloud Function çalışmaz. RTDB kuralları her yazmada `shar
 4. Durdurma / süre dolumu / hesap silme: Firestore commit → `link_acl` mezar taşı → `link_live` silinir. Açık sekme
    "Paylaşım sona erdi" gösterir, yeni okuma reddedilir.
 
+## Ping, notlar ve SOS (Faz 4)
+
+Üç özellik de mevcut desene oturur: istemci yalnızca callable çağırır ya da kendi kutusunu dinler, sunucu doğrular ve
+yazar, uygulama kapalıysa push gider. Push koordinat taşımaz, koordinat yetkili okumayla gelir.
+
+- **Ping:** `ping_send` → RTDB `ping_inbox/{alıcı}/{ping_id}` (15 dk) + `ping` push. Alıcı `pingStore` ile kart ve pin
+  vurgusu üretir, kaydı yalnızca silebilir. Süpürücü `ping_expiry` dizininden süresi geçenleri siler.
+- **Durum notu:** ayrı belge yoktur. Yayıncı arkadaş paketlerine `note` + `note_exp` ekler (`statusNoteExtras`).
+  Kural ikisini birlikte ister, `link_live`'a eklenmez.
+- **Yer notu:** `place_note_upsert/delete` → Firestore `place_notes` (sahibi + `visible_to` okur). Süpürücü ve TTL siler.
+- **SOS:** `sos_send` → Firestore `sos_alerts` (tam koordinat, doğruluk, adres, harita bağlantısı, pil, rota) + her acil
+  kişiye yüksek öncelikli `sos` push (Android `sos` kanalı, iOS `time-sensitive` / onaylanırsa `critical`). Alıcı
+  dinleyicisi `focusedSosId` ile tam ekran kartı açar. `sos_update` (15 sn), `sos_ack` (gönderene push),
+  `sos_resolve` ("güvende" push'u alarm bildiriminin yerine geçer). 24 sa'te süpürücü kapatır.
+- Mobilde üç depo (`state/{pingStore,notesStore,sosStore}.ts`) ve tek başlatıcı (`services/f4Services.ts`) vardır.
+  Çıkışta depolar sıfırlanır.
+
 ## Gizlilik modeli
 
 - Alıcı yalnızca `live_locations/{kendi_uid}` altını okur. Gönderenin kime paylaştığını göremez.
@@ -86,6 +103,10 @@ Konum yolunda hiç Cloud Function çalışmaz. RTDB kuralları her yazmada `shar
   kopyayla aynı atomik silmede kalkar. QR bağlantısında iz, `recorded_at` ve `is_charging` yoktur. "Durdur" kuyruktaki
   noktaları hemen siler. Düşük pil ve duraksama bildirimleri koordinat taşımaz. Hareket etkinliği cihazdan çıkmaz
   (yalnızca pakette `activity_state` ve `hb`).
+- Faz 4: ping konumu yalnızca alıcının kutusuna gider ve 15 dk yaşar. Durum notu yalnızca konumu zaten gören arkadaşlara
+  pakette gider. Yer notu varsayılan olarak "yalnızca ben"dir. SOS yalnızca seçilen (≤ 5, hâlâ arkadaş olan) acil
+  kişilere gider. SOS push gövdesi adres, doğruluk ve pil taşır, ham koordinat taşımaz (bilinçli istisna). Yetkisiz okuma
+  `sos_not_active` / `not_friends` ile bilgi sızdırmadan reddedilir.
 
 ## Yollar
 
@@ -110,6 +131,11 @@ Konum yolunda hiç Cloud Function çalışmaz. RTDB kuralları her yazmada `shar
 | `live_trail/{receiver}/{share_id}/{point_id}` | RTDB | alıcı | gönderen (ACL aktif, yalnızca `TRAIL_FIELDS`, `q: 1`, 24 sa, ≥ `started_at`); sunucu siler |
 | `battery_alerts/{uid}_{session_id}` | Firestore | yok | sunucu (düşük pil tetikleyici durumu, TTL) |
 | `location_shares/{id}.stall_nudges` | Firestore | (istemci şeması atar) | sunucu (bekçi kaydı, sürüm değişmez) |
+| `ping_inbox/{to}/{ping_id}` | RTDB | alıcı | sunucu; alıcı yalnızca siler |
+| `ping_expiry/{ping_id}` | RTDB | yok | sunucu (süpürücü dizini) |
+| `place_notes/{note_id}` | Firestore | sahibi, `visible_to` | callable (TTL `purge_at`) |
+| `sos_alerts/{sos_id}` | Firestore | gönderen, `recipient_ids` | callable (TTL `purge_at`) |
+| `users/{uid}.emergency_contacts` | Firestore | sahibi | callable (`emergency_contacts_set`, arkadaşlık bitince sunucu) |
 
 ## Bilinen açıklar
 
@@ -121,6 +147,8 @@ Konum yolunda hiç Cloud Function çalışmaz. RTDB kuralları her yazmada `shar
 - Faz 3: `modules/konum-activity` (Swift/Kotlin) derlenmedi; Android'de expo-location FGS'yi arka planda yeniden
   yapılandıramıyor (satır değişikliği ön plana dönüşte uygulanır). Zorla kapatılan uygulamaya push ulaşmaz.
   Pil tüketimi gerçek cihazda ölçülmedi (`PHASE3.md` §4.3).
+- Faz 4: SOS bildiriminin DND, sessiz mod ve kilit ekranı davranışı gerçek cihazda denenmedi. iOS Critical Alerts Apple
+  onayı bekliyor (kapalı). Android'de "Rahatsız Etme erişimi" adımı yok (`PHASE4.md` §7).
 
 ## Çekirdek iş listesi
 

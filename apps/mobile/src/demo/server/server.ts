@@ -34,9 +34,52 @@
  *  - Botlar: paketlerde matris `hb`'si; Ayşe'nin pili %14'e düşer (push + seyrek güncelleme), Mehmet'in bağlantısı kopar
  *    (demo süreyi atlar: son paket ~1 saat önceye çekilir).
  *
+ * Faz 4 (backend `handlers/ping.ts`, `notes.ts`, `sos.ts` + kurallarla aynı anlam):
+ *  - `ping_send`: kabul edilmiş arkadaş, çift başına 20 sn soğuma, saatlik tavan → RTDB `ping_inbox/{to}/{id}` + push.
+ *  - `place_note_upsert / delete`: Firestore `place_notes` (sahibi + `visible_to` okur), en çok 20 aktif not.
+ *  - `emergency_contacts_set`, `sos_send / update / resolve / ack`: Firestore `sos_alerts`; tam konum + adres (önbellek /
+ *    sahte Google, kota dışı) + harita bağlantısı + pil + rota; alıcılara yüksek öncelikli push. Aktif SOS varken yeni
+ *    gönderim aynı belgeyi günceller. Bot alıcılar birkaç saniye sonra "Gördüm" der (gönderene push).
+ *  - Canlı paketlerde isteğe bağlı durum notu (`note` 1..60 + `note_exp`, ikisi birlikte); `link_live`'a not gitmez.
+ *  - Demo paneli: Ayşe / Mehmet ping, Ayşe durum notu, park yeri notu, Ayşe SOS + "güvende".
+ *
  * Durum tarayıcıda `localStorage`'a yazılır (erişilemezse yalnızca bellekte kalır). Sunucu saati = cihaz saati.
  */
 import {
+  EmergencyContactsSetRequestSchema,
+  isSosActive,
+  NOTE_LIMITS,
+  PING_LIMITS,
+  pingHourBucket,
+  pingPushText,
+  PingSendRequestSchema,
+  PlaceNoteDeleteRequestSchema,
+  PlaceNoteUpsertRequestSchema,
+  sanitizeNoteText,
+  SOS_LIMITS,
+  SOS_MESSAGE,
+  sosAckPushText,
+  SosAckRequestSchema,
+  sosHourBucket,
+  sosMapsUrl,
+  sosPushText,
+  sosResolvedPushText,
+  SosResolveRequestSchema,
+  SosSendRequestSchema,
+  SosUpdateRequestSchema,
+  statusNoteExtras,
+  PACKET_NOTE_MAX_CHARS,
+  type PingKind,
+  type PingSendResponse,
+  type PlaceNote,
+  type PlaceNoteDeleteResponse,
+  type PlaceNoteUpsertResponse,
+  type SosAlert,
+  type SosAlertResponse,
+  type SosLocation,
+  type SosRoute,
+  type SosSendResponse,
+  type StatusNote,
   BatteryLowNotifyRequestSchema,
   buildPackets,
   canExtend,
@@ -316,6 +359,24 @@ interface Db {
   trail: Record<UserId, Record<string, Record<string, Record<string, unknown>>>>;
   battery_alerts: Record<string, BatteryAlertRec>;
   battery_notice: DemoBatteryNotice | null;
+  // --- Faz 4 (eski kayıtlarda yok: `withPhase4` tamamlar) ---
+  phase4: boolean;
+  /** RTDB `ping_inbox/{to}/{ping_id}` (null alanlar yazılmaz). */
+  ping_inbox: Record<UserId, Record<string, Record<string, unknown>>>;
+  /** Çift başına son ping (`{from}_{to}`) ve saatlik sayaç (`{uid}_{saat}`). */
+  ping_pair: Record<string, EpochMs>;
+  ping_hour: Record<string, number>;
+  /** Firestore `place_notes/{note_id}`. */
+  place_notes: Record<string, PlaceNote>;
+  /** Firestore `sos_alerts/{sos_id}` + saatlik sayaç. */
+  sos: Record<string, SosAlert>;
+  sos_hour: Record<string, number>;
+  /** Demo: bot alıcının otomatik "Gördüm" anı (`{sos_id}|{uid}` → an). */
+  sos_auto_ack: Record<string, EpochMs>;
+  /** `users/{uid}.emergency_contacts`. */
+  emergency: Record<UserId, UserId[]>;
+  /** Bot durum notları (bot paketlerine eklenir). */
+  bot_notes: Record<UserId, StatusNote>;
 }
 
 /** Faz 1'de kaydedilmiş demo durumuna Faz 2 alanlarını ekler (demo verisi silinmeden). */
@@ -327,6 +388,28 @@ function withPhase2(db: Db): Db {
   db.geocode_cache ??= {};
   db.maps_quota ??= {};
   db.maps_down ??= false;
+  return db;
+}
+
+/**
+ * Faz 3 kaydına Faz 4 alanlarını ekler. Ayşe ve Mehmet'in acil kişisi benim (Ayşe SOS senaryosu); benim acil
+ * kişilerim BOŞ başlar (ilk SOS'ta seçim ekranı görünsün).
+ */
+function withPhase4(db: Db): Db {
+  db.ping_inbox ??= {};
+  db.ping_pair ??= {};
+  db.ping_hour ??= {};
+  db.place_notes ??= {};
+  db.sos ??= {};
+  db.sos_hour ??= {};
+  db.sos_auto_ack ??= {};
+  db.emergency ??= {};
+  db.bot_notes ??= {};
+  if (!db.phase4) {
+    db.phase4 = true;
+    db.emergency[PEOPLE.ayse.uid] ??= [DEMO_ME];
+    db.emergency[PEOPLE.mehmet.uid] ??= [DEMO_ME];
+  }
   return db;
 }
 
@@ -373,6 +456,11 @@ const TRANSPORT: Record<ErrorCode, string> = {
   maps_unavailable: 'unavailable',
   quota_exceeded: 'resource-exhausted',
   route_not_found: 'not-found',
+  // Faz 4
+  no_emergency_contacts: 'failed-precondition',
+  sos_not_active: 'failed-precondition',
+  note_not_found: 'not-found',
+  note_limit_reached: 'resource-exhausted',
 };
 
 /** RTDB kural reddi (RNFB `database/permission-denied` ile aynı biçim). */
@@ -471,6 +559,15 @@ export interface DemoSnapshot {
   batteryNotice: DemoBatteryNotice | null;
   /** "Alıcı tarafı" önizlemesi: bir alıcının sunucudaki kopyası (canlı düğüm + eşitlenen iz). */
   receiverView: { receiverId: UserId; name: string; live: Record<string, unknown>; trail: Record<string, unknown>[] } | null;
+  /** Faz 4: acil kişilerim (adlar), son SOS'um, Ayşe'nin SOS / not durumu, bana görünür yer notu ve ping sayısı. */
+  f4: {
+    myEmergencyContacts: string[];
+    mySos: { status: 'active' | 'resolved'; recipients: number; acks: number; updates: number } | null;
+    ayseSosActive: boolean;
+    ayseNote: boolean;
+    placeNotesForMe: number;
+    pingsForMe: number;
+  };
 }
 
 export class DemoServer {
@@ -507,7 +604,7 @@ export class DemoServer {
       if (!db || db.v !== DB_VERSION || !db.users || !db.users[DEMO_ME]) return null;
       const cutoff = Date.now() - DAY;
       for (const [k, op] of Object.entries(db.ops)) if (op.at < cutoff) delete db.ops[k];
-      return withPhase3(withPhase2(db));
+      return withPhase4(withPhase3(withPhase2(db)));
     } catch {
       return null;
     }
@@ -585,8 +682,19 @@ export class DemoServer {
       trail: {},
       battery_alerts: {},
       battery_notice: null,
+      phase4: false,
+      ping_inbox: {},
+      ping_pair: {},
+      ping_hour: {},
+      place_notes: {},
+      sos: {},
+      sos_hour: {},
+      sos_auto_ack: {},
+      emergency: {},
+      bot_notes: {},
     };
     this.db = db;
+    withPhase4(db);
     // Ben: görünen ad boş, ilk girişte ad ekranı açılır (ad alanında "Deniz Kaya" hazır gelir).
     this.addUser(DEMO_ME, '', DEMO_ME_INVITE, now - 30 * DAY);
     for (const p of Object.values(PEOPLE)) this.addUser(p.uid, p.name, p.invite, now - 60 * DAY);
@@ -908,7 +1016,7 @@ export class DemoServer {
       at = { lat: bot.spot.lat + j.lat, lng: bot.spot.lng + j.lng };
       bot.next_at = now + this.botIntervalMs(bot);
     }
-    const extras: PacketExtras = { hb: this.botHb(botId) };
+    const extras: PacketExtras = { hb: this.botHb(botId), ...statusNoteExtras(this.db.bot_notes[botId], now) };
     const packets = buildPackets(
       { lat: Math.round(at.lat * 1e6) / 1e6, lng: Math.round(at.lng * 1e6) / 1e6, accuracy, speed_mps: speed, heading, timestamp: now, mocked: false },
       { batteryLevel: bot.battery / 100, isCharging: bot.charging },
@@ -967,6 +1075,7 @@ export class DemoServer {
         changed = true;
       }
     }
+    if (this.sweepPhase4(now)) changed = true;
     if (now - this.lastPrune > MINUTE) {
       this.lastPrune = now;
       if (this.prunePhase2(now)) changed = true;
@@ -1213,8 +1322,8 @@ export class DemoServer {
     };
     const required = ['v', 'share_id', 'sender_id', 'lat', 'lng', 'accuracy', 'activity_state', 'timestamp', 'share_mode', 'server_ts'];
     for (const k of required) if (!(k in v)) deny(`eksik alan ${k}`);
-    // Faz 3: isteğe bağlı `hb`, `q`, `recorded_at` (core DELIVERED_OPTIONAL_F3_FIELDS).
-    const allowed = new Set([...required, 'speed_mps', 'heading', 'battery_pct', 'is_charging', 'expires_at', 'hb', 'q', 'recorded_at']);
+    // Faz 3: isteğe bağlı `hb`, `q`, `recorded_at` (core DELIVERED_OPTIONAL_F3_FIELDS); Faz 4: `note`, `note_exp`.
+    const allowed = new Set([...required, 'speed_mps', 'heading', 'battery_pct', 'is_charging', 'expires_at', 'hb', 'q', 'recorded_at', 'note', 'note_exp']);
     for (const k of Object.keys(v)) if (!allowed.has(k)) deny(`izinsiz alan ${k}`);
     const num = (k: string) => (typeof v[k] === 'number' && Number.isFinite(v[k]) ? (v[k] as number) : deny(`${k} sayı olmalı`));
     if (v.v !== 1) deny('v');
@@ -1240,6 +1349,12 @@ export class DemoServer {
     if ('is_charging' in v && typeof v.is_charging !== 'boolean') deny('is_charging');
     if (!['still', 'walking', 'running', 'cycling', 'automotive', 'unknown'].includes(v.activity_state as string)) deny('activity_state');
     this.validateF3Fields(v, deny, true);
+    // Faz 4 (RTDB kuralı): `note` 1..60 karakter ve `note_exp` sayı; ikisi birlikte.
+    if ('note' in v || 'note_exp' in v) {
+      if (!('note' in v) || !('note_exp' in v)) deny('note ve note_exp birlikte olmalı');
+      if (typeof v.note !== 'string' || v.note.length < 1 || v.note.length > PACKET_NOTE_MAX_CHARS) deny('note');
+      num('note_exp');
+    }
     const ts = num('timestamp');
     if (!Number.isInteger(ts) || ts > now + 60_000) deny('timestamp penceresi');
     // Faz 3 (RTDB kuralıyla aynı): kuyruktan gelen nokta (q: 1) 24 sa'e kadar eski olabilir, ama HER YAŞTA düğümdekinden
@@ -1431,6 +1546,23 @@ export class DemoServer {
         return this.geocodeReverse(payload, uid, now);
       case 'battery_low_notify':
         return this.batteryLowNotify(payload, uid, now);
+      // Faz 4
+      case 'ping_send':
+        return this.pingSendCall(payload, uid, now);
+      case 'place_note_upsert':
+        return this.placeNoteUpsertCall(payload, uid, now);
+      case 'place_note_delete':
+        return this.placeNoteDeleteCall(payload, uid, now);
+      case 'emergency_contacts_set':
+        return this.emergencyContactsSetCall(payload, uid, now);
+      case 'sos_send':
+        return this.sosSendCall(payload, uid, now);
+      case 'sos_update':
+        return this.sosUpdateCall(payload, uid, now);
+      case 'sos_resolve':
+        return this.sosResolveCall(payload, uid, now);
+      case 'sos_ack':
+        return this.sosAckCall(payload, uid, now);
       default:
         return fail('invalid_argument', `Demo sunucusunda yok: ${name}`);
     }
@@ -1615,6 +1747,11 @@ export class DemoServer {
     if (!f || !f.member_ids.includes(uid)) return response;
     const other = otherMember(f, uid);
     delete this.db.friendships[f.id];
+    // Faz 4: iki tarafın acil kişi listesinden de çıkar.
+    for (const [a, b] of [[uid, other], [other, uid]] as const) {
+      const list = this.db.emergency[a];
+      if (list) this.db.emergency[a] = list.filter((x) => x !== b);
+    }
     for (const id of [shareId(uid, other), shareId(other, uid)]) {
       const s = this.db.shares[id];
       if (s) this.endShare(s, 'friendship_removed', now);
@@ -1680,6 +1817,318 @@ export class DemoServer {
     else if (pct <= 15 && !charging) status = 'suppressed';
     this.db.battery_alerts[key] = { uid, session_id: sessionId, state: r.state, sent };
     return { status, armed: r.state.armed, receivers, server_now: now };
+  }
+
+  // --- Faz 4: ping, notlar, SOS -----------------------------------------------------------------
+
+  /** Süpürücü (her saniye): süresi geçen ping / yer notu silinir, 24 sa'i aşan SOS `timeout`, bot "Gördüm"leri. */
+  private sweepPhase4(now: EpochMs): boolean {
+    let changed = false;
+    for (const [to, inbox] of Object.entries(this.db.ping_inbox)) {
+      for (const [id, p] of Object.entries(inbox)) {
+        if (typeof p.expires_at === 'number' && p.expires_at <= now) {
+          delete inbox[id];
+          changed = true;
+        }
+      }
+      if (Object.keys(inbox).length === 0) delete this.db.ping_inbox[to];
+    }
+    for (const n of Object.values(this.db.place_notes)) {
+      if (n.expires_at <= now) {
+        delete this.db.place_notes[n.note_id];
+        changed = true;
+      }
+    }
+    for (const a of Object.values(this.db.sos)) {
+      if (a.status === 'active' && now - a.created_at > SOS_LIMITS.activeMaxMs) {
+        this.resolveSos(a, 'timeout', now, false);
+        changed = true;
+      } else if (a.status === 'resolved' && a.resolved_at !== null && now - a.resolved_at > 2 * DAY) {
+        delete this.db.sos[a.sos_id];
+        changed = true;
+      }
+    }
+    for (const [key, at] of Object.entries(this.db.sos_auto_ack)) {
+      if (at > now) continue;
+      delete this.db.sos_auto_ack[key];
+      const [sosId, who] = key.split('|');
+      const a = sosId ? this.db.sos[sosId] : undefined;
+      if (a && who && a.status === 'active') this.ackSos(a, who, now);
+      changed = true;
+    }
+    return changed;
+  }
+
+  private nameOf(uid: UserId): string {
+    return this.db.users[uid]?.display_name || 'Arkadaşın';
+  }
+
+  private pingSendCall(payload: unknown, uid: UserId, now: EpochMs): PingSendResponse {
+    const req = this.parse(PingSendRequestSchema, payload);
+    return this.pingSendNow(uid, req, now);
+  }
+
+  /** Backend `ping_send`: arkadaşlık (sızdırmadan `not_friends`), soğuma, saatlik tavan, eski konum → null. */
+  private pingSendNow(
+    from: UserId,
+    req: { to: UserId; kind: PingKind; location: { lat: number; lng: number; accuracy: number; timestamp: number } | null; eta_s: number | null },
+    now: EpochMs,
+  ): PingSendResponse {
+    if (req.to === from || !this.areFriends(from, req.to)) fail('not_friends');
+    const pairKey = `${from}_${req.to}`;
+    const last = this.db.ping_pair[pairKey];
+    if (last !== undefined && now - last < PING_LIMITS.perPairCooldownMs) fail('rate_limited');
+    const hourKey = `${from}_${pingHourBucket(now)}`;
+    const count = this.db.ping_hour[hourKey] ?? 0;
+    if (count >= PING_LIMITS.perUserPerHour) fail('rate_limited');
+    const location = req.location && req.location.timestamp >= now - PING_LIMITS.maxLocationAgeMs ? req.location : null;
+    const ping_id = `p${randomHex32().slice(0, 19)}`;
+    const expires_at = now + PING_LIMITS.ttlMs;
+    // RTDB null saklamaz: boş alanlar yazılmaz (okuma tarafı null yapar).
+    const rec: Record<string, unknown> = { ping_id, from, kind: req.kind, sent_at: now, expires_at };
+    if (location) rec.location = location;
+    if (req.eta_s !== null) rec.eta_s = req.eta_s;
+    (this.db.ping_inbox[req.to] ??= {})[ping_id] = rec;
+    this.db.ping_pair[pairKey] = now;
+    this.db.ping_hour[hourKey] = count + 1;
+    const data: Extract<PushData, { type: 'ping' }> = { type: 'ping', ping_id, from, kind: req.kind };
+    this.push(req.to, { notification: pingPushText(this.nameOf(from), req.kind, req.eta_s), data });
+    return { ping_id, expires_at, server_now: now };
+  }
+
+  pingInboxOf(uid: UserId): Record<string, Record<string, unknown>> {
+    return this.db.ping_inbox[uid] ?? {};
+  }
+
+  /** RTDB kuralı: yalnızca alıcı kendi kutusundan SİLER. */
+  deletePing(uid: UserId, pingId: string, authUid: UserId | null): void {
+    if (!authUid || authUid !== uid) throw new DemoPermissionDenied(`yazma izni yok: ping_inbox/${uid}/${pingId}`);
+    const inbox = this.db.ping_inbox[uid];
+    if (!inbox || !inbox[pingId]) return;
+    delete inbox[pingId];
+    this.commit();
+  }
+
+  private placeNoteUpsertCall(payload: unknown, uid: UserId, now: EpochMs): PlaceNoteUpsertResponse {
+    const req = this.parse(PlaceNoteUpsertRequestSchema, payload);
+    return { note: clone(this.upsertNote(uid, req, now)), server_now: now };
+  }
+
+  /** Backend `place_note_upsert`: metin temizlenir, `visible_to` yalnızca kabul edilmiş arkadaşlar (sessizce süzülür). */
+  private upsertNote(
+    owner: UserId,
+    req: { note_id: string | null; emoji: string | null; text: string; position: { lat: number; lng: number; accuracy: number | null }; visible_to: UserId[]; duration_ms: number },
+    now: EpochMs,
+  ): PlaceNote {
+    const text = sanitizeNoteText(req.text);
+    if (!text) return fail('invalid_argument');
+    const emoji = req.emoji ? sanitizeNoteText(req.emoji, NOTE_LIMITS.maxEmojiChars) : null;
+    const visible_to = [...new Set(req.visible_to)].filter((u) => u !== owner && this.areFriends(owner, u)).slice(0, NOTE_LIMITS.maxAudience);
+    const position = { lat: req.position.lat, lng: req.position.lng, accuracy: req.position.accuracy };
+    if (req.note_id) {
+      const cur = this.db.place_notes[req.note_id];
+      if (!cur || cur.owner_id !== owner) return fail('note_not_found');
+      const next: PlaceNote = { ...cur, emoji, text, position, visible_to, updated_at: now, expires_at: now + req.duration_ms };
+      this.db.place_notes[cur.note_id] = next;
+      return next;
+    }
+    const active = Object.values(this.db.place_notes).filter((n) => n.owner_id === owner && n.expires_at > now).length;
+    if (active >= NOTE_LIMITS.maxActivePlaceNotes) fail('note_limit_reached');
+    const note: PlaceNote = {
+      note_id: `n${randomHex32().slice(0, 19)}`,
+      owner_id: owner,
+      emoji,
+      text,
+      position,
+      visible_to,
+      created_at: now,
+      updated_at: now,
+      expires_at: now + req.duration_ms,
+    };
+    this.db.place_notes[note.note_id] = note;
+    return note;
+  }
+
+  private placeNoteDeleteCall(payload: unknown, uid: UserId, now: EpochMs): PlaceNoteDeleteResponse {
+    const req = this.parse(PlaceNoteDeleteRequestSchema, payload);
+    const n = this.db.place_notes[req.note_id];
+    if (!n) return { note_id: req.note_id, deleted: false, server_now: now };
+    if (n.owner_id !== uid) fail('note_not_found');
+    delete this.db.place_notes[req.note_id];
+    return { note_id: req.note_id, deleted: true, server_now: now };
+  }
+
+  /** Firestore `place_notes where owner_id == uid` ∪ `where visible_to array-contains uid` (TTL silmeden önce süresi geçen de gelir). */
+  placeNotesFor(uid: UserId): PlaceNote[] {
+    return Object.values(this.db.place_notes)
+      .filter((n) => n.owner_id === uid || n.visible_to.includes(uid))
+      .sort((a, b) => a.note_id.localeCompare(b.note_id));
+  }
+
+  private emergencyContactsSetCall(payload: unknown, uid: UserId, now: EpochMs) {
+    const req = this.parse(EmergencyContactsSetRequestSchema, payload);
+    const contact_ids = [...new Set(req.contact_ids)].filter((c) => c !== uid && this.areFriends(uid, c)).slice(0, SOS_LIMITS.maxContacts);
+    this.db.emergency[uid] = contact_ids;
+    return { contact_ids, server_now: now };
+  }
+
+  emergencyContactsOf(uid: UserId): UserId[] {
+    return [...(this.db.emergency[uid] ?? [])];
+  }
+
+  /** Sunucu tarafı adres: geocode önbelleği → sahte Google (kota uygulanmaz); hata yutulur → null. */
+  private sosAddress(loc: { lat: number; lng: number }, now: EpochMs): string | null {
+    try {
+      const cell = geocodeCell(loc);
+      const hit = this.db.geocode_cache[cell];
+      if (hit && hit.expire_at > now) return hit.label;
+      if (this.db.maps_down) return null;
+      const parsed = parseReverseGeocodeResponse(fakeReverseGeocode(geocodeQueryPoint(cell)));
+      if (!parsed.ok) return null;
+      this.db.geocode_cache[cell] = { label: parsed.label, created_at: now, expire_at: now + GEOCODE_POLICY.cacheTtlMs };
+      return parsed.label;
+    } catch {
+      return null;
+    }
+  }
+
+  private sosSendCall(payload: unknown, uid: UserId, now: EpochMs): SosSendResponse {
+    const req = this.parse(SosSendRequestSchema, payload);
+    return this.sosSendNow(uid, req, now, false);
+  }
+
+  /**
+   * Backend `sos_send`: acil kişiler (arkadaşlığı geçerli olanlar) boşsa `no_emergency_contacts`; saatlik tavan;
+   * aktif SOS varsa YENİSİ açılmaz, mevcut olan yeni konumla güncellenip tekrar push edilir (aynı sos_id).
+   */
+  private sosSendNow(
+    uid: UserId,
+    req: { location: SosLocation; battery_pct: number | null; is_charging: boolean | null; route: SosRoute | null; address: string | null },
+    now: EpochMs,
+    demoBypassLimit: boolean,
+  ): SosSendResponse {
+    const recipients = (this.db.emergency[uid] ?? []).filter((c) => c !== uid && this.areFriends(uid, c));
+    if (recipients.length === 0) fail('no_emergency_contacts');
+    const hourKey = `${uid}_${sosHourBucket(now)}`;
+    const count = this.db.sos_hour[hourKey] ?? 0;
+    if (!demoBypassLimit && count >= SOS_LIMITS.maxSendsPerHour) fail('rate_limited');
+    this.db.sos_hour[hourKey] = count + 1;
+    const address = req.address ?? this.sosAddress(req.location, now);
+    const existing = Object.values(this.db.sos).find((a) => a.sender_id === uid && a.status === 'active');
+    let alert: SosAlert;
+    if (existing) {
+      alert = {
+        ...existing,
+        recipient_ids: recipients,
+        location: req.location,
+        address,
+        maps_url: sosMapsUrl(req.location.lat, req.location.lng),
+        battery_pct: req.battery_pct,
+        is_charging: req.is_charging,
+        route: req.route,
+        updated_at: now,
+        update_count: existing.update_count + 1,
+      };
+    } else {
+      alert = {
+        sos_id: `s${randomHex32().slice(0, 19)}`,
+        sender_id: uid,
+        sender_name: this.nameOf(uid),
+        recipient_ids: recipients,
+        status: 'active',
+        resolve_reason: null,
+        message: SOS_MESSAGE,
+        location: req.location,
+        address,
+        maps_url: sosMapsUrl(req.location.lat, req.location.lng),
+        battery_pct: req.battery_pct,
+        is_charging: req.is_charging,
+        route: req.route,
+        created_at: now,
+        updated_at: now,
+        resolved_at: null,
+        acks: {},
+        update_count: 0,
+      };
+    }
+    this.db.sos[alert.sos_id] = alert;
+    const text = sosPushText(alert);
+    const data: Extract<PushData, { type: 'sos' }> = { type: 'sos', sos_id: alert.sos_id, sender_id: uid };
+    for (const r of recipients) {
+      this.push(r, { notification: text, data });
+      // Demo: bot alıcı birkaç saniye sonra "Gördüm" der.
+      if (r !== DEMO_ME && this.db.bots[r] && alert.acks[r] === undefined) this.db.sos_auto_ack[`${alert.sos_id}|${r}`] = now + randomBetween(4_000, 9_000);
+    }
+    return { sos: clone(alert), recipients: recipients.length, server_now: now };
+  }
+
+  /** Gönderen değilse / aktif değilse `sos_not_active` (başkasının SOS'unun varlığı sızmaz). */
+  private ownActiveSos(uid: UserId, sosId: string): SosAlert {
+    const a = this.db.sos[sosId];
+    if (!a || a.sender_id !== uid || a.status !== 'active') return fail('sos_not_active');
+    return a;
+  }
+
+  private sosUpdateCall(payload: unknown, uid: UserId, now: EpochMs): SosAlertResponse {
+    const req = this.parse(SosUpdateRequestSchema, payload);
+    const a = this.ownActiveSos(uid, req.sos_id);
+    // Çok sık güncelleme: hata değil, mevcut belge döner.
+    if (now - a.updated_at < SOS_LIMITS.updateMinIntervalMs) return { sos: clone(a), server_now: now };
+    const next: SosAlert = {
+      ...a,
+      location: req.location,
+      maps_url: sosMapsUrl(req.location.lat, req.location.lng),
+      battery_pct: req.battery_pct,
+      is_charging: req.is_charging,
+      route: req.route,
+      updated_at: now,
+      update_count: a.update_count + 1,
+    };
+    this.db.sos[a.sos_id] = next;
+    return { sos: clone(next), server_now: now };
+  }
+
+  private resolveSos(a: SosAlert, reason: SosAlert['resolve_reason'], now: EpochMs, notify: boolean): SosAlert {
+    const next: SosAlert = { ...a, status: 'resolved', resolve_reason: reason, resolved_at: now, updated_at: now };
+    this.db.sos[a.sos_id] = next;
+    for (const k of Object.keys(this.db.sos_auto_ack)) if (k.startsWith(`${a.sos_id}|`)) delete this.db.sos_auto_ack[k];
+    if (notify) {
+      const data: Extract<PushData, { type: 'sos_resolved' }> = { type: 'sos_resolved', sos_id: a.sos_id, sender_id: a.sender_id };
+      for (const r of a.recipient_ids) this.push(r, { notification: sosResolvedPushText(a.sender_name), data });
+    }
+    return next;
+  }
+
+  private sosResolveCall(payload: unknown, uid: UserId, now: EpochMs): SosAlertResponse {
+    const req = this.parse(SosResolveRequestSchema, payload);
+    const a = this.db.sos[req.sos_id];
+    if (!a || a.sender_id !== uid) return fail('sos_not_active');
+    if (a.status !== 'active') return { sos: clone(a), server_now: now };
+    return { sos: clone(this.resolveSos(a, 'safe', now, true)), server_now: now };
+  }
+
+  /** İlk "Gördüm"de gönderene push. */
+  private ackSos(a: SosAlert, uid: UserId, now: EpochMs): SosAlert {
+    if (a.acks[uid] !== undefined) return a;
+    const next: SosAlert = { ...a, acks: { ...a.acks, [uid]: now } };
+    this.db.sos[a.sos_id] = next;
+    const data: Extract<PushData, { type: 'sos_ack' }> = { type: 'sos_ack', sos_id: a.sos_id, by: uid };
+    this.push(a.sender_id, { notification: sosAckPushText(this.nameOf(uid)), data });
+    return next;
+  }
+
+  private sosAckCall(payload: unknown, uid: UserId, now: EpochMs): SosAlertResponse {
+    const req = this.parse(SosAckRequestSchema, payload);
+    const a = this.db.sos[req.sos_id];
+    if (!a || !a.recipient_ids.includes(uid)) return fail('sos_not_active');
+    return { sos: clone(this.ackSos(a, uid, now)), server_now: now };
+  }
+
+  /** Firestore `sos_alerts where sender_id == uid` / `where recipient_ids array-contains uid`. */
+  sosAlertsWhere(field: 'sender_id' | 'recipient_ids', uid: UserId): SosAlert[] {
+    return Object.values(this.db.sos)
+      .filter((a) => (field === 'sender_id' ? a.sender_id === uid : a.recipient_ids.includes(uid)))
+      .sort((a, b) => a.created_at - b.created_at);
   }
 
   // --- Faz 2: bağlantı (QR) paylaşımı -------------------------------------------------------------
@@ -2069,6 +2518,127 @@ export class DemoServer {
     return ok;
   }
 
+  // --- Faz 4 demo paneli ------------------------------------------------------------------------
+
+  /** Botun şu anki konumu: bana giden canlı paketi, yoksa durduğu yer. */
+  private botPosition(bot: UserId): { lat: number; lng: number; accuracy: number } {
+    const live = this.db.live[DEMO_ME]?.[shareId(bot, DEMO_ME)];
+    if (live && typeof live.lat === 'number' && typeof live.lng === 'number') {
+      return { lat: live.lat, lng: live.lng, accuracy: typeof live.accuracy === 'number' ? live.accuracy : 12 };
+    }
+    const b = this.db.bots[bot];
+    const at = b?.kind === 'walker' ? (AYSE_PATH[2] as LatLng) : (b?.spot ?? MEHMET_SPOT);
+    return { lat: at.lat, lng: at.lng, accuracy: 10 };
+  }
+
+  /** "Ayşe 'Buradayım' göndersin" / "Mehmet 'Yoldayım'": bot bana ping atar (demo: soğuma atlanır). Dönen: gönderildi mi. */
+  botPing(bot: UserId, kind: PingKind, etaS: number | null = null): boolean {
+    const now = Date.now();
+    if (!this.areFriends(bot, DEMO_ME)) return false;
+    delete this.db.ping_pair[`${bot}_${DEMO_ME}`];
+    const pos = this.botPosition(bot);
+    try {
+      this.pingSendNow(bot, { to: DEMO_ME, kind, location: kind === 'here' || etaS !== null ? { ...pos, timestamp: now } : null, eta_s: etaS }, now);
+    } catch {
+      return false;
+    }
+    this.commit();
+    return true;
+  }
+
+  /** Bot durum notu (null = kaldır); bot hemen yeni paket yayınlar. Dönen: bana canlı paylaşıyor mu. */
+  setBotStatusNote(bot: UserId, note: { emoji: string | null; text: string; ms: number } | null): boolean {
+    const now = Date.now();
+    if (note) this.db.bot_notes[bot] = { emoji: note.emoji, text: note.text, expires_at: now + note.ms };
+    else delete this.db.bot_notes[bot];
+    const sharing = this.isSharingWithMe(bot);
+    const b = this.db.bots[bot];
+    if (sharing && b && !b.offline) this.botPublish(bot, now, true);
+    this.commit();
+    return sharing;
+  }
+
+  hasBotStatusNote(bot: UserId): boolean {
+    const n = this.db.bots[bot] ? this.db.bot_notes[bot] : undefined;
+    return !!n && n.expires_at > Date.now();
+  }
+
+  /** "Ayşe park yeri notu paylaşsın": bulunduğu yerde, yalnızca bana görünür, 4 saat (varsa aynı notu tazeler). */
+  botPlaceNote(bot: UserId): boolean {
+    const now = Date.now();
+    if (!this.areFriends(bot, DEMO_ME)) return false;
+    const pos = this.botPosition(bot);
+    const existing = Object.values(this.db.place_notes).find((n) => n.owner_id === bot && n.text === 'Park yeri burası' && n.expires_at > now);
+    this.upsertNote(
+      bot,
+      { note_id: existing?.note_id ?? null, emoji: '🅿️', text: 'Park yeri burası', position: { lat: pos.lat - 0.0004, lng: pos.lng + 0.0003, accuracy: 8 }, visible_to: [DEMO_ME], duration_ms: 4 * HOUR },
+      now,
+    );
+    this.commit();
+    return true;
+  }
+
+  /**
+   * "Ayşe SOS göndersin": acil kişisi benim; tam konum (±6 m), adres, pil %23, bana doğru rota. Dönen: sos_id
+   * ya da gönderilemedi (arkadaş değil).
+   */
+  botSos(bot: UserId): string | null {
+    const now = Date.now();
+    if (!this.areFriends(bot, DEMO_ME)) return null;
+    const list = this.db.emergency[bot] ?? [];
+    if (!list.includes(DEMO_ME)) this.db.emergency[bot] = [DEMO_ME, ...list].slice(0, SOS_LIMITS.maxContacts);
+    const b = this.db.bots[bot];
+    if (b) {
+      b.battery = 23;
+      b.charging = false;
+    }
+    const pos = this.botPosition(bot);
+    try {
+      const r = this.sosSendNow(
+        bot,
+        {
+          location: { lat: pos.lat, lng: pos.lng, accuracy: 6, timestamp: now },
+          battery_pct: 23,
+          is_charging: false,
+          route: { destination_label: this.nameOf(DEMO_ME), eta_s: 9 * 60, distance_m: 1_800 },
+          address: null,
+        },
+        now,
+        true,
+      );
+      if (b && this.isSharingWithMe(bot) && !b.offline) this.botPublish(bot, now, true);
+      this.commit();
+      return r.sos.sos_id;
+    } catch {
+      return null;
+    }
+  }
+
+  /** "Ayşe güvende": botun aktif SOS'u `safe` ile kapanır, bana "güvende" push'u. Dönen: kapatılacak SOS var mıydı. */
+  botSosResolve(bot: UserId): boolean {
+    const a = Object.values(this.db.sos).find((x) => x.sender_id === bot && isSosActive(x));
+    if (!a) return false;
+    this.resolveSos(a, 'safe', Date.now(), true);
+    this.commit();
+    return true;
+  }
+
+  private f4View(): DemoSnapshot['f4'] {
+    const now = Date.now();
+    const ayse = PEOPLE.ayse.uid;
+    const mine = Object.values(this.db.sos)
+      .filter((a) => a.sender_id === DEMO_ME)
+      .sort((a, b) => b.created_at - a.created_at)[0];
+    return {
+      myEmergencyContacts: (this.db.emergency[DEMO_ME] ?? []).map((u) => this.nameOf(u)),
+      mySos: mine ? { status: mine.status, recipients: mine.recipient_ids.length, acks: Object.keys(mine.acks).length, updates: mine.update_count } : null,
+      ayseSosActive: Object.values(this.db.sos).some((a) => a.sender_id === ayse && isSosActive(a)),
+      ayseNote: this.hasBotStatusNote(ayse),
+      placeNotesForMe: Object.values(this.db.place_notes).filter((n) => n.expires_at > now && (n.owner_id === DEMO_ME || n.visible_to.includes(DEMO_ME))).length,
+      pingsForMe: Object.keys(this.db.ping_inbox[DEMO_ME] ?? {}).length,
+    };
+  }
+
   private receiverView(): DemoSnapshot['receiverView'] {
     const candidates = [PEOPLE.ayse.uid, ...Object.keys(this.db.live).filter((r) => r !== DEMO_ME && r !== PEOPLE.ayse.uid).sort()];
     for (const r of candidates) {
@@ -2114,6 +2684,7 @@ export class DemoServer {
       mehmetOffline: this.db.bots[PEOPLE.mehmet.uid]?.offline === true,
       batteryNotice: this.db.battery_notice,
       receiverView: this.receiverView(),
+      f4: this.f4View(),
       mapsDown: this.db.maps_down,
       maps: {
         route: q?.route ?? 0,

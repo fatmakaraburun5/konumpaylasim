@@ -46,6 +46,35 @@ import {
   type ShareStartResponse,
   type ShareStopResponse,
   type UserId,
+  // Faz 4
+  EmergencyContactsSetRequestSchema,
+  EmergencyContactsSetResponseSchema,
+  PingSendRequestSchema,
+  PingSendResponseSchema,
+  PlaceNoteDeleteRequestSchema,
+  PlaceNoteDeleteResponseSchema,
+  PlaceNoteUpsertRequestSchema,
+  PlaceNoteUpsertResponseSchema,
+  SosAckRequestSchema,
+  SosAlertResponseSchema,
+  SosResolveRequestSchema,
+  SosSendRequestSchema,
+  SosSendResponseSchema,
+  SosUpdateRequestSchema,
+  type EmergencyContactsSetRequest,
+  type EmergencyContactsSetResponse,
+  type PingSendRequest,
+  type PingSendResponse,
+  type PlaceNoteDeleteRequest,
+  type PlaceNoteDeleteResponse,
+  type PlaceNoteUpsertRequest,
+  type PlaceNoteUpsertResponse,
+  type SosAckRequest,
+  type SosAlertResponse,
+  type SosResolveRequest,
+  type SosSendRequest,
+  type SosSendResponse,
+  type SosUpdateRequest,
 } from '@konum/core';
 import { z } from 'zod';
 import { KonumError, toKonumError } from '../../lib/errors';
@@ -213,3 +242,69 @@ export type { BatteryLowNotifyRequest };
 export function batteryLowNotify(input: BatteryLowNotifyRequest): Promise<BatteryLowNotifyResponse> {
   return invoke(BATTERY_LOW_NOTIFY, BatteryLowNotifyRequestSchema, input, BatteryLowNotifyResponseSchema);
 }
+
+// --- Faz 4: ping, notlar, acil durum (SOS) ---------------------------------------------------------
+
+/**
+ * Faz 4 callable'ları (core `CALLABLES.pingSend` … `sosAck`; istek/yanıt şemaları core'dan). Hepsi `op_id` taşır:
+ * aynı op_id ile tekrar sunucuda bir kez uygulanır (SOS gönderimi ağ hatasında aynı op_id ile yeniden denenir).
+ */
+type WithOp<T extends { op_id: string }> = Omit<T, 'op_id'> & { op_id?: string };
+
+export function pingSend(input: WithOp<PingSendRequest>): Promise<PingSendResponse> {
+  return invoke(CALLABLES.pingSend, PingSendRequestSchema, { ...input, op_id: input.op_id ?? uuidV4() }, PingSendResponseSchema);
+}
+
+export function placeNoteUpsert(input: WithOp<PlaceNoteUpsertRequest>): Promise<PlaceNoteUpsertResponse> {
+  return invoke(CALLABLES.placeNoteUpsert, PlaceNoteUpsertRequestSchema, { ...input, op_id: input.op_id ?? uuidV4() }, PlaceNoteUpsertResponseSchema);
+}
+
+export function placeNoteDelete(input: WithOp<PlaceNoteDeleteRequest>): Promise<PlaceNoteDeleteResponse> {
+  return invoke(CALLABLES.placeNoteDelete, PlaceNoteDeleteRequestSchema, { ...input, op_id: input.op_id ?? uuidV4() }, PlaceNoteDeleteResponseSchema);
+}
+
+export function emergencyContactsSet(input: WithOp<EmergencyContactsSetRequest>): Promise<EmergencyContactsSetResponse> {
+  return invoke(
+    CALLABLES.emergencyContactsSet,
+    EmergencyContactsSetRequestSchema,
+    { ...input, op_id: input.op_id ?? uuidV4() },
+    EmergencyContactsSetResponseSchema,
+  );
+}
+
+export function sosSend(input: WithOp<SosSendRequest>): Promise<SosSendResponse> {
+  return invoke(CALLABLES.sosSend, SosSendRequestSchema, { ...input, op_id: input.op_id ?? uuidV4() }, SosSendResponseSchema);
+}
+
+export function sosUpdate(input: WithOp<SosUpdateRequest>): Promise<SosAlertResponse> {
+  return invoke(CALLABLES.sosUpdate, SosUpdateRequestSchema, { ...input, op_id: input.op_id ?? uuidV4() }, SosAlertResponseSchema);
+}
+
+export function sosResolve(input: WithOp<SosResolveRequest>): Promise<SosAlertResponse> {
+  return invoke(CALLABLES.sosResolve, SosResolveRequestSchema, { ...input, op_id: input.op_id ?? uuidV4() }, SosAlertResponseSchema);
+}
+
+export function sosAck(input: WithOp<SosAckRequest>): Promise<SosAlertResponse> {
+  return invoke(CALLABLES.sosAck, SosAckRequestSchema, { ...input, op_id: input.op_id ?? uuidV4() }, SosAlertResponseSchema);
+}
+
+/** Faz 4 depolarının bağımlılıkları (testlerde sahte uygulanır). */
+export interface PingApi {
+  pingSend: typeof pingSend;
+}
+export const pingApi: PingApi = { pingSend };
+
+export interface NotesApi {
+  placeNoteUpsert: typeof placeNoteUpsert;
+  placeNoteDelete: typeof placeNoteDelete;
+}
+export const notesApi: NotesApi = { placeNoteUpsert, placeNoteDelete };
+
+export interface SosApi {
+  emergencyContactsSet: typeof emergencyContactsSet;
+  sosSend: typeof sosSend;
+  sosUpdate: typeof sosUpdate;
+  sosResolve: typeof sosResolve;
+  sosAck: typeof sosAck;
+}
+export const sosApi: SosApi = { emergencyContactsSet, sosSend, sosUpdate, sosResolve, sosAck };

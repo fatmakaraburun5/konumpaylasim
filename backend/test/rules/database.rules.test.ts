@@ -289,3 +289,37 @@ describe('silme', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Faz 4: durum notu (canlı paket) ve ping kutusu
+// ---------------------------------------------------------------------------
+
+describe('Faz 4', () => {
+  it('durum notu: note + note_exp birlikte kabul; tek başına, boş ya da 60 karakterden uzun reddedilir', async () => {
+    const p = await seedPair();
+    const sender = await clientDb(p.sender_id);
+    const exp = Date.now() + 3_600_000;
+    await assertSucceeds(sender.ref(livePathOf(p)).set({ ...deliveredFor(p), note: '☕ Kahve molasındayım', note_exp: exp }));
+    await assertFails(sender.ref(livePathOf(p)).set({ ...deliveredFor(p), note: 'Tek başına' }));
+    await assertFails(sender.ref(livePathOf(p)).set({ ...deliveredFor(p), note_exp: exp }));
+    await assertFails(sender.ref(livePathOf(p)).set({ ...deliveredFor(p), note: '', note_exp: exp }));
+    await assertFails(sender.ref(livePathOf(p)).set({ ...deliveredFor(p), note: 'x'.repeat(61), note_exp: exp }));
+    await assertFails(sender.ref(livePathOf(p)).set({ ...deliveredFor(p), note: 'ok', note_exp: 'yarın' }));
+  });
+
+  it('ping_inbox: yalnızca alıcı okur ve siler; kimse yazamaz; ping_expiry kapalı', async () => {
+    const to = uid('r');
+    const path = `ping_inbox/${to}/p1`;
+    await rtdb().ref(path).set({ ping_id: 'p1', from: 'f', kind: 'here', sent_at: Date.now(), expires_at: Date.now() + 60_000 });
+    await rtdb().ref('ping_expiry/p1').set({ to, from: 'f', expires_at: Date.now() + 60_000 });
+    const me = await clientDb(to);
+    const stranger = await clientDb(uid('x'));
+    await assertSucceeds(me.ref(`ping_inbox/${to}`).once('value'));
+    await assertFails(stranger.ref(`ping_inbox/${to}`).once('value'));
+    await assertFails(stranger.ref(path).remove());
+    await assertFails(me.ref(`ping_inbox/${to}/p2`).set({ ping_id: 'p2', from: to, kind: 'here' }));
+    await assertFails(me.ref(path).update({ kind: 'on_way' }));
+    await assertFails(me.ref('ping_expiry').once('value'));
+    await assertSucceeds(me.ref(path).remove());
+  });
+});

@@ -16,6 +16,9 @@
  * (okuma kuralı süreyi zaten keser), eski `link_acl_pending` işaretleri (eski token özeti dahil) uygulanır, her
  * 5 dk aktif bağlantı ACL'leri denetlenir ve 7 günden eski bağlantı mezar taşları silinir.
  *
+ * Faz 4: süresi geçen `ping_inbox` kayıtları (`ping_expiry` dizininden), süresi geçen `place_notes` belgeleri silinir;
+ * `SOS_LIMITS.activeMaxMs`'i aşan aktif SOS `resolved / timeout` olur.
+ *
  * Bu modül firebase-functions tetikleyicilerine bağlı değildir: testler `sweepExpired({ now })` ve
  * `handleExpiryTask(data, now)` ile enjekte edilen saatle doğrudan çağırır.
  */
@@ -39,6 +42,9 @@ import { type StoredLinkAcl, applyLinkEffect, closeLinkHash, reconcileLink } fro
 import type { ExpiryTaskData } from '../tasks';
 import { chunk } from '../util';
 import { sweepExpiredLinks } from './links';
+import { sweepExpiredPlaceNotes } from './notes';
+import { sweepExpiredPings } from './ping';
+import { timeoutActiveSos } from './sos';
 
 export interface SweepOptions {
   /** Enjekte edilebilir saat (testler); varsayılan `Date.now()`. */
@@ -59,6 +65,10 @@ export interface SweepResult {
   ended_link_ids: string[];
   reconciled_link_ids: string[];
   purged_link_tombstones: number;
+  /** Faz 4: süresi geçen pingler (RTDB), silinen yer notları, süre aşımıyla kapanan SOS'lar. */
+  purged_pings: number;
+  purged_place_notes: number;
+  timed_out_sos_ids: string[];
 }
 
 export async function sweepExpired(opts: SweepOptions = {}): Promise<SweepResult> {
@@ -73,6 +83,9 @@ export async function sweepExpired(opts: SweepOptions = {}): Promise<SweepResult
     ended_link_ids: [],
     reconciled_link_ids: [],
     purged_link_tombstones: 0,
+    purged_pings: 0,
+    purged_place_notes: 0,
+    timed_out_sos_ids: [],
   };
 
   // --- paylaşımlar: (status, expires_at) bileşik dizini ---
@@ -128,6 +141,15 @@ export async function sweepExpired(opts: SweepOptions = {}): Promise<SweepResult
 
   // --- Faz 2: bağlantılar (okuma kuralı süreyi zaten keser; bu adım belgeyi kapatır ve son paketi siler) ---
   result.ended_link_ids.push(...(await sweepExpiredLinks(now, batchSize, maxBatches)));
+
+  // --- Faz 4: ping kutusu, yer notları, SOS süre aşımı (her biri bağımsız; biri düşerse diğerleri sürer) ---
+  const [pings, notes, sos] = await Promise.allSettled([sweepExpiredPings(now), sweepExpiredPlaceNotes(now), timeoutActiveSos(now)]);
+  if (pings.status === 'fulfilled') result.purged_pings = pings.value;
+  else logger.error('tarama: pingler silinemedi', { err: String(pings.reason) });
+  if (notes.status === 'fulfilled') result.purged_place_notes = notes.value;
+  else logger.error('tarama: yer notları silinemedi', { err: String(notes.reason) });
+  if (sos.status === 'fulfilled') result.timed_out_sos_ids = sos.value;
+  else logger.error('tarama: SOS süre aşımı uygulanamadı', { err: String(sos.reason) });
 
   // --- ACL onarımı ---
   result.reconciled_share_ids.push(...(await reconcilePendingAcls(now, batchSize * maxBatches)));

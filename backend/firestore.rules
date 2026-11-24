@@ -1,6 +1,6 @@
 rules_version = '2';
 
-// Konum Firestore kuralları (Faz 1 + Faz 2).
+// Konum Firestore kuralları (Faz 1 + Faz 2 + Faz 4).
 //  - Varsayılan: her şey kapalı.
 //  - İstemci sosyal grafiğe ve paylaşımlara YAZMAZ; tüm geçişler Cloud Functions callable'larıyla.
 //  - Okuma yalnızca ilgili taraflara. Kurallar filtre değildir: istemci sorgusu kısıtı taşımalıdır
@@ -89,6 +89,23 @@ service cloud.firestore {
     // yalnızca RTDB link_live/{token_hash} düğümünü okur.
     match /link_shares/{linkId} {
       allow read: if signedIn() && resource.data.sender_id == request.auth.uid;
+      allow write: if false;
+    }
+
+    // Faz 4: yer notları. Sahibi (sorgu: owner_id == ben) ve sahibin seçtiği arkadaşlar (sorgu: visible_to
+    // array-contains ben) okur; yalnızca place_note_upsert / place_note_delete yazar. Süresi geçen notu okuma tarafı
+    // gizler, süpürücü siler. [Varsayım] Okuyan arkadaş visible_to listesini görür (Firestore alan gizlemez).
+    match /place_notes/{noteId} {
+      allow read: if signedIn()
+        && (resource.data.owner_id == request.auth.uid || request.auth.uid in resource.data.visible_to);
+      allow write: if false;
+    }
+
+    // Faz 4: acil durum uyarıları. Gönderen (sorgu: sender_id == ben) ve alıcılar (sorgu: recipient_ids
+    // array-contains ben) okur; yalnızca sos_* callable'ları yazar. Belge TAM koordinat taşır: başka kimse okuyamaz.
+    match /sos_alerts/{sosId} {
+      allow read: if signedIn()
+        && (resource.data.sender_id == request.auth.uid || request.auth.uid in resource.data.recipient_ids);
       allow write: if false;
     }
 

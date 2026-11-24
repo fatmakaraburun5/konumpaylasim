@@ -12,7 +12,7 @@ import { formatAgo, FRESHNESS_TEXT, RECEIVER_STATUS_TEXT, type EpochMs, type Fre
 import { useContext } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 import { now as serverNow } from '../../lib/clock';
-import { Avatar, Text, useTheme } from '../../ui';
+import { Avatar, lightColors, PulseRing, Text, useTheme } from '../../ui';
 import { MapProjectionContext, MapSizeContext } from './PreviewMap.web';
 import { useAnimatedLatLng } from './useAnimatedLatLng.web';
 
@@ -36,6 +36,10 @@ export interface FriendMarkerProps {
   status?: ReceiverStatus;
   /** Yalnızca web, Faz 3: uyarı durumunda etiketin ikinci satırı (core `lastVerifiedLocation().label`). */
   verifiedLabel?: string | null;
+  /** Faz 4: arkadaşın durum notu; etiketin altında küçük balon. */
+  note?: string | null;
+  /** Faz 4: nabız halkası — `ping` (birincil renk) ya da `sos` (aktif SOS, kırmızı pin). */
+  pulse?: 'ping' | 'sos' | null;
 }
 
 const DIM: ReadonlySet<ReceiverStatus> = new Set(['offline_suspected', 'stale']);
@@ -53,7 +57,22 @@ function statusText(freshness: Freshness, updatedAt: EpochMs | undefined): strin
   return FRESHNESS_TEXT[freshness];
 }
 
-export function FriendMarker({ id, name, lat, lng, freshness, batteryPct, onPress, timestamp, selected = false, updatedAt, status: receiverStatus, verifiedLabel }: FriendMarkerProps) {
+export function FriendMarker({
+  id,
+  name,
+  lat,
+  lng,
+  freshness,
+  batteryPct,
+  onPress,
+  timestamp,
+  selected = false,
+  updatedAt,
+  status: receiverStatus,
+  verifiedLabel,
+  note = null,
+  pulse = null,
+}: FriendMarkerProps) {
   const { colors, radius } = useTheme();
   const project = useContext(MapProjectionContext);
   const view = useContext(MapSizeContext);
@@ -66,26 +85,29 @@ export function FriendMarker({ id, name, lat, lng, freshness, batteryPct, onPres
   const status = warn ? RECEIVER_STATUS_TEXT[receiverStatus] : statusText(freshness, updatedAt ?? timestamp);
   const statusColor = selected ? colors.onPrimary : warn ? colors.warning : freshness === 'live' ? colors.live : freshness === 'recent' ? colors.primary : colors.stale;
   const width = warn ? WARN_WIDTH : WIDTH;
-  const ring = selected ? colors.primary : colors.surface;
+  const sos = pulse === 'sos';
+  const ring = sos ? lightColors.danger : selected ? colors.primary : colors.surface;
   // Ekran kenarındaki pinin etiketi içeri kayar (pin yerinde kalır).
   const EDGE = 6;
   const shift = !view ? 0 : x - width / 2 < EDGE ? EDGE - (x - width / 2) : x + width / 2 > view.w - EDGE ? view.w - EDGE - (x + width / 2) : 0;
-  const labelBg = selected ? colors.primary : colors.surface;
+  const labelBg = sos ? lightColors.danger : selected ? colors.primary : colors.surface;
+  const onLabel = selected || sos;
 
   return (
     <View
       testID={`friend-marker-${id}`}
       pointerEvents="box-none"
-      style={[styles.wrap, { width, left: x - width / 2, top: y - BUBBLE / 2, zIndex: selected ? 4 : warn ? 3 : 2 }]}
+      style={[styles.wrap, { width, left: x - width / 2, top: y - BUBBLE / 2, zIndex: sos ? 6 : selected ? 4 : warn ? 3 : 2 }]}
     >
       <Pressable
         onPress={onPress}
         accessibilityRole="button"
-        accessibilityLabel={`${name} konumu, ${status}${warn && verifiedLabel ? `, ${verifiedLabel}` : ''}`}
+        accessibilityLabel={`${sos ? 'Acil durum: ' : ''}${name} konumu, ${status}${warn && verifiedLabel ? `, ${verifiedLabel}` : ''}${note ? `, not: ${note}` : ''}`}
         accessibilityState={{ selected }}
         style={styles.press}
       >
-        <View style={[styles.bubble, dim ? styles.dim : null, { backgroundColor: ring, boxShadow: '0px 2px 8px rgba(15, 23, 42, 0.18)' }]}>
+        <View style={[styles.bubble, dim && !sos ? styles.dim : null, { backgroundColor: ring, boxShadow: '0px 2px 8px rgba(15, 23, 42, 0.18)' }]}>
+          {pulse ? <PulseRing size={BUBBLE} color={sos ? lightColors.danger : colors.primary} /> : null}
           <Avatar name={name} size={AVATAR} freshness={freshness} batteryPct={batteryPct} />
         </View>
         <View
@@ -95,9 +117,9 @@ export function FriendMarker({ id, name, lat, lng, freshness, batteryPct, onPres
             shift ? { transform: [{ translateX: shift }] } : null,
           ]}
         >
-          <Text variant="caption" numberOfLines={1} maxFontSizeMultiplier={1} style={selected ? { color: colors.onPrimary, fontWeight: '600' } : undefined}>
-            {first}
-            <Text variant="caption" style={{ color: statusColor, fontWeight: selected ? '400' : warn ? '600' : undefined }} maxFontSizeMultiplier={1}>
+          <Text variant="caption" numberOfLines={1} maxFontSizeMultiplier={1} style={onLabel ? { color: colors.onPrimary, fontWeight: sos ? '700' : '600' } : undefined}>
+            {sos ? `SOS · ${first}` : first}
+            <Text variant="caption" style={{ color: sos ? colors.onPrimary : statusColor, fontWeight: selected ? '400' : warn ? '600' : undefined }} maxFontSizeMultiplier={1}>
               {` · ${status}`}
             </Text>
           </Text>
@@ -112,6 +134,19 @@ export function FriendMarker({ id, name, lat, lng, freshness, batteryPct, onPres
             </Text>
           ) : null}
         </View>
+        {note ? (
+          <View
+            style={[
+              styles.note,
+              { backgroundColor: colors.warningSoft, borderColor: colors.warning, borderRadius: radius.sm, boxShadow: '0px 1px 4px rgba(15, 23, 42, 0.14)' },
+              shift ? { transform: [{ translateX: shift }] } : null,
+            ]}
+          >
+            <Text variant="caption" numberOfLines={1} maxFontSizeMultiplier={1} style={{ color: colors.text, fontSize: 11, lineHeight: 14 }}>
+              {note}
+            </Text>
+          </View>
+        ) : null}
       </Pressable>
     </View>
   );
@@ -123,4 +158,5 @@ const styles = StyleSheet.create({
   bubble: { borderRadius: 999, padding: 2 },
   dim: { opacity: 0.55 },
   label: { marginTop: 3, paddingHorizontal: 7, paddingVertical: 2, maxWidth: WIDTH },
+  note: { marginTop: 2, paddingHorizontal: 6, paddingVertical: 1, maxWidth: WIDTH, borderWidth: 1 },
 });

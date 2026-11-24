@@ -27,6 +27,16 @@ import { BatteryLowNotifyRequestSchema, PUSH_TYPES_F3, lowBatteryPushText } from
 import { BatteryLowNotifySchema } from '../../functions/src/schemas';
 import { buildBatteryLowPush, buildLocationRequestPush, buildResumeTrackingPush, buildTrackingStalledPush, turkishGenitive } from '../../functions/src/push';
 import { linkExpiryTaskFor } from '../../functions/src/tasks';
+import {
+  DELIVERED_OPTIONAL_F4_FIELDS,
+  NOTIFICATION_CHANNELS_F4,
+  PACKET_NOTE_MAX_CHARS,
+  PUSH_TYPES_F4,
+  pingPushText,
+  sosPushText,
+} from '@konum/core';
+import { SOS_CRITICAL_ALERTS } from '../../functions/src/config';
+import { buildPingPush, buildSosAckPush, buildSosPush, buildSosResolvedPush } from '../../functions/src/push';
 
 const rules = JSON.parse(readFileSync(new URL('../../database.rules.json', import.meta.url), 'utf8'));
 const liveNode: Record<string, unknown> = rules.rules.live_locations.$receiver_id.$share_id;
@@ -399,5 +409,59 @@ describe('Faz 3: bildirimler koordinat taşımaz', () => {
       const json = JSON.stringify(m);
       for (const banned of ['"lat"', '"lng"', 'accuracy', 'phone']) expect(json).not.toContain(banned);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Faz 4: bildirim yükleri (ping / SOS) ve kural düğümleri
+// ---------------------------------------------------------------------------
+
+describe('Faz 4: push yükleri ve RTDB düğümleri', () => {
+  const sos = {
+    sos_id: 'S1',
+    sender_id: 'uA',
+    sender_name: 'Ayşe',
+    address: 'Kadıköy, İstanbul',
+    location: { lat: 40.990123, lng: 29.020456, accuracy: 8, timestamp: 1 },
+    battery_pct: 23,
+  };
+
+  it('ping ve SOS bildirimleri koordinat taşımaz; veri türleri core PUSH_TYPES_F4', () => {
+    const msgs = [
+      buildPingPush('Ayşe', { ping_id: 'p1', from: 'uA', kind: 'on_way', eta_s: 720, expires_at: 2_000_000 }, 1_000_000),
+      buildSosPush(sos, false),
+      buildSosPush(sos, true),
+      buildSosResolvedPush('Ayşe', 'S1', 'uA'),
+      buildSosAckPush('Bora', 'S1', 'uB'),
+    ];
+    for (const m of msgs) {
+      expect(PUSH_TYPES_F4).toContain(m.data.type);
+      const json = JSON.stringify(m);
+      for (const banned of ['"lat"', '"lng"', '40.99', '29.02', 'phone']) expect(json).not.toContain(banned);
+    }
+    expect(msgs[0]?.data).toEqual({ type: 'ping', ping_id: 'p1', from: 'uA', kind: 'on_way' });
+    expect(msgs[0]?.notification).toEqual(pingPushText('Ayşe', 'on_way', 720));
+    expect(msgs[0]?.android?.notification?.channelId).toBe(NOTIFICATION_CHANNELS_F4.ping);
+    expect(msgs[1]?.notification).toEqual(sosPushText(sos));
+    expect(msgs[1]?.data).toEqual({ type: 'sos', sos_id: 'S1', sender_id: 'uA' });
+  });
+
+  it('SOS: Android yüksek öncelik + sos kanalı + kilit ekranında görünür; iOS kritik yalnızca bayrakla', () => {
+    const normal = buildSosPush(sos, false);
+    expect(normal.android).toMatchObject({ priority: 'high', notification: { channelId: 'sos', visibility: 'public', sound: 'default' } });
+    expect(normal.apns?.headers?.['apns-priority']).toBe('10');
+    expect(normal.apns?.payload?.aps).toMatchObject({ 'interruption-level': 'time-sensitive', sound: 'default' });
+    const critical = buildSosPush(sos, true);
+    expect(critical.apns?.payload?.aps).toMatchObject({ 'interruption-level': 'critical', sound: { critical: true, name: 'default', volume: 1 } });
+    expect(SOS_CRITICAL_ALERTS).toBe(false); // varsayılan kapalı (Apple onayı)
+  });
+
+  it('canlı pakette not alanları; ping_inbox yalnızca alıcı okur/siler; ping_expiry kapalı', () => {
+    for (const f of DELIVERED_OPTIONAL_F4_FIELDS) expect(Object.keys(liveNode)).toContain(f);
+    expect(String((liveNode.note as Record<string, string>)['.validate'])).toContain(`<= ${PACKET_NOTE_MAX_CHARS}`);
+    expect(rules.rules.ping_inbox.$uid['.read']).toBe('auth != null && auth.uid === $uid');
+    expect(rules.rules.ping_inbox.$uid.$ping_id['.write']).toBe('auth != null && auth.uid === $uid && !newData.exists()');
+    expect(rules.rules.ping_expiry).toMatchObject({ '.read': false, '.write': false });
+    expect(Object.keys(rules.rules.link_live.$token_hash)).not.toContain('note');
   });
 });

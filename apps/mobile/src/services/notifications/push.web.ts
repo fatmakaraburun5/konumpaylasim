@@ -10,7 +10,9 @@ import { lowBatteryPushText, type PushData, type UserId } from '@konum/core';
 import { demoServer } from '../../demo/server';
 import type { DemoPushMessage } from '../../demo/server/server';
 import { demoOnline, onDemoNetworkChange } from '../../demo/web/network';
+import { demoScreenLocked } from '../../demo/web/screen';
 import * as Notifications from './expoNotifications';
+import { f4ForegroundContent } from './f4Push';
 
 /** Testlerde de kurulabilen asgari mesaj biçimi (native ile aynı). */
 export interface PushLike {
@@ -35,10 +37,20 @@ export function batteryLowContent(m: PushLike): { title: string; body: string } 
 
 async function handleForegroundMessage(m: PushLike): Promise<void> {
   const content = batteryLowContent(m);
-  if (!content) return;
+  if (content) {
+    await Notifications.scheduleNotificationAsync({
+      content: { title: content.title, body: content.body, data: { type: 'battery_low', share_id: m.data?.share_id ?? null } },
+      trigger: null,
+    });
+    return;
+  }
+  // Faz 4: SOS / güvende / gördü her zaman bildirim kartı; ping yalnızca ekran kilitliyken (uygulama öndeyken
+  // native'deki gibi uygulama içi PingToast gösterilir). Kart dokunuşu `respondToDemoNotification` → koordinatör.
+  const f4 = f4ForegroundContent(m, { includePing: demoScreenLocked() });
+  if (!f4) return;
   await Notifications.scheduleNotificationAsync({
-    content: { title: content.title, body: content.body, data: { type: 'battery_low', share_id: m.data?.share_id ?? null } },
-    trigger: null,
+    content: { title: f4.title, body: f4.body, data: f4.data, interruptionLevel: f4.interruptionLevel },
+    trigger: { channelId: f4.channelId },
   });
 }
 

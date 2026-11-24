@@ -14,16 +14,20 @@ import { lowBatteryPushText, type PushData, type UserId } from '@konum/core';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   deleteToken,
+  getInitialNotification,
   getMessaging,
   getToken,
   onMessage,
+  onNotificationOpenedApp,
   onTokenRefresh,
   setBackgroundMessageHandler,
 } from '@react-native-firebase/messaging';
+import { Platform } from 'react-native';
 import { ensureFirebase } from '../firebase/init';
 import { deleteDeviceToken, saveDeviceToken } from '../firebase/profileRepo';
 import { resumeTracking } from '../location/resume';
 import * as Notifications from './expoNotifications';
+import { f4ForegroundContent, routeF4Open } from './f4Push';
 
 const OWNER_KEY = 'konum.push.owner.v1';
 /** [Varsayım] Çıkışta token silme en çok bu kadar bekletir (çevrimdışıysa çıkış yine yapılır). */
@@ -62,9 +66,15 @@ export async function registerPushToken(uid: UserId): Promise<() => void> {
   });
   // Faz 3: uygulama ÖNDEYKEN gelen FCM bildirimleri sistemce gösterilmez → düşük pil uyarısı yerel bildirimle.
   const unMessage = onMessage(messaging, (m) => void handleForegroundMessage(m).catch(() => undefined));
+  // Faz 4: sistemin gösterdiği FCM bildirimine dokunma (arka plan / kapalıyken) → SOS kartı / ping vurgusu.
+  const unOpened = onNotificationOpenedApp(messaging, (m) => void routeF4Open((m as unknown as PushLike).data));
+  void getInitialNotification(messaging)
+    .then((m) => (m ? routeF4Open((m as unknown as PushLike).data) : false))
+    .catch(() => undefined);
   return () => {
     unRefresh();
     unMessage();
+    unOpened();
   };
 }
 
@@ -104,6 +114,16 @@ async function handleForegroundMessage(msg: RemoteMessage): Promise<void> {
   const content = batteryLowContent(m);
   if (content) {
     await Notifications.scheduleNotificationAsync({ content: { title: content.title, body: content.body, data: { type: 'battery_low' } }, trigger: null });
+    return;
+  }
+  // Faz 4: SOS ön planda da sesli gösterilir (iOS'ta setNotificationHandler sos için banner + ses açar).
+  // Ping ön planda uygulama içi kartla gösterilir (kutu dinleyicisi), sistem bildirimi gerekmez.
+  const f4 = f4ForegroundContent(m, { includePing: false });
+  if (f4) {
+    await Notifications.scheduleNotificationAsync({
+      content: { title: f4.title, body: f4.body, data: f4.data, sound: f4.sound ? 'default' : false, interruptionLevel: f4.interruptionLevel },
+      trigger: Platform.OS === 'android' ? { channelId: f4.channelId } : null,
+    });
   }
 }
 

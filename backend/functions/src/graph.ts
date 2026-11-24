@@ -3,9 +3,21 @@
  * Paylaşım için: kabul edilmiş arkadaşlık VE iki yönde de engel yok.
  */
 import type { EpochMs, ShareEndReason, UserId } from '@konum/core';
-import type { DocumentReference, Transaction } from 'firebase-admin/firestore';
+import { type DocumentReference, FieldValue, type Transaction } from 'firebase-admin/firestore';
 import type { AclSource } from './acl';
-import { type FriendshipDoc, type RequestDoc, type ShareDoc, type UserDoc, endedShare, isUsableProfile, purgeAt, refs } from './docs';
+import {
+  COL,
+  type FriendshipDoc,
+  type PlaceNoteDoc,
+  type RequestDoc,
+  type ShareDoc,
+  type UserDoc,
+  endedShare,
+  isUsableProfile,
+  purgeAt,
+  refs,
+} from './docs';
+import { db } from './admin';
 import { fail } from './errors';
 
 export interface PairState {
@@ -97,4 +109,47 @@ export function writePairCascade(
     tx.update(r.ref, { status: 'cancelled', updated_at: now, purge_at: purgeAt(now) });
   }
   return ended;
+}
+
+// ---------------------------------------------------------------------------
+// Faz 4: arkadaşlık biterken (kaldırma / engelleme) acil kişi ve yer notu kitlesi temizliği
+// ---------------------------------------------------------------------------
+
+export interface PairF4Cleanup {
+  /** `emergency_contacts` listesinden çıkarılacak karşı taraf. */
+  contacts: { ref: DocumentReference; remove: UserId }[];
+  /** `visible_to` listesinden çıkarılacak karşı taraf (yer notları). */
+  notes: { ref: DocumentReference; remove: UserId }[];
+}
+
+/**
+ * Okuma aşaması: iki kullanıcının acil kişi listelerinde ve yer notlarının kitlesinde karşı taraf var mı?
+ * Sorgu `owner_id == a && visible_to array-contains b` bileşik dizin ister (firestore.indexes.json).
+ */
+export async function readPairF4Cleanup(tx: Transaction, a: UserId, b: UserId): Promise<PairF4Cleanup> {
+  const [ua, ub] = await tx.getAll(refs.user(a), refs.user(b));
+  const contacts: PairF4Cleanup['contacts'] = [];
+  for (const [snap, other] of [
+    [ua, b],
+    [ub, a],
+  ] as const) {
+    const list = (snap?.data() as UserDoc | undefined)?.emergency_contacts;
+    if (snap?.exists && Array.isArray(list) && list.includes(other)) contacts.push({ ref: snap.ref, remove: other });
+  }
+  const notesCol = db().collection(COL.placeNotes);
+  const [na, nb] = await Promise.all([
+    tx.get(notesCol.where('owner_id', '==', a).where('visible_to', 'array-contains', b)),
+    tx.get(notesCol.where('owner_id', '==', b).where('visible_to', 'array-contains', a)),
+  ]);
+  const notes: PairF4Cleanup['notes'] = [
+    ...na.docs.filter((d) => (d.data() as PlaceNoteDoc).owner_id === a).map((d) => ({ ref: d.ref, remove: b })),
+    ...nb.docs.filter((d) => (d.data() as PlaceNoteDoc).owner_id === b).map((d) => ({ ref: d.ref, remove: a })),
+  ];
+  return { contacts, notes };
+}
+
+/** Yazma aşaması: karşı tarafı listelerden çıkarır (belge yoksa dokunmaz; okuma aşaması var olanları seçti). */
+export function writePairF4Cleanup(tx: Transaction, c: PairF4Cleanup): void {
+  for (const x of c.contacts) tx.update(x.ref, { emergency_contacts: FieldValue.arrayRemove(x.remove) });
+  for (const x of c.notes) tx.update(x.ref, { visible_to: FieldValue.arrayRemove(x.remove) });
 }

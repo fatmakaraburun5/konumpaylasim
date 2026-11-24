@@ -240,3 +240,37 @@ describe('devices/{uid}/tokens', () => {
     await assertFails(other.doc(`devices/${A}/tokens/t3`).delete());
   });
 });
+
+// ---------------------------------------------------------------------------
+// Faz 4: yer notları ve acil durum uyarıları (yalnızca ilgililer okur, kimse yazamaz)
+// ---------------------------------------------------------------------------
+
+describe('Faz 4: place_notes / sos_alerts', () => {
+  const noteId = `n${randomUUID().slice(0, 8)}`;
+  const sosId = `s${randomUUID().slice(0, 8)}`;
+  beforeAll(async () => {
+    await db().doc(`place_notes/${noteId}`).set({ note_id: noteId, owner_id: A, emoji: '🅿️', text: 'Park yeri burası', position: { lat: 41, lng: 29, accuracy: 5 }, visible_to: [B], created_at: now, updated_at: now, expires_at: now + 3_600_000 });
+    await db().doc(`sos_alerts/${sosId}`).set({ sos_id: sosId, sender_id: A, recipient_ids: [B], status: 'active', location: { lat: 41, lng: 29, accuracy: 5, timestamp: now }, created_at: now });
+  });
+
+  it('yer notu: sahibi ve visible_to okur (sorgular dahil); başkası okuyamaz; kimse yazamaz', async () => {
+    const [fa, fb, fc] = await Promise.all([clientFirestore(A), clientFirestore(B), clientFirestore(C)]);
+    await assertSucceeds(fa.doc(`place_notes/${noteId}`).get());
+    await assertSucceeds(fa.collection('place_notes').where('owner_id', '==', A).get());
+    await assertSucceeds(fb.collection('place_notes').where('visible_to', 'array-contains', B).get());
+    await assertFails(fc.doc(`place_notes/${noteId}`).get());
+    await assertFails(fc.collection('place_notes').where('owner_id', '==', A).get());
+    await assertFails(fa.doc(`place_notes/${noteId}`).update({ text: 'x' }));
+    await assertFails(fa.doc('place_notes/yeni').set({ owner_id: A, visible_to: [] }));
+  });
+
+  it('SOS: gönderen ve alıcı okur (sorgular dahil); başkası okuyamaz; kimse yazamaz', async () => {
+    const [fa, fb, fc] = await Promise.all([clientFirestore(A), clientFirestore(B), clientFirestore(C)]);
+    await assertSucceeds(fa.collection('sos_alerts').where('sender_id', '==', A).get());
+    const got = await assertSucceeds(fb.collection('sos_alerts').where('recipient_ids', 'array-contains', B).get());
+    expect(got.docs.map((d) => d.id)).toContain(sosId);
+    await assertFails(fc.doc(`sos_alerts/${sosId}`).get());
+    await assertFails(fb.doc(`sos_alerts/${sosId}`).update({ [`acks.${B}`]: now }));
+    await assertFails(fa.doc(`sos_alerts/${sosId}`).update({ status: 'resolved' }));
+  });
+});

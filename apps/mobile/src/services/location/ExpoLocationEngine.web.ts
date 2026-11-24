@@ -183,6 +183,14 @@ export class ExpoLocationEngine implements LocationEngine {
     this.noteFix(s);
     return s;
   }
+
+  /** Faz 4 (SOS): simüle yüksek doğruluk (kısa bir "GPS kilitlenme" beklemesi). */
+  async getPreciseSample(_timeoutMs: number): Promise<RawLocationSample | null> {
+    await new Promise((r) => setTimeout(r, 400));
+    const s = demoLocationSample();
+    this.noteFix(s);
+    return { ...s, accuracy: Math.min(s.accuracy ?? 8, 8) };
+  }
 }
 
 export const locationEngine: LocationEngine = new ExpoLocationEngine();

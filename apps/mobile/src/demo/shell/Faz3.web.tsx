@@ -29,7 +29,17 @@ import Svg, { Circle, Path, Rect } from 'react-native-svg';
 import { permissionFlowStore } from '../../state/permissionFlowState';
 import { permissionsStore } from '../../state/permissionsStore';
 import { Text, useTheme } from '../../ui';
-import { AYSE_BATTERY, AYSE_LOW_BATTERY, demoControls, presentedDemoNotifications, subscribeDemoEvents, type DemoNotification, type DemoSnapshot } from '../controls';
+import {
+  AYSE_BATTERY,
+  AYSE_LOW_BATTERY,
+  demoControls,
+  presentedDemoNotifications,
+  respondToDemoNotification,
+  subscribeDemoEvents,
+  type DemoNotification,
+  type DemoSnapshot,
+} from '../controls';
+import { isF4PushType } from '../../services/notifications/f4Push';
 import { safeStorage } from '../server/storage';
 import { demoBatteryPct, demoEngineState, demoMotionMode, type DemoEngineState, type DemoMotionMode } from '../web/device';
 import { demoOnline, demoTunnelLeftMs } from '../web/network';
@@ -625,9 +635,17 @@ export function ScreenHostLayer() {
   return <View ref={ref as never} pointerEvents="box-none" style={[StyleSheet.absoluteFill, { zIndex: 20 }]} />;
 }
 
-const isBatteryPush = (n: DemoNotification) => n.data?.type === 'battery_low';
+/** Faz 4: ping / SOS / güvende / gördü push'ları da telefon bildirimi olarak çizilir. */
+const isF4Push = (n: DemoNotification) => isF4PushType(n.data?.type);
+const isSosPush = (n: DemoNotification) => n.data?.type === 'sos';
+const isBatteryPush = (n: DemoNotification) => n.data?.type === 'battery_low' || isF4Push(n);
 
-/** Düşük pil push'ları (uygulama ön plandayken yerel bildirimle gösterilir; demo burada çizer). */
+/** Bildirime dokunma: Faz 4 push'u uygulamadaki gerçek yanıt yoluna girer (SOS kartı / ping vurgusu). */
+function openPush(n: DemoNotification): void {
+  if (isF4Push(n)) respondToDemoNotification(n.identifier);
+}
+
+/** Düşük pil (ve Faz 4) push'ları (uygulama ön plandayken yerel bildirimle gösterilir; demo burada çizer). */
 function useBatteryPushes(): DemoNotification[] {
   const [list, setList] = useState<DemoNotification[]>(() => presentedDemoNotifications().filter(isBatteryPush).slice(0, 3));
   useEffect(
@@ -641,7 +659,7 @@ function useBatteryPushes(): DemoNotification[] {
   return list;
 }
 
-function NoticeCard({ title, body, at, dark, testID }: { title: string; body: string; at: number | null; dark: boolean; testID?: string }) {
+function NoticeCard({ title, body, at, dark, testID, sos }: { title: string; body: string; at: number | null; dark: boolean; testID?: string; sos?: boolean }) {
   return (
     <View
       testID={testID}
@@ -649,12 +667,14 @@ function NoticeCard({ title, body, at, dark, testID }: { title: string; body: st
         styles.notice,
         FROSTED,
         { backgroundColor: dark ? 'rgba(30, 41, 59, 0.72)' : 'rgba(255, 255, 255, 0.92)', borderColor: dark ? 'rgba(148,163,184,0.25)' : 'rgba(15,23,42,0.06)' },
+        // Faz 4: SOS kritik bildirim görünümü (kırmızı kenar + zemin).
+        sos ? { backgroundColor: dark ? 'rgba(127, 29, 29, 0.85)' : 'rgba(254, 226, 226, 0.97)', borderColor: '#DC2626', borderWidth: 2 } : null,
       ]}
     >
       <View style={styles.noticeHead}>
         <AppGlyph />
-        <Text variant="caption" style={{ flex: 1, color: dark ? 'rgba(255,255,255,0.75)' : '#475569', letterSpacing: 0.4 }} maxFontSizeMultiplier={1}>
-          KONUM
+        <Text variant="caption" style={{ flex: 1, color: sos ? (dark ? '#FECACA' : '#B91C1C') : dark ? 'rgba(255,255,255,0.75)' : '#475569', letterSpacing: 0.4 }} maxFontSizeMultiplier={1}>
+          {sos ? 'KONUM · ACİL DURUM' : 'KONUM'}
         </Text>
         <Text variant="caption" style={{ color: dark ? 'rgba(255,255,255,0.6)' : '#64748B', fontWeight: '400' }} maxFontSizeMultiplier={1}>
           {at === null || Date.now() - at < MINUTE ? 'şimdi' : `${Math.floor((Date.now() - at) / MINUTE)} dk önce`}
@@ -679,7 +699,8 @@ export function PushBanner() {
   const latest = pushes[0] ?? null;
   useEffect(() => {
     if (!latest || hidden.has(latest.identifier)) return;
-    const t = setTimeout(() => setHidden((h) => new Set(h).add(latest.identifier)), 7000);
+    // SOS afişi daha uzun kalır (kritik).
+    const t = setTimeout(() => setHidden((h) => new Set(h).add(latest.identifier)), isSosPush(latest) ? 15000 : 7000);
     return () => clearTimeout(t);
   }, [latest, hidden]);
   if (!latest || hidden.has(latest.identifier) || d.locked) return null;
@@ -687,11 +708,14 @@ export function PushBanner() {
     <Pressable
       accessibilityRole="button"
       accessibilityLabel={`Bildirim: ${latest.title}`}
-      onPress={() => setHidden((h) => new Set(h).add(latest.identifier))}
+      onPress={() => {
+        openPush(latest);
+        setHidden((h) => new Set(h).add(latest.identifier));
+      }}
       style={styles.pushBanner}
       testID="push-banner"
     >
-      <NoticeCard title={latest.title} body={latest.body} at={latest.date} dark={scheme === 'dark'} />
+      <NoticeCard title={latest.title} body={latest.body} at={latest.date} dark={scheme === 'dark'} sos={isSosPush(latest)} />
     </Pressable>
   );
 }
@@ -722,9 +746,25 @@ export function LockScreen() {
       </View>
       <View style={styles.lockList}>
         {d.engine.running && n ? <NoticeCard testID="lock-service-notice" title={n.title} body={n.body} at={null} dark /> : null}
-        {pushes.map((p) => (
-          <NoticeCard key={p.identifier} title={p.title} body={p.body} at={p.date} dark />
-        ))}
+        {pushes.map((p) =>
+          isF4Push(p) ? (
+            // Faz 4: kilit ekranında dokunma → kilit açılır, uygulama ilgili ekranı açar (SOS kartı / ping vurgusu).
+            <Pressable
+              key={p.identifier}
+              accessibilityRole="button"
+              accessibilityLabel={`Bildirim: ${p.title}`}
+              testID={isSosPush(p) ? 'lock-sos-notice' : undefined}
+              onPress={() => {
+                demoControls.setScreenLocked(false);
+                openPush(p);
+              }}
+            >
+              <NoticeCard title={p.title} body={p.body} at={p.date} dark sos={isSosPush(p)} />
+            </Pressable>
+          ) : (
+            <NoticeCard key={p.identifier} title={p.title} body={p.body} at={p.date} dark />
+          ),
+        )}
       </View>
       <View style={styles.lockBottom}>
         <Text variant="caption" style={{ color: 'rgba(255,255,255,0.7)', fontWeight: '400', textAlign: 'center' }}>

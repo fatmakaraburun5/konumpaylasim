@@ -30,6 +30,11 @@ export interface LocationEngine {
   /** Tek seferlik konum (ön plan nabzı için). */
   getCurrentSample(): Promise<RawLocationSample | null>;
   /**
+   * Faz 4 (SOS): en yüksek doğrulukta tek ölçüm, en çok `timeoutMs` beklenir; olmazsa null (çağıran son bilinen
+   * konuma düşer). Sağlamayan motorda `getCurrentSample` kullanılır.
+   */
+  getPreciseSample?(timeoutMs: number): Promise<RawLocationSample | null>;
+  /**
    * Faz 3: core matris satırını arka plan görevine uygular (aynı görev adıyla yeniden kayıt = seçenek güncelleme).
    * Android arka planında çağrılmamalı (`canReconfigureNow`).
    */

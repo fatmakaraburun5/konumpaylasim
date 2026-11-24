@@ -15,13 +15,31 @@
  *   │   yoksa:        BackgroundPermissionHint → ExpiryBanner(lar) → ActiveShareCard × oturum → ActiveLinkCard × bağlantı | ShareButton
  *   ├─ ShareSheet ("Arkadaşlar | Bağlantı (QR)") ─ PermissionFlow
  *   ├─ LinkQrSheet (QR, bağlantı, Kopyala/Paylaş, kalan süre, +30 dk / +1 saat, "Paylaşımı durdur")
- *   └─ çıkış sırasında ilerleme örtüsü
+ *   ├─ çıkış sırasında ilerleme örtüsü
+ *   └─ Faz 4:
+ *       PingToast (üstte kayan "📍 Buradayım / 🚶 Yoldayım" kartı) · EtaCard'da ping düğmeleri (arkadaş hedefi)
+ *       StatusNotePill → NoteSheet (durum notu) · EtaCard "Buraya not bırak" (nokta hedefi) → NoteSheet (yer notu)
+ *       yer notu pini → PlaceNoteCard (sahibi düzenler / siler) · arkadaş pininde not balonu ve ping/SOS nabzı
+ *       SosLauncher (sağ altta basılı tut → geri sayım → gönder → "Uyarı gönderildi") · SosIncomingBanner +
+ *       SosIncomingScreen (alıcı tam ekran acil durum kartı)
  *
  * Seçim: arkadaş pinine / şeride dokun → o arkadaş; haritaya uzun bas → nokta. Arkadaşın paylaşımı biterse
  * seçim kalkar. Rota ve adres yalnızca EtaCard görünürken istenir (useEta → routesRepo/geocodeRepo).
  */
-import { formatAgo, FRESHNESS_TEXT, type ExtensionMinutes, type LatLng, type LinkId, type TravelMode } from '@konum/core';
-import { useRouter } from 'expo-router';
+import {
+  formatAgo,
+  FRESHNESS_TEXT,
+  isSosActive,
+  visibleStatusNote,
+  type ExtensionMinutes,
+  type LatLng,
+  type LinkId,
+  type Ping,
+  type PlaceNote,
+  type SosAlert,
+  type TravelMode,
+} from '@konum/core';
+import { useNavigation, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, StyleSheet, View, type LayoutChangeEvent } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -34,8 +52,21 @@ import { locationStore, useLocationStore } from '../../state/locationStore';
 import { permissionsStore, usePermissionsStore } from '../../state/permissionsStore';
 import { sharingStore, useShareSessions, useSharingNow } from '../../state/sharingStore';
 import { useSyncStatus } from '../../state/syncStatusStore';
-import { cardShadow, IconButton, Text, useTheme } from '../../ui';
+import { notesStore, selectPlaceNotes, useNotesStore } from '../../state/notesStore';
+import { pingStore, usePingStore } from '../../state/pingStore';
+import { selectIncomingSos, sosStore, useSosStore } from '../../state/sosStore';
+import { Button, cardShadow, IconButton, Text, useTheme } from '../../ui';
 import { LinkQrSheet, type LinkQrSheetHandle } from '../link/LinkQrSheet';
+import { NoteSheet, type NoteSheetHandle } from '../notes/NoteSheet';
+import { PlaceNoteCard } from '../notes/PlaceNoteCard';
+import { StatusNotePill } from '../notes/StatusNotePill';
+import { PingButtons } from '../ping/PingButtons';
+import { pingPins } from '../ping/pingModel';
+import { PingToast } from '../ping/PingToast';
+import { SosIncomingBanner } from '../sos/SosIncomingBanner';
+import { SosIncomingScreen } from '../sos/SosIncomingScreen';
+import { SosLauncher } from '../sos/SosLauncher';
+import { sosPins, sosRouteFrom } from '../sos/sosModel';
 import { BackgroundPermissionHint } from '../permissions/BackgroundPermissionHint';
 import { activeShareContext } from '../permissions/permissionPlanner';
 import { ShareSheet, type ShareSheetHandle } from '../share/ShareSheet';
@@ -53,8 +84,8 @@ import { useAddress, useRouteEta, type EtaTarget } from './useEta';
 const RUNNING = new Set(['starting', 'active', 'expiring_soon', 'extending', 'stopping']);
 const LINK_RUNNING = new Set<LinkSession['phase']>(['active', 'expiring_soon', 'extending', 'stopping']);
 
-/** Haritadaki seçim: arkadaş (paylaşım kimliği) ya da uzun basışla bırakılan nokta. */
-export type MapSelection = { kind: 'friend'; shareId: string } | { kind: 'pin'; point: LatLng } | null;
+/** Haritadaki seçim: arkadaş (paylaşım kimliği), uzun basışla bırakılan nokta ya da (Faz 4) yer notu. */
+export type MapSelection = { kind: 'friend'; shareId: string } | { kind: 'pin'; point: LatLng } | { kind: 'note'; noteId: string } | null;
 
 const pinKey = (p: LatLng) => `pin:${p.lat.toFixed(5)},${p.lng.toFixed(5)}`;
 /** [Varsayım] Çıkışta tüm durdurmalar için toplam bekleme (çevrimdışıyken her biri ~48 sn sürebilirdi). */
@@ -83,6 +114,8 @@ export function MapHome() {
   const map = useRef<MapCanvasHandle>(null);
   const sheet = useRef<ShareSheetHandle>(null);
   const qrSheet = useRef<LinkQrSheetHandle>(null);
+  const noteSheet = useRef<NoteSheetHandle>(null);
+  const navigation = useNavigation();
   const [bottomH, setBottomH] = useState(0);
   const [selection, setSelection] = useState<MapSelection>(null);
   const [travelMode, setTravelMode] = useState<TravelMode>('DRIVE');
@@ -100,6 +133,33 @@ export function MapHome() {
 
   const links = useLinkSessions();
   const linkNow = useLinkStore((s) => s.now);
+
+  // --- Faz 4: ping, notlar, SOS ----------------------------------------------------------
+  const myUid = useAuthStore((s) => s.uid);
+  const pingInbox = usePingStore((s) => s.inbox);
+  const pingHighlightFrom = usePingStore((s) => s.highlight?.from ?? null);
+  const placeNotesMap = useNotesStore((s) => s.placeNotes);
+  const notePending = useNotesStore((s) => s.pending);
+  const sosIncoming = useSosStore((s) => s.incoming);
+  const placeNotes = useMemo(() => selectPlaceNotes({ placeNotes: placeNotesMap }, incomingNow), [placeNotesMap, incomingNow]);
+  const incomingSos = useMemo(() => selectIncomingSos({ incoming: sosIncoming }), [sosIncoming]);
+  const liveSenders = useMemo(() => new Set(incoming.map((f) => f.senderId)), [incoming]);
+  const sosSenders = useMemo(() => new Set(incomingSos.filter(isSosActive).map((a) => a.sender_id)), [incomingSos]);
+  const friendNotes = useMemo(() => {
+    const out: Record<string, string> = {};
+    for (const f of incoming) {
+      const n = visibleStatusNote(f.location, incomingNow);
+      if (n) out[f.shareId] = n;
+    }
+    return out;
+  }, [incoming, incomingNow]);
+  const pingPinList = useMemo(() => pingPins(pingInbox, liveSenders, incomingNow), [pingInbox, liveSenders, incomingNow]);
+  const sosPinList = useMemo(() => sosPins(incomingSos, liveSenders), [incomingSos, liveSenders]);
+  const selectedNote = selection?.kind === 'note' ? placeNotes.find((n) => n.note_id === selection.noteId) : undefined;
+  // Not silindi / süresi doldu: kart kapanır.
+  useEffect(() => {
+    if (selection?.kind === 'note' && !selectedNote) setSelection(null);
+  }, [selection, selectedNote]);
 
   const anyRunning = sessions.some((s) => RUNNING.has(s.phase));
   const anyLinkRunning = links.some((l) => LINK_RUNNING.has(l.phase));
@@ -142,6 +202,9 @@ export function MapHome() {
   const eta = useRouteEta(target, origin, travelMode, target !== null);
   const address = useAddress(target, target !== null);
   const routePoints = eta.entry && !eta.entry.error ? (eta.entry.result?.points ?? null) : null;
+  const etaResult = eta.entry && !eta.entry.error ? (eta.entry.result ?? null) : null;
+  // Faz 4: SOS anında haritada açık rota (varsa) pakete eklenir.
+  const sosRoute = useMemo(() => (target ? sosRouteFrom(target.title, etaResult) : null), [target, etaResult]);
   const friendSubtitle = selectedFriend
     ? selectedFriend.freshness === 'stale'
       ? formatAgo(selectedFriend.location.timestamp, incomingNow)
@@ -184,6 +247,48 @@ export function MapHome() {
   const locationBlocked = usePermissionsStore((s) => s.foreground === 'denied' && !s.foregroundCanAskAgain);
   const locationGranted = usePermissionsStore((s) => s.foreground === 'granted');
   const closeRoute = useCallback(() => setSelection(null), []);
+  // --- Faz 4 eylemleri ---------------------------------------------------------------------
+  const openStatusNote = useCallback(() => noteSheet.current?.present({ mode: 'status' }), []);
+  const leaveNoteAt = useCallback((p: LatLng) => noteSheet.current?.present({ mode: 'place', position: { lat: p.lat, lng: p.lng, accuracy: null } }), []);
+  const selectNote = useCallback((n: PlaceNote) => {
+    setSelection({ kind: 'note', noteId: n.note_id });
+    map.current?.centerOn(n.position.lat, n.position.lng);
+  }, []);
+  const deleteNote = useCallback((n: PlaceNote) => {
+    Alert.alert('Notu sil', 'Not haritadan kalkacak; gördüğü kişiler de artık göremez.', [
+      { text: 'Vazgeç', style: 'cancel' },
+      {
+        text: 'Sil',
+        style: 'destructive',
+        onPress: async () => {
+          const ok = await notesStore.getState().deletePlace(n.note_id);
+          if (ok) setSelection(null);
+          else Alert.alert('Not silinemedi', 'Bağlantını kontrol edip tekrar dene.');
+        },
+      },
+    ]);
+  }, []);
+  const showPingOnMap = useCallback(
+    (p: Ping) => {
+      pingStore.getState().highlightFrom(p.from, p.kind);
+      const live = incoming.find((f) => f.senderId === p.from);
+      if (live) focusFriend(live);
+      else if (p.location) map.current?.centerOn(p.location.lat, p.location.lng);
+    },
+    [incoming, focusFriend],
+  );
+  const showSosOnMap = useCallback(
+    (a: SosAlert) => {
+      sosStore.getState().focus(null);
+      // Arkadaşlar ekranındaysa haritaya dön.
+      if (!navigation.isFocused()) router.navigate('/');
+      const live = incoming.find((f) => f.senderId === a.sender_id);
+      if (live) focusFriend(live);
+      else map.current?.centerOn(a.location.lat, a.location.lng);
+    },
+    [incoming, focusFriend, navigation, router],
+  );
+
   const recenter = useCallback(() => {
     if (myPosition) map.current?.centerOn(myPosition.lat, myPosition.lng);
   }, [myPosition]);
@@ -256,10 +361,22 @@ export function MapHome() {
         destination={selection?.kind === 'pin' ? selection.point : null}
         route={routePoints}
         onLongPress={dropPin}
+        friendNotes={friendNotes}
+        pingHighlightFrom={pingHighlightFrom}
+        sosSenders={sosSenders}
+        placeNotes={placeNotes}
+        myUid={myUid}
+        selectedNoteId={selection?.kind === 'note' ? selection.noteId : null}
+        onPlaceNotePress={selectNote}
+        pingPins={pingPinList}
+        onPingPress={(p) => pingStore.getState().highlightFrom(p.from, p.kind)}
+        sosPins={sosPinList}
+        onSosPress={(a) => sosStore.getState().focus(a.sos_id)}
       />
 
       <TopBar profile={profile} onFriends={() => router.push('/friends')} onSignOut={signOut} />
       <View style={[styles.strip, { top: insets.top + 72, gap: spacing.xs }]} pointerEvents="box-none">
+        <SosIncomingBanner alerts={incomingSos} now={incomingNow} />
         <IncomingStrip items={incoming} names={names} now={incomingNow} onFocus={focusFriend} />
         {syncFailing ? (
           <View
@@ -275,18 +392,50 @@ export function MapHome() {
 
       <View style={[styles.bottom, { paddingHorizontal: spacing.md, paddingBottom: insets.bottom + spacing.md, gap: spacing.sm }]} onLayout={onBottomLayout} pointerEvents="box-none">
         <View style={[styles.recenter, { gap: spacing.xs }]} pointerEvents="box-none">
+          <View style={styles.flex} pointerEvents="box-none">
+            {!target && !selectedNote ? <StatusNotePill onPress={openStatusNote} /> : null}
+          </View>
           {anyRunning && !target ? (
             <IconButton icon="qr" variant="floating" size={48} accessibilityLabel="QR ile paylaş" onPress={() => sheet.current?.present('link')} />
           ) : null}
           <RecenterButton onPress={recenter} disabled={!myPosition} />
+          <SosLauncher route={sosRoute} />
         </View>
         {!target ? <BackgroundPermissionHint visible={anyRunning || anyLinkRunning} context={permContext} /> : null}
         {expiring ? <ExpiryBanner session={expiring} now={shareNow} onExtend={(m) => void extend(expiring.session_id, m)} /> : null}
         {expiringLink ? (
           <ExpiryBanner session={expiringLink} now={linkNow} subject="QR bağlantın" onExtend={(m) => void linkStore.getState().extend(expiringLink.link_id, m)} />
         ) : null}
-        {target ? (
-          <EtaCard target={target} subtitle={friendSubtitle} mode={travelMode} onModeChange={setTravelMode} eta={eta} address={address} onClose={closeRoute} onRequestLocation={locationGranted ? undefined : ensureMyLocation} locationBlocked={locationBlocked} />
+        {selectedNote ? (
+          <PlaceNoteCard
+            note={selectedNote}
+            myUid={myUid}
+            names={names}
+            now={incomingNow}
+            deleting={notePending[selectedNote.note_id] === 'deleting'}
+            onEdit={() => noteSheet.current?.present({ mode: 'place', position: selectedNote.position, note: selectedNote })}
+            onDelete={() => deleteNote(selectedNote)}
+            onClose={closeRoute}
+          />
+        ) : target ? (
+          <EtaCard
+            target={target}
+            subtitle={friendSubtitle}
+            mode={travelMode}
+            onModeChange={setTravelMode}
+            eta={eta}
+            address={address}
+            onClose={closeRoute}
+            onRequestLocation={locationGranted ? undefined : ensureMyLocation}
+            locationBlocked={locationBlocked}
+            note={selectedFriend ? (friendNotes[selectedFriend.shareId] ?? null) : null}
+          >
+            {selectedFriend ? (
+              <PingButtons to={selectedFriend.senderId} name={target.title} etaS={etaResult?.duration_s ?? null} />
+            ) : selection?.kind === 'pin' ? (
+              <Button title="📝 Buraya not bırak" variant="secondary" onPress={() => leaveNoteAt(selection.point)} />
+            ) : null}
+          </EtaCard>
         ) : (
           <>
             {sessions.map((s) => (
@@ -318,6 +467,10 @@ export function MapHome() {
 
       <ShareSheet ref={sheet} onLinkCreated={showQr} />
       <LinkQrSheet ref={qrSheet} />
+      <NoteSheet ref={noteSheet} onPlaceSaved={selectNote} onPlaceDeleted={() => setSelection(null)} />
+
+      <PingToast names={names} onShowOnMap={showPingOnMap} />
+      <SosIncomingScreen onShowOnMap={showSosOnMap} />
 
       {signingOut ? (
         <View style={[StyleSheet.absoluteFill, styles.overlay]} accessibilityViewIsModal accessibilityLiveRegion="polite">
@@ -335,7 +488,8 @@ const styles = StyleSheet.create({
   root: { flex: 1 },
   strip: { position: 'absolute', left: 0, right: 0 },
   bottom: { position: 'absolute', left: 0, right: 0, bottom: 0 },
-  recenter: { flexDirection: 'row', justifyContent: 'flex-end' },
+  recenter: { flexDirection: 'row', justifyContent: 'flex-end', alignItems: 'center' },
+  flex: { flex: 1 },
   sync: { borderWidth: 1 },
   overlay: { alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(15, 23, 42, 0.45)' },
   overlayCard: { flexDirection: 'row', alignItems: 'center', maxWidth: 320 },

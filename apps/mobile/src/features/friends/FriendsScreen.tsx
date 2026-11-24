@@ -2,15 +2,21 @@
  * Faz 1 için asgari arkadaş yönetimi: kendi davet kodum (paylaş), kodla arkadaş ekle,
  * bekleyen istekleri kabul/ret, arkadaş listesi (görünür "Çıkar" düğmesi; ekran okuyucu eylemi de var).
  * Başarısız işlemler satırın altında Türkçe hata metniyle gösterilir.
+ *
+ * Faz 4: "Acil durum kişileri" kartı (EmergencyContactsSheet ile düzenlenir; SOS bu kişilere gider) ve her arkadaş
+ * satırında tek dokunuşla "📍 Buradayım / 🚶 Yoldayım" (konum paylaşımı olmasa da gönderilebilir).
  */
-import { formatInviteCode } from '@konum/core';
+import { formatInviteCode, SOS_LIMITS } from '@konum/core';
 import { useRouter } from 'expo-router';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Alert, ScrollView, Share, StyleSheet, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuthStore } from '../../state/authStore';
-import { friendsStore, useFriendRequests, useFriends, useOutgoingRequests, type FriendOpResult } from '../../state/friendsStore';
+import { friendsStore, useFriendNames, useFriendRequests, useFriends, useOutgoingRequests, type FriendOpResult } from '../../state/friendsStore';
+import { useSosStore } from '../../state/sosStore';
 import { Avatar, Button, cardShadow, IconButton, MIN_TOUCH, Text, useTheme } from '../../ui';
+import { PingButtons } from '../ping/PingButtons';
+import { EmergencyContactsSheet, type EmergencyContactsSheetHandle } from '../sos/EmergencyContactsSheet';
 
 export function FriendsScreen() {
   const { colors, radius, spacing, typography } = useTheme();
@@ -20,6 +26,9 @@ export function FriendsScreen() {
   const friends = useFriends();
   const requests = useFriendRequests();
   const outgoing = useOutgoingRequests();
+  const names = useFriendNames();
+  const emergencyContacts = useSosStore((s) => s.emergencyContacts);
+  const contactsSheet = useRef<EmergencyContactsSheetHandle>(null);
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
@@ -74,6 +83,21 @@ export function FriendsScreen() {
             <Button title="Kodu paylaş" variant="secondary" onPress={() => void Share.share({ message: `Konum'da beni ekle: ${profile.invite_code}` })} />
           </View>
         ) : null}
+
+        <View style={card} testID="emergency-contacts-card">
+          <Text variant="heading">Acil durum kişileri</Text>
+          <Text variant="label" color="textSecondary">
+            {emergencyContacts.length > 0
+              ? emergencyContacts.map((u) => names[u] ?? 'Arkadaş').join(', ')
+              : `SOS uyarın tam konumunla bu kişilere gider. En çok ${SOS_LIMITS.maxContacts} arkadaş seçebilirsin.`}
+          </Text>
+          <Button
+            title={emergencyContacts.length > 0 ? 'Acil kişileri düzenle' : 'Acil kişi seç'}
+            variant="secondary"
+            onPress={() => contactsSheet.current?.present(false)}
+            disabled={friends.length === 0}
+          />
+        </View>
 
         <View style={card}>
           <Text variant="heading">Kodla arkadaş ekle</Text>
@@ -191,6 +215,9 @@ export function FriendsScreen() {
                     onPress={() => confirmRemove(f.friendshipId, f.displayName)}
                   />
                 </View>
+                <View style={{ paddingLeft: 36 + spacing.sm }}>
+                  <PingButtons to={f.uid} name={f.displayName} compact />
+                </View>
                 {rowError[f.friendshipId] ? (
                   <Text variant="label" color="danger" accessibilityLiveRegion="polite">
                     {rowError[f.friendshipId]}
@@ -201,6 +228,7 @@ export function FriendsScreen() {
           )}
         </View>
       </ScrollView>
+      <EmergencyContactsSheet ref={contactsSheet} />
     </View>
   );
 }

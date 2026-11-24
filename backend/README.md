@@ -241,6 +241,30 @@ tanımlanmalıdır.
 **Dağıtım:** yeni bileşik dizinler `location_shares (status, share_mode, started_at)` ve `(status, started_at)`; TTL
 `battery_alerts.purge_at`; yeni fonksiyonlar `battery_low_notify`, `share_stall_watchdog`.
 
+## Faz 4: ping, kısa notlar, tam konumlu SOS
+
+Kod: `handlers/ping.ts`, `handlers/notes.ts`, `handlers/sos.ts`; push yükleri `push.ts` (`buildPingPush`, `buildSosPush`,
+`buildSosResolvedPush`, `buildSosAckPush`). Hepsi europe-west1, App Check, `op_id` tekilleştirmesi, şemalar core'dan.
+
+| Ad | Etki |
+|---|---|
+| `ping_send` | Kabul edilmiş + engelsiz arkadaşa "Buradayım / Yoldayım". Arkadaş değil / engelli / kendisi → `not_friends`. Aynı çifte 20 sn, saatte 30 → `rate_limited`. 5 dk'dan eski konum atılır. RTDB `ping_inbox/{to}/{ping_id}` (alıcı okur ve siler) + sunucu dizini `ping_expiry/{ping_id}`; alıcıya `ping` push (kanal `ping`, koordinat yok). `ping_id` = sha256(uid, op_id): tekrar aynı kaydı yazar, push yalnızca ilk sefer. |
+| `place_note_upsert` / `place_note_delete` | Firestore `place_notes/{id}`. Metin/emoji `sanitizeNoteText`; `visible_to` tekilleştirilir, kendisi ve arkadaş olmayanlar sessizce atılır. Aktif not ≥ 20 → `note_limit_reached`; başkasının / süresi geçmiş not → `note_not_found`; olmayan notu silme `{deleted:false}`. |
+| `emergency_contacts_set` | `users/{uid}.emergency_contacts` (≤ 5, sıra korunur, yalnızca arkadaşlar). Arkadaşlık kaldırma / engelleme karşı tarafı iki listeden ve yer notu kitlesinden çıkarır. |
+| `sos_send` | Geçerli acil kişi yoksa `no_emergency_contacts`; saatte 10. Aktif SOS varsa aynı belge tazelenir ve yeniden push edilir (aynı `sos_id`). Adres yoksa ≤ 2 sn önbellek/Google (kota dışı, hata → null). Push: Android `priority: high`, kanal `sos`, `visibility: public`; iOS `apns-priority: 10`, `interruption-level: time-sensitive` ya da `SOS_CRITICAL_ALERTS=1` ise `critical` + kritik ses. Gövdede adres + doğruluk + pil, ham koordinat yok. |
+| `sos_update` | Yalnızca gönderen, aktifken (`sos_not_active`); 15 sn'den sık çağrı mevcut belgeyi döndürür; push yok. |
+| `sos_resolve` | Gönderen "Güvendeyim": `resolved / safe`, alıcılara `sos_resolved` (aynı tag / collapse-id ile alarmın yerine geçer). İdempotent. |
+| `sos_ack` | Yalnızca alıcı: `acks.{uid}`; her alıcının ilk onayında gönderene `sos_ack`. |
+
+Bakım (dakikalık tarama): süresi geçen pingler (`ping_expiry` → `ping_inbox`), süresi geçen yer notları silinir; 24 saati
+aşan aktif SOS `resolved / timeout` olur. Hesap silme: kendi yer notları, ping kutusu ve gönderdiği pingler, aktif SOS
+(`account_deleted`), başkalarının acil kişi listelerindeki ve not kitlelerindeki kaydı temizlenir. Canlı pakete isteğe bağlı
+`note` (1–60) + `note_exp` (ikisi birlikte) eklendi; `link_live`'a not gitmez.
+
+**Dağıtım:** yeni dizinler `sos_alerts (sender_id, status)`, `(status, created_at)`, `place_notes (owner_id, visible_to
+CONTAINS)`; TTL `place_notes.purge_at`, `sos_alerts.purge_at`; `sos_send` / `sos_update` Maps secret'ını ister. iOS Critical
+Alerts Apple onayından sonra `SOS_CRITICAL_ALERTS=1` ile açılır [Varsayım].
+
 ## Varsayımlar ve açık noktalar
 
 - Bölgeler (Firestore `eur3`, RTDB ve Functions `europe-west1`) ve KVKK yurt dışı aktarımı [Varsayım: doğrulanmalı].

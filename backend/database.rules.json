@@ -69,6 +69,12 @@
           "recorded_at": {
             ".validate": "newData.isNumber() && newData.val() % 1 === 0 && newData.val() >= 1500000000000 && newData.val() <= now + 3600000"
           },
+          "note": {
+            ".validate": "newData.isString() && newData.val().length >= 1 && newData.val().length <= 60 && newData.parent().child('note_exp').isNumber()"
+          },
+          "note_exp": {
+            ".validate": "newData.isNumber() && newData.val() % 1 === 0 && newData.val() > 0 && newData.parent().child('note').isString()"
+          },
           "$other": {
             ".validate": false
           }
@@ -173,6 +179,22 @@
           ".validate": false
         }
       }
+    },
+    "ping_inbox": {
+      "$uid": {
+        ".read": "auth != null && auth.uid === $uid",
+        "$ping_id": {
+          ".write": "auth != null && auth.uid === $uid && !newData.exists()"
+        }
+      }
+    },
+    "ping_expiry": {
+      ".read": false,
+      ".write": false,
+      ".indexOn": [
+        "expires_at",
+        "from"
+      ]
     }
   }
 }

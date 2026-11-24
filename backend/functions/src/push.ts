@@ -9,12 +9,26 @@
  * token kullanılır, fazlası silinir [Varsayım]; gönderim 500'lük parçalar hâlinde yapılır.
  * İstemci de çıkışta kendi token belgesini silmelidir (mobil ekip).
  */
-import { type PushData, type UserId, lowBatteryPushText, turkishGenitive } from '@konum/core';
+import {
+  NOTIFICATION_CHANNELS_F4,
+  PING_LIMITS,
+  type PingKind,
+  type PushData,
+  SOS_LIMITS,
+  type SosAlert,
+  type UserId,
+  lowBatteryPushText,
+  pingPushText,
+  sosAckPushText,
+  sosPushText,
+  sosResolvedPushText,
+  turkishGenitive,
+} from '@konum/core';
 import type { DocumentReference, Timestamp } from 'firebase-admin/firestore';
 import type { MulticastMessage } from 'firebase-admin/messaging';
 import * as logger from 'firebase-functions/logger';
 import { db, messaging } from './admin';
-import { IS_EMULATOR, LIMITS } from './config';
+import { IS_EMULATOR, LIMITS, SOS_CRITICAL_ALERTS } from './config';
 import { refs } from './docs';
 import { chunk } from './util';
 
@@ -177,6 +191,115 @@ export function buildTrackingStalledPush(sessionIds: readonly string[]): PushMes
     apns: {
       headers: { 'apns-collapse-id': 'tracking_stalled' },
       payload: { aps: { contentAvailable: true, category: 'TRACKING_STALLED' } },
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Faz 4: ping ve acil durum (SOS) bildirimleri
+// ---------------------------------------------------------------------------
+
+/** APNs başlıkları string ister; `apns-collapse-id` en çok 64 bayt. */
+const collapseId = (s: string): string => s.slice(0, 64);
+
+/**
+ * "Buradayım / Yoldayım": alıcıya görünür, yüksek öncelikli. Koordinat YOK (konum `ping_inbox`'tan okunur).
+ * Aynı göndericiden gelen yeni ping eskisinin yerine geçer (Android `tag`, iOS `apns-collapse-id`). Ping süresi
+ * dolunca iletmenin anlamı yok: TTL = kalan süre.
+ */
+export function buildPingPush(
+  senderName: string,
+  p: { ping_id: string; from: UserId; kind: PingKind; eta_s: number | null; expires_at: number },
+  now: number = Date.now(),
+): PushMessage {
+  const ttl = Math.max(0, Math.min(PING_LIMITS.ttlMs, p.expires_at - now));
+  return {
+    notification: pingPushText(senderName || 'Bir arkadaşın', p.kind, p.eta_s),
+    data: { type: 'ping', ping_id: p.ping_id, from: p.from, kind: p.kind },
+    android: {
+      priority: 'high',
+      ttl,
+      collapseKey: `ping_${p.from}`,
+      notification: { channelId: NOTIFICATION_CHANNELS_F4.ping, tag: `ping_${p.from}`, sound: 'default' },
+    },
+    apns: {
+      headers: {
+        'apns-priority': '10',
+        'apns-push-type': 'alert',
+        'apns-collapse-id': collapseId(`ping_${p.from}`),
+        'apns-expiration': String(Math.floor(p.expires_at / 1000)),
+      },
+      payload: { aps: { category: NOTIFICATION_CHANNELS_F4.ping, sound: 'default', 'interruption-level': 'active' } },
+    },
+  };
+}
+
+/**
+ * Acil durum: her alıcıya en yüksek öncelik. Metin core `sosPushText` (adres + doğruluk + pil; HAM KOORDİNAT YOK).
+ *  - Android: `priority: high` (Doze'da da iletilir), kanal `sos` (istemci IMPORTANCE_MAX + bypassDnd ile kurar),
+ *    kilit ekranında herkese açık (`visibility: public`), ses + titreşim.
+ *  - iOS: `apns-priority: 10`; `SOS_CRITICAL_ALERTS` açıksa `interruption-level: critical` + kritik ses (sessiz modu ve
+ *    Odak'ı aşar; Apple yetkisi gerekir), kapalıysa `time-sensitive` (Odak'ı aşar, sessiz modu aşmaz).
+ *  - Aynı SOS'un tekrar gönderimi (yeni konum) öncekinin yerine geçer (`tag` / `apns-collapse-id` = sos_id).
+ */
+export function buildSosPush(a: Pick<SosAlert, 'sos_id' | 'sender_id' | 'sender_name' | 'address' | 'location' | 'battery_pct'>, critical: boolean = SOS_CRITICAL_ALERTS): PushMessage {
+  const tag = `sos_${a.sos_id}`;
+  return {
+    notification: sosPushText({ ...a, sender_name: a.sender_name || 'Bir arkadaşın' }),
+    data: { type: 'sos', sos_id: a.sos_id, sender_id: a.sender_id },
+    android: {
+      priority: 'high',
+      ttl: SOS_LIMITS.activeMaxMs,
+      notification: {
+        channelId: NOTIFICATION_CHANNELS_F4.sos,
+        tag,
+        priority: 'max',
+        visibility: 'public',
+        sound: 'default',
+        defaultVibrateTimings: true,
+        sticky: true,
+      },
+    },
+    apns: {
+      headers: { 'apns-priority': '10', 'apns-push-type': 'alert', 'apns-collapse-id': collapseId(tag) },
+      payload: {
+        aps: critical
+          ? { category: NOTIFICATION_CHANNELS_F4.sos, 'interruption-level': 'critical', sound: { critical: true, name: 'default', volume: 1 } }
+          : { category: NOTIFICATION_CHANNELS_F4.sos, 'interruption-level': 'time-sensitive', sound: 'default' },
+      },
+    },
+  };
+}
+
+/**
+ * "Güvendeyim": alıcılara görünür; aynı `tag` / `apns-collapse-id` ile acil durum bildiriminin YERİNE geçer.
+ * [Varsayım] İyi haber alarm sesiyle çalmasın diye `sos` değil `ping` (HIGH) kanalı; iOS `time-sensitive`.
+ */
+export function buildSosResolvedPush(senderName: string, sosId: string, senderId: UserId): PushMessage {
+  const tag = `sos_${sosId}`;
+  return {
+    notification: sosResolvedPushText(senderName || 'Arkadaşın'),
+    data: { type: 'sos_resolved', sos_id: sosId, sender_id: senderId },
+    android: { priority: 'high', notification: { channelId: NOTIFICATION_CHANNELS_F4.ping, tag, sound: 'default' } },
+    apns: {
+      headers: { 'apns-priority': '10', 'apns-push-type': 'alert', 'apns-collapse-id': collapseId(tag) },
+      payload: { aps: { category: NOTIFICATION_CHANNELS_F4.sos, sound: 'default', 'interruption-level': 'time-sensitive' } },
+    },
+  };
+}
+
+/**
+ * Gönderene: alıcı uyarıyı gördü. [Varsayım] Tehlikedeki kişinin telefonu yüksek sesle çalmasın: `ping` kanalı,
+ * iOS `active` (kritik / zaman duyarlı değil).
+ */
+export function buildSosAckPush(ackerName: string, sosId: string, by: UserId): PushMessage {
+  return {
+    notification: sosAckPushText(ackerName || 'Bir arkadaşın'),
+    data: { type: 'sos_ack', sos_id: sosId, by },
+    android: { priority: 'high', notification: { channelId: NOTIFICATION_CHANNELS_F4.ping, tag: `sos_ack_${sosId}_${by}` } },
+    apns: {
+      headers: { 'apns-priority': '10', 'apns-push-type': 'alert' },
+      payload: { aps: { category: NOTIFICATION_CHANNELS_F4.sos, 'interruption-level': 'active' } },
     },
   };
 }

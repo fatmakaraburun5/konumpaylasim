@@ -39,6 +39,9 @@ import { needsProfile } from '../graph';
 import { activeShareIdsOf, endSharesById } from '../lifecycle';
 import { applyLinkEffects, deleteLinkAclNode, reconcileLink } from '../linkAcl';
 import { activeLinkIdsOf, endLinksById } from './links';
+import { deletePlaceNotesOf } from './notes';
+import { deletePingsOf } from './ping';
+import { closeSosForDeletedAccount, removeFromEmergencyContacts } from './sos';
 import { readRateLimit, runOp, writeRateLimit } from '../ops';
 import type {
   AccountDeleteResponse,
@@ -454,6 +457,12 @@ export async function accountDelete(ctx: CallCtx, _data: z.output<typeof Account
     deleteQuery(db().collection(COL.routeCache).where('uid', '==', uid)),
     // Faz 3: düşük pil bildirimi durumları
     deleteQuery(db().collection(COL.batteryAlerts).where('uid', '==', uid)),
+    // Faz 4: yer notları (kendi notları silinir, başkalarının not kitlesinden çıkar), ping kutusu + gönderdiği
+    // pingler, aktif SOS'lar (`account_deleted`), başkalarının acil kişi listelerinden çıkarılma.
+    deletePlaceNotesOf(uid),
+    deletePingsOf(uid),
+    closeSosForDeletedAccount(uid, now),
+    removeFromEmergencyContacts(uid),
   ]);
 
   // 5. ACL düğümleri (mezar taşları dahil): uid çifti RTDB'de kalmaz.
@@ -493,7 +502,7 @@ export async function accountDelete(ctx: CallCtx, _data: z.output<typeof Account
     if (phoneSnap?.exists && (phoneSnap.data() as IndexDoc).user_id === uid) tx.delete(phoneSnap.ref);
     tx.delete(refs.user(uid));
     tx.delete(refs.userPrivate(uid));
-    for (const key of ['friend_request', 'location_request', 'invite_regenerate', 'link_create', 'battery_low']) tx.delete(refs.rateLimit(uid, key));
+    for (const key of ['friend_request', 'location_request', 'invite_regenerate', 'link_create', 'battery_low', 'ping', 'sos_send']) tx.delete(refs.rateLimit(uid, key));
   });
 
   try {

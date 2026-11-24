@@ -127,7 +127,27 @@ export const LIMITS = {
   stallMaxPages: 20,
   /** live_trail noktaları bu kadar eskiyince bekçi tarafından budanır (core OUTBOX_LIMITS.maxAgeMs ile aynı). */
   trailMaxAgeMs: DAY,
+
+  // --- Faz 4 ---
+  /** Süresi geçen ping / yer notu / SOS taramasında tek çağrıdaki en çok kayıt. [Varsayım] */
+  f4SweepMax: 500,
+  /**
+   * Biten (çözülen) SOS belgesi bu kadar sonra TTL ile silinir (paylaşım belgeleriyle aynı). Aktif SOS'un `purge_at`
+   * değeri `activeMaxMs + endedDocTtlMs` sonrasıdır: süpürücü önce `timeout` ile kapatır, TTL aktif belgeyi silmez.
+   */
+  sosEndedTtlMs: 7 * DAY,
+  /** Süresi geçen yer notu belgesinin TTL payı (süpürücü zaten siler; TTL yedek). [Varsayım] */
+  placeNoteTtlGraceMs: 7 * DAY,
 } as const;
+
+/**
+ * Faz 4: iOS Critical Alerts (sessiz modu / Odak'ı aşan SOS bildirimi). Apple'ın `com.apple.developer.usernotifications
+ * .critical-alerts` yetkisini onaylaması gerekir; onaylanmadan `critical` gönderilirse iOS bildirimi normal bildirim
+ * gibi gösterir ama yetkisiz kullanım App Review riski taşır. [Varsayım: Apple onayı bekleniyor] Varsayılan KAPALI:
+ * ortam değişkeni `SOS_CRITICAL_ALERTS=1` (ya da `true`) ile açılır; kapalıyken `interruption-level: time-sensitive`.
+ * Mobil tarafta da aynı anda `IOS_CRITICAL_ALERTS=1` ile yetki eklenmelidir.
+ */
+export const SOS_CRITICAL_ALERTS = /^(1|true)$/i.test(process.env.SOS_CRITICAL_ALERTS ?? '');
 
 /** Konum isteği kabulünde süre verilmezse: 1 saat. */
 export const DEFAULT_REQUEST_DURATION = { kind: 'preset', preset: 'h1' } as const;

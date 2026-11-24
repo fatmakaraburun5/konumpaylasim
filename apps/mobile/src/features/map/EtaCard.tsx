@@ -5,6 +5,8 @@
  *   ulaşım modu çipleri: Araç | Yürüyüş | Bisiklet
  *   ETA (core `formatEtaDuration`) · kalan mesafe (core `formatDistanceTr`)
  *     ya da sakin durum metni (konum yok / hesaplanıyor / servis yok / kota doldu)
+ *   Faz 4: arkadaşın durum notu satırı ("☕ Kahve molasındayım") + eylem yuvası (`children`: arkadaş hedefinde
+ *   "📍 Buradayım / 🚶 Yoldayım", nokta hedefinde "Buraya not bırak")
  *   "Rotayı kapat"
  *
  * Kart açık değilken rota ve adres ÇAĞRILMAZ (bkz. useEta + routesRepo/geocodeRepo).
@@ -31,9 +33,13 @@ export interface EtaCardProps {
   onRequestLocation?: () => void;
   /** Konum izni kalıcı olarak reddedildi: yalnızca Ayarlar'dan açılabilir. */
   locationBlocked?: boolean;
+  /** Faz 4: arkadaşın görünür durum notu. */
+  note?: string | null;
+  /** Faz 4: "Rotayı kapat" üstündeki eylemler (ping düğmeleri / "Buraya not bırak"). */
+  children?: ReactNode;
 }
 
-export function EtaCard({ target, subtitle, mode, onModeChange, eta, address, onClose, onRequestLocation, locationBlocked = false }: EtaCardProps) {
+export function EtaCard({ target, subtitle, mode, onModeChange, eta, address, onClose, onRequestLocation, locationBlocked = false, note = null, children }: EtaCardProps) {
   const { colors, spacing, radius } = useTheme();
   const result = eta.entry?.result ?? null;
   const error = eta.entry?.error ?? null;
@@ -116,6 +122,19 @@ export function EtaCard({ target, subtitle, mode, onModeChange, eta, address, on
         </View>
       </View>
 
+      {note ? (
+        <View
+          style={[styles.note, { backgroundColor: colors.warningSoft, borderColor: colors.warning, borderRadius: radius.md, paddingHorizontal: spacing.sm, paddingVertical: spacing.xxs }]}
+          accessible
+          accessibilityLabel={`${target.title} notu: ${note}`}
+          testID="eta-card-note"
+        >
+          <Text variant="label" numberOfLines={2}>
+            {note}
+          </Text>
+        </View>
+      ) : null}
+
       <View style={[styles.row, { gap: spacing.xs }]} accessibilityRole="radiogroup" accessibilityLabel="Ulaşım şekli">
         {TRAVEL_MODES.map((m) => (
           <Chip key={m} label={TRAVEL_MODE_CHIP[m]} selected={m === mode} onPress={() => onModeChange(m)} style={styles.flex} />
@@ -123,6 +142,8 @@ export function EtaCard({ target, subtitle, mode, onModeChange, eta, address, on
       </View>
 
       <View style={{ minHeight: 32, justifyContent: 'center' }}>{body}</View>
+
+      {children}
 
       <Button title="Rotayı kapat" variant="secondary" onPress={onClose} />
     </View>
@@ -134,4 +155,5 @@ const styles = StyleSheet.create({
   flex: { flex: 1 },
   pinBadge: { width: 36, height: 36, borderRadius: 18, alignItems: 'center', justifyContent: 'center' },
   pinDot: { width: 12, height: 12, borderRadius: 6 },
+  note: { borderWidth: 1 },
 });

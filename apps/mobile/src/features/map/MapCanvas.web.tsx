@@ -10,8 +10,9 @@
  *  - Kendi konumum: locationStore.myPosition (mavi nokta + doğruluk halesi).
  *  - Faz 3: eşitlenen iz noktaları kesikli çizgi (iz → canlı pin, native `Polyline lineDashPattern` karşılığı);
  *    bağlantısı kopmuş olabilecek arkadaşın pini soluk, etiketinde son doğrulanmış konum.
+ *  - Faz 4: arkadaş pininde durum notu balonu ve nabız (ping / SOS); yer notu, ping ve SOS işaretleri (`F4Markers.web`).
  */
-import type { LatLng, UserId } from '@konum/core';
+import type { LatLng, Ping, PlaceNote, SosAlert, UserId } from '@konum/core';
 import { useContext, useImperativeHandle, useMemo, useRef, type Ref } from 'react';
 import { StyleSheet, View } from 'react-native';
 import type { EdgePadding } from 'react-native-maps';
@@ -19,6 +20,7 @@ import Svg, { Circle, Path } from 'react-native-svg';
 import type { IncomingFriendLocation } from '../../state/incomingStore';
 import { useLocationStore } from '../../state/locationStore';
 import { useTheme } from '../../ui';
+import { PingMarker, PlaceNoteMarker, SosMarker } from './F4Markers.web';
 import { FriendMarker } from './FriendMarker.web';
 import { MapProjectionContext, PreviewMap, type PreviewMapHandle } from './PreviewMap.web';
 
@@ -41,10 +43,49 @@ export interface MapCanvasProps {
   route?: readonly LatLng[] | null;
   /** Haritaya uzun basış: hedef noktası bırak. */
   onLongPress?: (p: LatLng) => void;
+  // --- Faz 4 ---
+  /** shareId → arkadaşın görünür durum notu (core `visibleStatusNote`). */
+  friendNotes?: Record<string, string>;
+  /** Yeni ping gönderen (pin nabız vurgusu, `pingStore.highlight`). */
+  pingHighlightFrom?: UserId | null;
+  /** Aktif SOS gönderenler: arkadaş pini kırmızı ve nabızlı. */
+  sosSenders?: ReadonlySet<UserId>;
+  /** Yer notları (benim + bana görünür, aktif). */
+  placeNotes?: readonly PlaceNote[];
+  myUid?: UserId | null;
+  selectedNoteId?: string | null;
+  onPlaceNotePress?: (n: PlaceNote) => void;
+  /** Göndereni canlı görünmeyen konumlu pingler (geçici pin). */
+  pingPins?: readonly Ping[];
+  onPingPress?: (p: Ping) => void;
+  /** Canlı pini olmayan aktif SOS göndericilerinin tam konumu. */
+  sosPins?: readonly SosAlert[];
+  onSosPress?: (a: SosAlert) => void;
   ref?: Ref<MapCanvasHandle>;
 }
 
-export function MapCanvas({ friends, names, padding, onFriendPress, selectedShareId, destination, route, onLongPress, ref }: MapCanvasProps) {
+export function MapCanvas({
+  friends,
+  names,
+  padding,
+  onFriendPress,
+  selectedShareId,
+  destination,
+  route,
+  onLongPress,
+  friendNotes,
+  pingHighlightFrom = null,
+  sosSenders,
+  placeNotes = [],
+  myUid = null,
+  selectedNoteId = null,
+  onPlaceNotePress,
+  pingPins = [],
+  onPingPress,
+  sosPins = [],
+  onSosPress,
+  ref,
+}: MapCanvasProps) {
   const map = useRef<PreviewMapHandle>(null);
 
   useImperativeHandle(
@@ -86,7 +127,19 @@ export function MapCanvas({ friends, names, padding, onFriendPress, selectedShar
           verifiedLabel={f.verified?.label ?? null}
           selected={f.shareId === selectedShareId}
           onPress={() => onFriendPress(f)}
+          note={friendNotes?.[f.shareId] ?? null}
+          pulse={sosSenders?.has(f.senderId) ? 'sos' : pingHighlightFrom === f.senderId ? 'ping' : null}
         />
+      ))}
+      {/* Faz 4: yer notları, geçici ping pinleri, canlı pini olmayan SOS göndericileri. */}
+      {placeNotes.map((n) => (
+        <PlaceNoteMarker key={`note:${n.note_id}`} note={n} selected={n.note_id === selectedNoteId} mine={n.owner_id === myUid} onPress={() => onPlaceNotePress?.(n)} />
+      ))}
+      {pingPins.map((p) => (
+        <PingMarker key={`ping:${p.ping_id}`} ping={p} name={names[p.from] ?? 'Arkadaş'} highlighted={pingHighlightFrom === p.from} onPress={() => onPingPress?.(p)} />
+      ))}
+      {sosPins.map((a) => (
+        <SosMarker key={`sos:${a.sos_id}`} alert={a} onPress={() => onSosPress?.(a)} />
       ))}
     </PreviewMap>
   );

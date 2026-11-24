@@ -4,7 +4,7 @@
  * YALNIZCA web dosyaları (`*.web.ts(x)`, src/demo/**) içe aktarır; native pakete girmemelidir.
  * Sunucu ilk erişimde oluşturulur: kalıcı durum yüklenir ya da dünya tohumlanır, süpürücü başlar.
  */
-import { MINUTE } from '@konum/core';
+import { HOUR, MINUTE } from '@konum/core';
 import {
   DEMO_DEFAULT_BATTERY_PCT,
   demoBatteryPct,
@@ -132,6 +132,33 @@ export const demoControls = {
   },
   grantAllPermissions(): void {
     grantAllDemoPerms();
+  },
+  // --- Faz 4 ---------------------------------------------------------------------------------------
+  /** Ayşe bana "📍 Buradayım" (konumlu) gönderir. Dönen: gönderildi mi (arkadaş değilse false). */
+  aysePingHere(): boolean {
+    return demoServer().botPing(PEOPLE.ayse.uid, 'here');
+  },
+  /** Mehmet bana "🚶 Yoldayım" gönderir (yaklaşık `etaMin` dk içinde). */
+  mehmetPingOnWay(etaMin = 12): boolean {
+    return demoServer().botPing(PEOPLE.mehmet.uid, 'on_way', Math.round(etaMin * 60));
+  },
+  /** Ayşe'nin durum notu ("☕ Kahve molasındayım", 1 saat) açılır / kapanır. Dönen: yeni durum + Ayşe paylaşıyor mu. */
+  toggleAyseStatusNote(): { on: boolean; sharing: boolean } {
+    const on = !demoServer().hasBotStatusNote(PEOPLE.ayse.uid);
+    const sharing = demoServer().setBotStatusNote(PEOPLE.ayse.uid, on ? { emoji: '☕', text: 'Kahve molasındayım', ms: HOUR } : null);
+    return { on, sharing };
+  },
+  /** Ayşe bulunduğu yere "🅿️ Park yeri burası" notu bırakır (yalnızca bana görünür, 4 saat). */
+  aysePlaceNote(): boolean {
+    return demoServer().botPlaceNote(PEOPLE.ayse.uid);
+  },
+  /** Ayşe SOS gönderir (acil kişisi benim): tam konum, adres, pil %23, rota. Dönen: sos_id ya da null. */
+  ayseSos(): string | null {
+    return demoServer().botSos(PEOPLE.ayse.uid);
+  },
+  /** Ayşe "Güvendeyim" der. Dönen: aktif SOS var mıydı. */
+  ayseSafe(): boolean {
+    return demoServer().botSosResolve(PEOPLE.ayse.uid);
   },
 
   /** Demoyu baştan başlatır: sunucu + uygulamanın kalıcı anahtarları silinir, sayfa yeniden yüklenir. */

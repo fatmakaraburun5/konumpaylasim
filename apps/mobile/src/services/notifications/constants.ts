@@ -10,6 +10,10 @@ export const CHANNELS = {
   locationRequests: 'location_requests',
   /** Faz 3: düşük pil / "paylaşımın duraksadı" (backend FCM `channel_id: share_status`). */
   shareStatus: 'share_status',
+  /** Faz 4: acil durum (core `NOTIFICATION_CHANNELS_F4.sos`; backend FCM `channel_id: sos`). */
+  sos: 'sos',
+  /** Faz 4: "Buradayım / Yoldayım" (core `NOTIFICATION_CHANNELS_F4.ping`). */
+  ping: 'ping',
 } as const;
 
 export const expiryNotificationId = (sessionId: string) => `share-expiring-${sessionId}`;

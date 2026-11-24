@@ -21,7 +21,7 @@
  * iOS notu: AsyncStorage klasörü cihaz yedeğine dahildir. Bu yüzden imleç (kendi son konumun)
  * paylaşım bitince silinir (`clearCursor`). Android'de `allowBackup: false`. [Varsayım: doğrulanmalı]
  */
-import type { EpochMs, LastPublished, LinkId, LinkPublishTarget, PublishTarget, SessionId, ShareId, TrackingProfileId, UserId } from '@konum/core';
+import type { EpochMs, LastPublished, LinkId, LinkPublishTarget, PublishTarget, SessionId, ShareId, StatusNote, TrackingProfileId, UserId } from '@konum/core';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { z } from 'zod';
 
@@ -29,6 +29,8 @@ const TARGETS_KEY = 'konum.bg.targets.v1';
 const CURSOR_KEY = 'konum.bg.cursor.v1';
 const PROFILE_KEY = 'konum.bg.profile.v1';
 const PERMISSION_FLOW_KEY = 'konum.ui.permissionFlowDone.v1';
+/** Faz 4: kendi durum notum (arka plan hattı da okur ve paketlere ekler). Konum İÇERMEZ. */
+const STATUS_NOTE_KEY = 'konum.bg.statusNote.v1';
 
 /**
  * Yayın hedefi + sunucunun onayladığı oturum özeti. Özet, açılışta sunucu dinleyicisi henüz
@@ -68,6 +70,8 @@ export interface PersistedCursor {
    * eski nokta canlıya yazılmaz (RTDB kuralı da reddeder: `q: 1` düğümdeki noktadan yeni olmalı).
    */
   lastLiveTs: EpochMs | null;
+  /** Faz 4: son yayınlanan paketlerdeki durum notu etiketi ('' = notsuz). Değişince hemen yayın zorlanır. */
+  lastNoteKey?: string | null;
 }
 
 const TargetSchema = z.object({
@@ -114,6 +118,7 @@ const CursorSchema = z.object({
   lastTargetsKey: z.string().nullable().default(null),
   authMissingSince: z.number().nullable().default(null),
   lastLiveTs: z.number().nullable().default(null),
+  lastNoteKey: z.string().nullable().default(null),
 });
 
 const ProfileSchema = z.object({
@@ -276,10 +281,44 @@ export async function loadPermissionFlowDone(): Promise<boolean> {
 }
 export const savePermissionFlowDone = (): Promise<void> => AsyncStorage.setItem(PERMISSION_FLOW_KEY, '1').catch(() => undefined);
 
+// --- Faz 4: durum notu -----------------------------------------------------------------------
+
+/** Kalıcı durum notu: sahibi (başka hesap girerse yok sayılır) + core `StatusNote`. */
+export interface PersistedStatusNote {
+  uid: UserId;
+  note: StatusNote;
+}
+
+const StatusNoteSchema = z.object({
+  uid: z.string().min(1),
+  note: z.object({ emoji: z.string().nullable(), text: z.string().min(1), expires_at: z.number() }),
+});
+
+/** Bellek önbelleği: konum hattı her örnekte diske gitmesin (ön plan yazınca güncellenir). undefined = okunmadı. */
+let statusNoteCache: PersistedStatusNote | null | undefined;
+
+export async function loadStatusNote(): Promise<PersistedStatusNote | null> {
+  if (statusNoteCache !== undefined) return statusNoteCache;
+  const v = await read(STATUS_NOTE_KEY, StatusNoteSchema.nullable(), null);
+  statusNoteCache = v;
+  return v;
+}
+
+export async function saveStatusNote(v: PersistedStatusNote | null): Promise<void> {
+  statusNoteCache = v;
+  try {
+    if (v) await AsyncStorage.setItem(STATUS_NOTE_KEY, JSON.stringify(v));
+    else await AsyncStorage.removeItem(STATUS_NOTE_KEY);
+  } catch {
+    // disk yazılamadı: bellek önbelleği bu çalıştırma için yeterli
+  }
+}
+
 /**
  * Çıkışta: arka plan görevi bir sonraki örnekte hedef bulamaz ve takibi kapatır.
  * Durdurma niyetleri (stopIntents) SİLİNMEZ: aynı hesapla tekrar girişte sunucuya yeniden gönderilir.
  */
 export async function clearBackgroundState(): Promise<void> {
-  await withTargetsLock(() => AsyncStorage.multiRemove([TARGETS_KEY, CURSOR_KEY, PROFILE_KEY]));
+  await withTargetsLock(() => AsyncStorage.multiRemove([TARGETS_KEY, CURSOR_KEY, PROFILE_KEY, STATUS_NOTE_KEY]));
+  statusNoteCache = null;
 }

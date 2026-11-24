@@ -68,6 +68,20 @@ export class ExpoLocationEngine implements LocationEngine {
       return null;
     }
   }
+
+  /** Faz 4 (SOS): `Highest` doğruluk (iOS kBest, Android PRIORITY_HIGH_ACCURACY), zaman aşımlı. */
+  async getPreciseSample(timeoutMs: number): Promise<RawLocationSample | null> {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    try {
+      const fix = Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Highest }).then(toRawSample, () => null);
+      const timeout = new Promise<null>((r) => (timer = setTimeout(() => r(null), timeoutMs)));
+      return await Promise.race([fix, timeout]);
+    } catch {
+      return null;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
 }
 
 async function stopGeofencing(): Promise<void> {

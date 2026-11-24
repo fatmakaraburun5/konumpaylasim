@@ -51,6 +51,39 @@ export enum AndroidImportance {
   MAX = 7,
 }
 
+export enum AndroidNotificationVisibility {
+  UNKNOWN = 0,
+  PUBLIC = 1,
+  PRIVATE = 2,
+  SECRET = 3,
+}
+
+export enum AndroidAudioUsage {
+  UNKNOWN = 0,
+  MEDIA = 1,
+  VOICE_COMMUNICATION = 2,
+  VOICE_COMMUNICATION_SIGNALLING = 3,
+  ALARM = 4,
+  NOTIFICATION = 5,
+  NOTIFICATION_RINGTONE = 6,
+  NOTIFICATION_COMMUNICATION_REQUEST = 7,
+  NOTIFICATION_COMMUNICATION_INSTANT = 8,
+  NOTIFICATION_COMMUNICATION_DELAYED = 9,
+  NOTIFICATION_EVENT = 10,
+  ASSISTANCE_ACCESSIBILITY = 11,
+  ASSISTANCE_NAVIGATION_GUIDANCE = 12,
+  ASSISTANCE_SONIFICATION = 13,
+  GAME = 14,
+}
+
+export enum AndroidNotificationPriority {
+  MIN = 'min',
+  LOW = 'low',
+  DEFAULT = 'default',
+  HIGH = 'high',
+  MAX = 'max',
+}
+
 export enum BackgroundNotificationTaskResult {
   NoData = 1,
   NewData = 2,

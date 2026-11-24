@@ -8,6 +8,7 @@ export {
   demoControls,
   subscribeDemoEvents,
   presentedDemoNotifications,
+  respondToDemoNotification,
   DEMO_DEFAULT_BATTERY_PCT,
   DEMO_ME_INVITE,
   DEMO_ME_NAME,

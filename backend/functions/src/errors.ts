@@ -24,6 +24,11 @@ const HTTPS_CODE: Record<ErrorCode, FunctionsErrorCode> = {
   maps_unavailable: 'unavailable',
   quota_exceeded: 'resource-exhausted',
   route_not_found: 'not-found',
+  // Faz 4
+  no_emergency_contacts: 'failed-precondition',
+  sos_not_active: 'failed-precondition',
+  note_not_found: 'not-found',
+  note_limit_reached: 'resource-exhausted',
 };
 
 export interface ErrorDetails {

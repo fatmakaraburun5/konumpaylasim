@@ -51,6 +51,11 @@ export interface LocationPacket {
    * çevrilmiş). Kuyruktan gelen noktalarda bulunur; uzun kesintide saat farkı tahmininin kaymasını izlemeye yarar.
    */
   recorded_at?: EpochMs;
+  // --- Faz 4: isteğe bağlı durum notu (konumu görenler görür; paylaşım bitince paketle birlikte silinir) ---
+  /** Kısa durum notu, en çok `NOTE_LIMITS.maxChars` karakter (örn. "☕ Kahve molasındayım"). */
+  note?: string;
+  /** Notun bitiş anı (sunucu saati, epoch ms). Alıcı bu andan sonra notu göstermez. */
+  note_exp?: EpochMs;
 }
 
 /** Faz 3 isteğe bağlı paket alanları (kuyruk / kalp atışı). */
@@ -58,6 +63,9 @@ export interface PacketExtras {
   hb?: number;
   q?: 1;
   recorded_at?: EpochMs;
+  /** Faz 4: durum notu ve bitişi (ikisi birlikte; süresi geçmiş not pakete girmez). */
+  note?: string;
+  note_exp?: EpochMs;
 }
 
 export interface DeliveredLocation extends Omit<LocationPacket, 'receiver_ids'> {
@@ -96,10 +104,19 @@ export const DELIVERED_FIELDS = [
   'hb',
   'q',
   'recorded_at',
+  // Faz 4 (isteğe bağlı)
+  'note',
+  'note_exp',
 ] as const satisfies readonly (keyof DeliveredLocation)[];
 
 /** Faz 3'te eklenen, isteğe bağlı canlı paket alanları. */
 export const DELIVERED_OPTIONAL_F3_FIELDS = ['hb', 'q', 'recorded_at'] as const satisfies readonly (keyof DeliveredLocation)[];
+
+/** Faz 4'te eklenen, isteğe bağlı canlı paket alanları (durum notu). */
+export const DELIVERED_OPTIONAL_F4_FIELDS = ['note', 'note_exp'] as const satisfies readonly (keyof DeliveredLocation)[];
+
+/** Faz 4: paketteki durum notu sınırı (RTDB kuralı da `note.length <= 60` uygular). */
+export const PACKET_NOTE_MAX_CHARS = 60;
 
 export const PACKET_LIMITS = {
   /** Bundan eski örnek canlı olarak yayınlanmaz (RTDB kuralı da reddeder). */
@@ -304,6 +321,17 @@ export function cleanExtras(extras: PacketExtras): PacketExtras {
   }
   if (extras.q === 1) out.q = 1;
   if (typeof extras.recorded_at === 'number' && Number.isFinite(extras.recorded_at)) out.recorded_at = Math.round(extras.recorded_at);
+  // Faz 4: not yalnızca bitişiyle birlikte ve boş değilse girer (RTDB kuralı ikisini birlikte ister).
+  if (typeof extras.note === 'string' && typeof extras.note_exp === 'number' && Number.isFinite(extras.note_exp)) {
+    const text = extras.note.trim();
+    // UTF-16 uzunluğu (RTDB `.length` ile aynı) sınırı aşarsa kod noktası sınırında kesilir.
+    let cut = text;
+    while (cut.length > PACKET_NOTE_MAX_CHARS) cut = Array.from(cut).slice(0, -1).join('');
+    if (cut.length > 0) {
+      out.note = cut;
+      out.note_exp = Math.round(extras.note_exp);
+    }
+  }
   return out;
 }
 
@@ -351,6 +379,8 @@ export const LocationPacketSchema = z.object({
   hb: z.number().int().min(PACKET_LIMITS.minHeartbeatMs).max(PACKET_LIMITS.maxHeartbeatMs).optional(),
   q: z.literal(1).optional(),
   recorded_at: z.number().int().positive().optional(),
+  note: z.string().min(1).max(PACKET_NOTE_MAX_CHARS).optional(),
+  note_exp: z.number().int().positive().optional(),
 });
 
 /** RTDB'den okunan kopya: eksik alanlar null olur, bilinmeyen alanlar yok sayılır (ileri uyumluluk). */
@@ -374,7 +404,16 @@ export const DeliveredLocationSchema = z.object({
   hb: z.number().positive().optional().catch(undefined),
   q: z.literal(1).optional().catch(undefined),
   recorded_at: z.number().optional().catch(undefined),
+  // Faz 4: bozuk not paketi düşürmez.
+  note: z.string().max(PACKET_NOTE_MAX_CHARS * 2).optional().catch(undefined),
+  note_exp: z.number().optional().catch(undefined),
 });
+
+/** Faz 4: alıcı tarafında gösterilecek durum notu (yoksa ya da süresi geçtiyse null). */
+export function visibleStatusNote(loc: { note?: string; note_exp?: EpochMs }, now: EpochMs): string | null {
+  if (!loc.note || typeof loc.note_exp !== 'number' || loc.note_exp <= now) return null;
+  return loc.note;
+}
 
 /** Okuma tarafı: bozuk kaydı sessizce atar (bir arkadaşın hatalı paketi haritayı çökertmesin). */
 export function parseDelivered(raw: unknown): DeliveredLocation | null {

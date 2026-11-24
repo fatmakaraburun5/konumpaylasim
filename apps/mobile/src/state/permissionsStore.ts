@@ -2,6 +2,7 @@
  * İzin durumu. `refresh()` yalnızca OKUR, asla sistem penceresi açmaz: uygulama açılışında
  * izin İSTENMEZ. İstek yalnızca kullanıcı ilk paylaşımını başlatırken PermissionFlow içinden yapılır.
  */
+import { iosCriticalAlertsEnabled } from '../lib/notificationConfig';
 import { readBatteryOptimization, type BatteryOptimization } from '../services/location/batteryOptimization';
 import * as Location from '../services/location/locationPermissions';
 import * as Notifications from '../services/notifications/expoNotifications';
@@ -95,7 +96,10 @@ export const permissionsStore = createStore<PermissionsState>()((set) => ({
   },
 
   requestNotifications: async () => {
-    const r = await Notifications.requestPermissionsAsync({ ios: { allowAlert: true, allowSound: true, allowBadge: false } });
+    // Faz 4: Critical Alerts yetkisi (Apple onayı + IOS_CRITICAL_ALERTS=1) varsa SOS sessiz modu da aşar.
+    const r = await Notifications.requestPermissionsAsync({
+      ios: { allowAlert: true, allowSound: true, allowBadge: false, ...(iosCriticalAlertsEnabled() ? { allowCriticalAlerts: true } : {}) },
+    });
     set({ notifications: toState(r), notificationsCanAskAgain: r.canAskAgain });
     return r.granted;
   },

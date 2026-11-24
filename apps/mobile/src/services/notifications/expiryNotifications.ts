@@ -20,10 +20,11 @@
  * kimlik `share-expiring-link:<link_id>`, veri `kind: 'link_expiring'` + `link_id` (eylem `link_share_extend`
  * çağırır). Süresiz bağlantı için de haftalık "Konum bağlantın hâlâ açık" hatırlatması planlanır.
  */
-import { DURATION_LIMITS, formatClock, uuidV4, type EpochMs, type LinkId, type ShareSession } from '@konum/core';
+import { DURATION_LIMITS, formatClock, NOTIFICATION_CHANNELS_F4, uuidV4, type EpochMs, type LinkId, type ShareSession } from '@konum/core';
 import * as Notifications from './expoNotifications';
 import { Platform } from 'react-native';
 import { lightColors } from '../../ui/tokens';
+import { isF4PushType } from './f4Push';
 import {
   ACTION_EXTEND,
   CHANNELS,
@@ -76,6 +77,35 @@ interface Subject {
 
 let configured: Promise<void> | null = null;
 
+/**
+ * Faz 4 Android kanalları (kanal ayarları ilk oluşturmadan sonra yalnızca kullanıcı tarafından değiştirilebilir):
+ *  - `sos`: IMPORTANCE_MAX, rahatsız etme modunu aşar (`bypassDnd`; kullanıcı "Rahatsız Etme erişimi" verdiyse,
+ *    ACCESS_NOTIFICATION_POLICY), kilit ekranında tam içerik, alarm sesi + uzun titreşim.
+ *  - `ping`: IMPORTANCE_HIGH (afiş + ses).
+ */
+export async function configureF4Channels(): Promise<void> {
+  await Notifications.setNotificationChannelAsync(CHANNELS.sos, {
+    name: 'Acil durum (SOS)',
+    description: 'Acil durum kişin olduğun biri tehlikede olduğunu bildirdiğinde',
+    importance: Notifications.AndroidImportance.MAX,
+    bypassDnd: true,
+    lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+    sound: 'default',
+    enableVibrate: true,
+    vibrationPattern: [0, 800, 300, 800, 300, 1200],
+    enableLights: true,
+    lightColor: '#DC2626',
+    // [Varsayım] Alarm akışı: medya sesi kısıkken de duyulur (kullanıcı kanal ayarından değiştirebilir).
+    audioAttributes: { usage: Notifications.AndroidAudioUsage.ALARM },
+  });
+  await Notifications.setNotificationChannelAsync(CHANNELS.ping, {
+    name: 'Buradayım / Yoldayım',
+    description: 'Arkadaşın tek dokunuşla durumunu gönderdiğinde',
+    importance: Notifications.AndroidImportance.HIGH,
+    sound: 'default',
+  });
+}
+
 /** Kanallar, kategori ve ön plan sunum kuralı. İzin İSTEMEZ (izin PermissionFlow'da). */
 export function configureNotifications(): Promise<void> {
   if (!configured) configured = doConfigure();
@@ -87,6 +117,12 @@ async function doConfigure(): Promise<void> {
     handleNotification: async (n) => {
       // Uygulama açıkken haritadaki ExpiryBanner zaten görünür: aynı uyarıyı afiş olarak tekrar gösterme.
       const isExpiry = n.request.content.categoryIdentifier === SHARE_EXPIRING_CATEGORY;
+      // Faz 4: SOS (ve güvende / gördü) ön planda da afiş + ses (iOS); sessiz modda bile kritik bilgi görünür.
+      const type = (n.request.content.data as { type?: unknown } | null | undefined)?.type;
+      if (isF4PushType(type)) {
+        const isSos = type === 'sos';
+        return { shouldShowBanner: true, shouldShowList: true, shouldPlaySound: isSos || type === 'sos_resolved', shouldSetBadge: false, ...(isSos ? { priority: Notifications.AndroidNotificationPriority.MAX } : {}) };
+      }
       return { shouldShowBanner: !isExpiry, shouldShowList: true, shouldPlaySound: false, shouldSetBadge: false };
     },
   });
@@ -108,6 +144,7 @@ async function doConfigure(): Promise<void> {
       description: 'Arkadaşının pili azaldığında ya da kendi paylaşımın duraksadığında',
       importance: Notifications.AndroidImportance.DEFAULT,
     });
+    await configureF4Channels();
   }
 
   /**
@@ -121,6 +158,17 @@ async function doConfigure(): Promise<void> {
     { identifier: ACTION_EXTEND[30], buttonTitle: '+30 dk', options: { opensAppToForeground: foreground } },
     { identifier: ACTION_EXTEND[60], buttonTitle: '+1 saat', options: { opensAppToForeground: foreground } },
   ]);
+
+  /**
+   * Faz 4 iOS kategorileri (backend APNs `aps.category` = core `NOTIFICATION_CHANNELS_F4`). Eylem yok: dokunma
+   * uygulamayı açar ve tam ekran kartı gösterir. Kullanıcı "Önizlemeleri göster: Asla / Kilit açıkken" seçmiş olsa
+   * da SOS başlığı ("ACİL: Ad tehlikede") kilit ekranında görünür (`showTitle`). [Varsayım: cihazda doğrulanmalı]
+   */
+  await Notifications.setNotificationCategoryAsync(NOTIFICATION_CHANNELS_F4.sos, [], {
+    showTitle: true,
+    previewPlaceholder: 'Acil durum uyarısı — görmek için aç',
+  }).catch(() => undefined);
+  await Notifications.setNotificationCategoryAsync(NOTIFICATION_CHANNELS_F4.ping, [], { showTitle: true }).catch(() => undefined);
 }
 
 /** Planlanan (ya da teslim edilmiş) bildirimlerin `prompt_at` değerleri; -1 = önceki çalıştırmadan, anı bilinmiyor. */

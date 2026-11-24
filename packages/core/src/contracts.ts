@@ -40,6 +40,15 @@ export const CALLABLES = {
   geocodeReverse: 'geocode_reverse',
   // Faz 3
   batteryLowNotify: 'battery_low_notify',
+  // Faz 4
+  pingSend: 'ping_send',
+  placeNoteUpsert: 'place_note_upsert',
+  placeNoteDelete: 'place_note_delete',
+  emergencyContactsSet: 'emergency_contacts_set',
+  sosSend: 'sos_send',
+  sosUpdate: 'sos_update',
+  sosResolve: 'sos_resolve',
+  sosAck: 'sos_ack',
 } as const;
 
 export type CallableName = (typeof CALLABLES)[keyof typeof CALLABLES];
@@ -77,6 +86,16 @@ export const PATHS = {
   liveTrail: (receiverId: UserId) => `live_trail/${receiverId}`,
   /** Firestore: oturum başına düşük pil tetikleyici durumu (yalnızca sunucu). */
   batteryAlert: (uid: UserId, sessionId: SessionId) => `battery_alerts/${uid}_${sessionId}`,
+  // --- Faz 4 ---
+  /** RTDB: alıcının ping kutusu `ping_inbox/{to}/{ping_id}` (yalnızca sunucu yazar; alıcı okur ve siler). */
+  pingInbox: (receiverId: UserId) => `ping_inbox/${receiverId}`,
+  /** Firestore: yer notları (callable yazar; sahibi ve `visible_to` okur). */
+  placeNotes: 'place_notes',
+  placeNote: (id: string) => `place_notes/${id}`,
+  /** Firestore: acil durum uyarıları (callable yazar; gönderen ve `recipient_ids` okur). */
+  sosAlerts: 'sos_alerts',
+  sosAlert: (id: string) => `sos_alerts/${id}`,
+  /** Firestore: kullanıcının acil durum kişileri `users/{uid}.emergency_contacts` (yalnızca callable yazar). */
 } as const;
 
 const opId = z.uuid();
@@ -403,6 +422,11 @@ export const ERROR_CODES = {
   maps_unavailable: { retryable: true, message: 'Harita servisine şu an ulaşılamıyor' },
   quota_exceeded: { retryable: false, message: 'Bugünlük rota ve adres sorgu sınırına ulaşıldı' },
   route_not_found: { retryable: false, message: 'Bu iki nokta arasında rota bulunamadı' },
+  // Faz 4
+  no_emergency_contacts: { retryable: false, message: 'Önce acil durum kişilerini seç' },
+  sos_not_active: { retryable: false, message: 'Acil durum uyarısı artık aktif değil' },
+  note_not_found: { retryable: false, message: 'Not bulunamadı' },
+  note_limit_reached: { retryable: false, message: 'Aynı anda en fazla 20 yer notun olabilir' },
 } as const;
 export type ErrorCode = keyof typeof ERROR_CODES;
 
@@ -435,7 +459,27 @@ export type PushData =
   /** Gönderenin KENDİ cihazına, yalnızca veri (sessiz uyandırma). `session_ids` virgülle ayrılır; `level` "1" | "2". */
   | { type: 'resume_tracking'; session_ids: string; level: string }
   /** Gönderenin kendi cihazına, görünür: "Konum paylaşımın duraksadı. Devam etmek için dokun." */
-  | { type: 'tracking_stalled'; session_ids: string };
+  | { type: 'tracking_stalled'; session_ids: string }
+  // Faz 4
+  /** Alıcıya, görünür: "Ayşe · 📍 Buradayım". `kind` = PingKind. Konum push'ta YOK, `ping_inbox`'tan okunur. */
+  | { type: 'ping'; ping_id: string; from: string; kind: string }
+  /** Alıcıya, kritik/yüksek öncelik: acil durum. Gövde adres + doğruluk + pil; koordinat `sos_alerts`'tan okunur. */
+  | { type: 'sos'; sos_id: string; sender_id: string }
+  /** Alıcıya, görünür: gönderen "Güvendeyim" dedi. */
+  | { type: 'sos_resolved'; sos_id: string; sender_id: string }
+  /** Gönderene, görünür: alıcı uyarıyı gördü. */
+  | { type: 'sos_ack'; sos_id: string; by: string };
 
 /** Faz 3 FCM veri türleri (istemci işleyicileri ve sözleşme testi için). */
 export const PUSH_TYPES_F3 = ['battery_low', 'resume_tracking', 'tracking_stalled'] as const satisfies readonly PushData['type'][];
+
+/** Faz 4 FCM veri türleri. */
+export const PUSH_TYPES_F4 = ['ping', 'sos', 'sos_resolved', 'sos_ack'] as const satisfies readonly PushData['type'][];
+
+/**
+ * Faz 4 bildirim kanalları (Android kanal kimliği = iOS kategori kimliği).
+ *  - `sos`: Android IMPORTANCE_MAX, rahatsız etme modunu aşma (kullanıcı izni), alarm sesi, kilit ekranında herkese açık;
+ *    iOS `interruption-level: critical` (Apple Critical Alerts yetkisi onaylanırsa) yoksa `time-sensitive`.
+ *  - `ping`: Android IMPORTANCE_HIGH; iOS `active`.
+ */
+export const NOTIFICATION_CHANNELS_F4 = { sos: 'sos', ping: 'ping' } as const;

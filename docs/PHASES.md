@@ -7,7 +7,8 @@ Her faz bir öncekinin sözleşmelerini (packages/core) **genişletir**, değiş
 | 1 | Çekirdek konum, süre ve uzatma, temel harita, kimlik ve arkadaşlık | Kod iskeleti hazır, cihazda deneme bekliyor |
 | 2 | Native Google Maps (stil, yumuşak pin, rota + ETA kartı, adres), QR/token ile paylaşım, salt okunur web haritası, Universal/App Links, anında iptal, Maps maliyet koruması | Kod hazır, emülatörde uçtan uca kabul testi geçti (59/59); gerçek proje ve cihazda deneme bekliyor. Ayrıntı: [`PHASE2.md`](PHASE2.md) |
 | 3 | Arka plan takibi (iOS Always / Android FGS, kademeli izin akışı), hareket sensörüne göre GPS ve gönderim matrisi, uyku çiti, çevrimdışı kuyruk + `live_trail`, son doğrulanmış konum, %15 düşük pil bildirimi, duraksama bekçisi | Kod hazır, emülatörde uçtan uca kabul testi geçti (57/57); yerel modül (Swift/Kotlin) derlenmedi, gerçek cihazda pil ölçümü bekliyor. Ayrıntı: [`PHASE3.md`](PHASE3.md) |
-| 4 | Kilit ve ana ekran widget'ları, favoriye tek dokunuşla 1 saat, buluşma noktası, SOS | Planlandı (ETA Faz 2'ye alındı) |
+| 4 | Tek dokunuşla "Buradayım / Yoldayım" ping'i, konum yanına kısa durum notu ve yer notu, tam konumlu SOS (basılı tut + geri sayım, acil kişiler, yüksek öncelikli push, alıcıda tam ekran acil kartı) | Kod hazır; birim, kural ve emülatör testleri geçti, tarayıcı demosunda uçtan uca çalışıyor; gerçek cihazda bildirim davranışı ve Apple Critical Alerts onayı bekliyor. Ayrıntı: [`PHASE4.md`](PHASE4.md) |
+| 5 | Kilit ve ana ekran widget'ları, favoriye tek dokunuşla 1 saat, buluşma noktası (yer notunun üstüne), konum isteği ekranı | Planlandı |
 
 ## Faz 1 → Faz 2 geçiş noktası
 
@@ -139,3 +140,53 @@ sayısal ölçütler: [`PHASE3.md`](PHASE3.md) §4.3.
 - [ ] Play Console "Arka planda konum erişimi" beyanı + video; belirgin açıklama metninin Play ifadesiyle
       ("uygulama kapalıyken veya kullanılmıyorken de") güncellenmesi; Data Safety formu.
 - [ ] App Store inceleme notu (arka plan konum gerekçesi, demo hesap, ekran kaydı).
+
+**Faz 4 için erken başlatılacaklar** (onay süreleri uzun)
+- [ ] Apple'a Critical Alerts yetkisi başvurusu (`PHASE4.md` §3.4). Onay gelmeden SOS iOS'ta `time-sensitive` kalır,
+      sessiz modda ses çalmaz.
+- [ ] APNs anahtarının Firebase'de yüklü olduğu ve iOS'ta "Time Sensitive Notifications" yeteneğinin App ID'de açık
+      olduğu doğrulansın.
+
+## Faz 4 (uygulandı)
+
+Veri modelleri, iletim akışı, SOS bildirim davranışı ve UX gerekçesi [`PHASE4.md`](PHASE4.md) dosyasındadır. Özet:
+
+| Parça | Ne yapıldı |
+| --- | --- |
+| Ping | `ping_send` → RTDB `ping_inbox/{to}/{ping_id}` (yalnızca alıcı okur/siler, 15 dk) + koordinatsız push (kanal `ping`). Alıcıda üstte kayan kart, pinde 8 sn nabız, canlı pini yoksa geçici ping pini. 20 sn çift soğuma, saatte 30. |
+| Durum notu | Sunucuda belge yok: canlı pakete `note` + `note_exp` (kural: ikisi birlikte, ≤ 60 karakter). Yalnızca arkadaş paketleri, QR'a gitmez. Pin altında balon, EtaCard'da satır. |
+| Yer notu | Firestore `place_notes` (callable yazar; sahibi ve `visible_to` okur, ≤ 20 kişi, ≤ 20 aktif not, 30 dk – 1 hafta, TTL). Not pini + alt kart, sahibine Düzenle/Sil. |
+| SOS | `sos_send/update/resolve/ack`, Firestore `sos_alerts` (tam koordinat + doğruluk, adres, harita bağlantısı, pil, rota/ETA, acks). Acil kişiler `users/{uid}.emergency_contacts` (≤ 5 arkadaş). Aktifken 15 sn'de bir konum tazeleme, 24 sa'te zaman aşımı. |
+| Bildirim | Android `sos` kanalı (MAX, DND aşımı, kilit ekranında açık, alarm sesi), iOS `time-sensitive` (yetki gelince `critical`), aynı `tag`/`collapse-id` ile "güvende" bildirimi alarmın yerine geçer; soğuk açılışta karta yönlendirme. |
+| UX | Basılı tut 1,5 sn → 5 sn geri sayım ("İptal" / "Hemen gönder") → gönder; erken bırakmada ipucu; ekran okuyucu eylemi doğrudan geri sayım; geri sayım sırasında GPS ölçümü önceden başlar. |
+
+Faz 4 kabul ölçütleri (bu depoda): ping konumu yalnızca alıcı kutusuna gider, push'ta koordinat yok ✓; pakette not
+`note_exp`'siz reddedilir ✓; başkasının yer notu düzenlenemez/silinemez ✓; acil kişi yokken SOS reddedilir ✓; aktif
+SOS'a tekrar basmak aynı uyarıyı tazeler ✓; arkadaşlık bitince kişi acil listeden düşer ✓ (emülatör testleri);
+tarayıcı demosunda ping → not → SOS gönder/gör/güvende akışları ✓ (Playwright, 18 denetim).
+
+## Faz 4 → Faz 5 geçiş noktası
+
+Faz 5'e geçmeden önce Faz 4 gerçek cihazda doğrulanmalı (Faz 3 → Faz 4 listesi önkoşuldur). Senaryolar:
+[`PHASE4.md`](PHASE4.md) §6.1.
+
+**Dağıtım**
+- [ ] `database.rules.json` (`ping_inbox`, `ping_expiry`, pakette `note`/`note_exp`), `firestore.rules` (`place_notes`,
+      `sos_alerts`), `firestore.indexes.json` (yeni bileşik dizinler, `place_notes.purge_at` ve `sos_alerts.purge_at`
+      TTL) ve 8 yeni callable dağıtılsın. `sos_send` / `sos_update` Maps sunucu anahtarı sırrını kullanır.
+- [ ] iOS: App ID'de Time Sensitive Notifications; Critical Alerts onayı geldiyse mobil `IOS_CRITICAL_ALERTS=1` ve
+      Functions `SOS_CRITICAL_ALERTS=1` **birlikte** açılsın.
+
+**Cihaz testleri** (iOS + en az iki Android üreticisi)
+- [ ] Kilitli telefonda, Odak/Rahatsız Etme açıkken SOS: kilit ekranında başlık + adres, dokununca tam ekran kart.
+- [ ] Sessiz modda SOS: iOS titreşim (critical ile ses), Android alarm sesi. Android'de "Rahatsız Etme erişimi" verilmiş
+      ve verilmemiş iki durum.
+- [ ] Uygulama kapalıyken (kaydırılarak) SOS ve ping bildirimine dokunma → soğuk açılışta doğru ekran.
+- [ ] GPS kapalı / uçak modunda SOS: en geç ~8 sn'de son bilinen konumla gider, ağ gelince tek uyarı; alıcıda
+      "eski konum" uyarısı.
+- [ ] Ping ve not pinlerinde native harita performansı (nabız halkası çok pinle).
+
+**Ürün kararları** (`[Varsayım]`'ların kaldırılması)
+- [ ] SOS ile otomatik 1 saatlik canlı paylaşım, SOS push gövdesinde adres, hesap silmede alıcıya bildirim gitmemesi.
+- [ ] Android "Rahatsız Etme erişimi" adımı ve gerekirse tam ekran bildirimi (`USE_FULL_SCREEN_INTENT`, Play politikası).
+- [ ] App Store inceleme notuna SOS'un ne yaptığı ve acil servis yerine geçmediği ("112'yi ara" düğmesi) yazılsın.

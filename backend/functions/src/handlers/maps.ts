@@ -343,3 +343,49 @@ export async function geocodeReverse(
 // Callable sarmalayıcısı `(ctx, data)` imzası bekler.
 export const routeComputeHandler = (ctx: CallCtx, data: z.output<typeof RouteComputeRequestSchema>) => routeCompute(ctx, data);
 export const geocodeReverseHandler = (ctx: CallCtx, data: z.output<typeof GeocodeReverseRequestSchema>) => geocodeReverse(ctx, data);
+
+// ---------------------------------------------------------------------------
+// Faz 4: SOS adresi (en iyi çaba, kota DIŞI)
+// ---------------------------------------------------------------------------
+
+/**
+ * Acil durum paketi için okunabilir adres: önce `geocode_cache` hücresi, yoksa (anahtar varsa) Google ters geocode.
+ * Kullanıcı kotası ve proje bütçesi UYGULANMAZ [Varsayım: acil durum, saatlik SOS tavanı kötüye kullanımı sınırlar];
+ * en çok `timeoutMs` beklenir; her hata yutulur → null (gönderimi asla engellemez). Sonuç önbelleğe yazılır.
+ */
+export async function sosAddressLookup(
+  p: { lat: number; lng: number },
+  now: EpochMs,
+  deps: MapsDeps = defaultMapsDeps(),
+  timeoutMs = 2_000,
+): Promise<string | null> {
+  const work = (async (): Promise<string | null> => {
+    const cell = geocodeCell(p);
+    const cacheRef = refs.geocodeCache(cell);
+    const hit = (await cacheRef.get()).data() as GeocodeCacheDoc | undefined;
+    if (hit && hit.expire_at.toMillis() > now) return hit.label ?? null;
+    const apiKey = deps.apiKey();
+    if (!apiKey) return null;
+    const r = await callGoogle('geocode', { ...deps, timeoutMs: Math.min(deps.timeoutMs, timeoutMs) }, geocodeRequestUrl(cell, apiKey), {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+    });
+    if (!r.ok) return null;
+    const parsed = parseReverseGeocodeResponse(r.json);
+    if (!parsed.ok) return null;
+    const label = parsed.label === null ? null : parsed.label.slice(0, MAPS.maxLabelLength);
+    await cacheRef
+      .set({ label, created_at: now, expire_at: Timestamp.fromMillis(now + GEOCODE_POLICY.cacheTtlMs) } satisfies GeocodeCacheDoc)
+      .catch(() => undefined);
+    return label;
+  })().catch(() => null);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), timeoutMs);
+  });
+  try {
+    return await Promise.race([work, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}

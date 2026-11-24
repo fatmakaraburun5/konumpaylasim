@@ -80,6 +80,17 @@ const ACTIVITY_RECOGNITION = env('KONUM_ACTIVITY_RECOGNITION') !== '0';
 const MOTION_USAGE =
   'Hareketsizken GPS’i kapatıp pilini korumak ve yürüme / araç hızına göre konum güncelleme sıklığını ayarlamak için hareket etkinliğini kullanıyoruz. Bu bilgi telefonundan çıkmaz.';
 
+/**
+ * Faz 4: SOS bildirimleri.
+ *  - iOS `time-sensitive` yetkisi her zaman açık: SOS odak modunu (Focus) deler ve kilit ekranında öne çıkar.
+ *  - iOS Critical Alerts (sessiz modu ve Rahatsız Etme'yi aşan ses) Apple'ın ayrı onayını ister; onay gelmeden
+ *    yetkiyi eklemek imzalamayı bozar. Bu yüzden `IOS_CRITICAL_ALERTS=1` ile açılır, varsayılan KAPALI
+ *    [Varsayım: Apple onayı gerekir]. Backend'de de `SOS_CRITICAL_ALERTS` bayrağı aynı anda açılmalı.
+ *  - Android: `ACCESS_NOTIFICATION_POLICY` — `sos` kanalı `bypassDnd` ile Rahatsız Etme modunu aşabilsin
+ *    (kullanıcı Ayarlar > Rahatsız Etme erişimi'nden izin verir; verilmezse kanal yine MAX önceliklidir).
+ */
+const IOS_CRITICAL_ALERTS = env('IOS_CRITICAL_ALERTS') === '1';
+
 const LOCATION_WHEN_IN_USE =
   'Konumunu yalnızca sen paylaşım başlattığında, seçtiğin arkadaşlarına ve seçtiğin süre boyunca göstermek için kullanıyoruz.';
 const LOCATION_ALWAYS =
@@ -99,6 +110,10 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     googleServicesFile: GOOGLE_SERVICE_INFO_PLIST,
     // Universal Links: https://<LINK_DOMAIN>/s/<token> uygulamayı açar (paylaşılan canlı harita).
     associatedDomains: [`applinks:${LINK_DOMAIN}`],
+    entitlements: {
+      'com.apple.developer.usernotifications.time-sensitive': true,
+      ...(IOS_CRITICAL_ALERTS ? { 'com.apple.developer.usernotifications.critical-alerts': true } : {}),
+    },
     infoPlist: {
       NSLocationWhenInUseUsageDescription: LOCATION_WHEN_IN_USE,
       NSLocationAlwaysAndWhenInUseUsageDescription: LOCATION_ALWAYS,
@@ -118,6 +133,9 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       'android.permission.FOREGROUND_SERVICE',
       'android.permission.FOREGROUND_SERVICE_LOCATION',
       'android.permission.POST_NOTIFICATIONS',
+      // Faz 4: SOS kanalı Rahatsız Etme modunu aşabilsin (kullanıcı Ayarlar'dan erişim verir) + titreşim.
+      'android.permission.ACCESS_NOTIFICATION_POLICY',
+      'android.permission.VIBRATE',
       // Faz 3: Activity Recognition Transition API (Android 10+ çalışma zamanı izni "Fiziksel etkinlik").
       ...(ACTIVITY_RECOGNITION ? ['android.permission.ACTIVITY_RECOGNITION'] : []),
       // NOT: REQUEST_IGNORE_BATTERY_OPTIMIZATIONS BİLEREK YOK (Play politikası: konum paylaşımı izinli istisna
@@ -209,5 +227,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     linkDomain: LINK_DOMAIN,
     /** Faz 3: OS hareket etkinliği kullanılsın mı (src/services/location/adaptive/activitySource.ts). */
     activityRecognition: ACTIVITY_RECOGNITION,
+    /** Faz 4: iOS Critical Alerts izni istensin mi (src/lib/notificationConfig.ts). */
+    iosCriticalAlerts: IOS_CRITICAL_ALERTS,
   },
 });

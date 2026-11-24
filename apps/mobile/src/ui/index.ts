@@ -7,3 +7,5 @@ export * from './Avatar';
 export * from './IconButton';
 export * from './Icon';
 export * from './SheetHeader';
+export * from './Overlay';
+export * from './PulseRing';

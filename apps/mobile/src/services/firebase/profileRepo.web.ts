@@ -31,6 +31,14 @@ export function listenFriendships(uid: UserId, cb: (list: Friendship[]) => void,
   );
 }
 
+/** Faz 4: `users/{ben}.emergency_contacts` (native `listenEmergencyContacts` ile aynı). */
+export function listenEmergencyContacts(uid: UserId, cb: (ids: UserId[]) => void, _onError?: (e: Error) => void): () => void {
+  return demoServer().subscribe(
+    () => demoServer().emergencyContactsOf(uid),
+    (ids) => cb(ids.filter((v): v is UserId => typeof v === 'string')),
+  );
+}
+
 export interface OutgoingRequest {
   id: string;
   via: 'invite_code' | 'phone';
