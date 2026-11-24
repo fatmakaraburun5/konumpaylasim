@@ -30,7 +30,8 @@ import { authStore, useAuthStore } from '../../state/authStore';
 import { useFriendNames } from '../../state/friendsStore';
 import { useVisibleIncoming, type IncomingFriendLocation } from '../../state/incomingStore';
 import { linkStore, useLinkSessions, useLinkStore, type LinkSession } from '../../state/linkStore';
-import { useLocationStore } from '../../state/locationStore';
+import { locationStore, useLocationStore } from '../../state/locationStore';
+import { permissionsStore, usePermissionsStore } from '../../state/permissionsStore';
 import { sharingStore, useShareSessions, useSharingNow } from '../../state/sharingStore';
 import { useSyncStatus } from '../../state/syncStatusStore';
 import { cardShadow, IconButton, Text, useTheme } from '../../ui';
@@ -158,11 +159,30 @@ export function MapHome() {
     if (!target) fittedFor.current = null;
   }, [target]);
 
-  const focusFriend = useCallback((f: IncomingFriendLocation) => {
-    setSelection({ kind: 'friend', shareId: f.shareId });
-    map.current?.centerOn(f.location.lat, f.location.lng);
+  // Rota benim konumumdan çizilir: kendi konumum yoksa (paylaşım başlatılmadığı için izin hiç istenmediyse)
+  // kullanıcı rota istediği anda konum izni istenir; izin verilince koordinatör izlemeyi başlatır ve rota gelir.
+  const ensureMyLocation = useCallback(() => {
+    const p = permissionsStore.getState();
+    if (p.foreground === 'granted' || (p.foreground === 'denied' && !p.foregroundCanAskAgain)) return;
+    void p.requestForeground().catch(() => undefined);
   }, []);
-  const dropPin = useCallback((p: LatLng) => setSelection({ kind: 'pin', point: p }), []);
+  const focusFriend = useCallback(
+    (f: IncomingFriendLocation) => {
+      setSelection({ kind: 'friend', shareId: f.shareId });
+      map.current?.centerOn(f.location.lat, f.location.lng);
+      if (!locationStore.getState().myPosition) ensureMyLocation();
+    },
+    [ensureMyLocation],
+  );
+  const dropPin = useCallback(
+    (p: LatLng) => {
+      setSelection({ kind: 'pin', point: p });
+      if (!locationStore.getState().myPosition) ensureMyLocation();
+    },
+    [ensureMyLocation],
+  );
+  const locationBlocked = usePermissionsStore((s) => s.foreground === 'denied' && !s.foregroundCanAskAgain);
+  const locationGranted = usePermissionsStore((s) => s.foreground === 'granted');
   const closeRoute = useCallback(() => setSelection(null), []);
   const recenter = useCallback(() => {
     if (myPosition) map.current?.centerOn(myPosition.lat, myPosition.lng);
@@ -266,7 +286,7 @@ export function MapHome() {
           <ExpiryBanner session={expiringLink} now={linkNow} subject="QR bağlantın" onExtend={(m) => void linkStore.getState().extend(expiringLink.link_id, m)} />
         ) : null}
         {target ? (
-          <EtaCard target={target} subtitle={friendSubtitle} mode={travelMode} onModeChange={setTravelMode} eta={eta} address={address} onClose={closeRoute} />
+          <EtaCard target={target} subtitle={friendSubtitle} mode={travelMode} onModeChange={setTravelMode} eta={eta} address={address} onClose={closeRoute} onRequestLocation={locationGranted ? undefined : ensureMyLocation} locationBlocked={locationBlocked} />
         ) : (
           <>
             {sessions.map((s) => (

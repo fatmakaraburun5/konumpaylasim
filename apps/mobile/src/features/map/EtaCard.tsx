@@ -11,7 +11,7 @@
  */
 import { formatDistanceTr, formatEtaDuration, TRAVEL_MODES, type TravelMode } from '@konum/core';
 import type { ReactNode } from 'react';
-import { ActivityIndicator, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, Linking, StyleSheet, View } from 'react-native';
 import { Avatar, Button, cardShadow, Chip, Text, useTheme } from '../../ui';
 import type { AddressState, EtaState, EtaTarget } from './useEta';
 
@@ -27,9 +27,13 @@ export interface EtaCardProps {
   eta: EtaState;
   address: AddressState;
   onClose: () => void;
+  /** Kendi konumum yokken: konum iznini iste (rota benim konumumdan çizilir). */
+  onRequestLocation?: () => void;
+  /** Konum izni kalıcı olarak reddedildi: yalnızca Ayarlar'dan açılabilir. */
+  locationBlocked?: boolean;
 }
 
-export function EtaCard({ target, subtitle, mode, onModeChange, eta, address, onClose }: EtaCardProps) {
+export function EtaCard({ target, subtitle, mode, onModeChange, eta, address, onClose, onRequestLocation, locationBlocked = false }: EtaCardProps) {
   const { colors, spacing, radius } = useTheme();
   const result = eta.entry?.result ?? null;
   const error = eta.entry?.error ?? null;
@@ -37,9 +41,18 @@ export function EtaCard({ target, subtitle, mode, onModeChange, eta, address, on
   let body: ReactNode;
   if (eta.status === 'no_origin') {
     body = (
-      <Text variant="label" color="textSecondary">
-        Varış süresi için kendi konumun gerekli. Konum iznini açınca hesaplanır.
-      </Text>
+      <View style={{ gap: spacing.xs }}>
+        <Text variant="label" color="textSecondary">
+          {locationBlocked
+            ? 'Rota için kendi konumun gerekli. Konum iznini Ayarlar’dan açabilirsin.'
+            : 'Rota için kendi konumun gerekli. Konumun alınınca rota çizilir.'}
+        </Text>
+        {locationBlocked ? (
+          <Button title="Ayarları aç" variant="secondary" onPress={() => void Linking.openSettings().catch(() => undefined)} />
+        ) : onRequestLocation ? (
+          <Button title="Konumumu kullan" onPress={onRequestLocation} />
+        ) : null}
+      </View>
     );
   } else if (error) {
     body = (

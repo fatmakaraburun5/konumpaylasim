@@ -442,6 +442,15 @@ export function startSessionServices(uid: UserId): () => void {
   };
   unsubs.push(sharingStore.subscribe(onSharingState));
   unsubs.push(linkStore.subscribe(onLinkState));
+  // Konum izni paylaşım dışında (ör. arkadaşa dokunup rota isterken) verilirse kendi konumum hemen izlenmeye başlasın.
+  let lastForeground = permissionsStore.getState().foreground;
+  unsubs.push(
+    permissionsStore.subscribe((p) => {
+      if (p.foreground === lastForeground) return;
+      lastForeground = p.foreground;
+      syncForeground();
+    }),
+  );
   // Görünen ad değişince bağlantı paketindeki ad da güncellensin.
   unsubs.push(authStore.subscribe((a, prev) => (a.profile?.display_name !== prev.profile?.display_name ? onLinkState(linkStore.getState()) : undefined)));
   unsubs.push(onServerOffsetChange(() => applyTargets()));
