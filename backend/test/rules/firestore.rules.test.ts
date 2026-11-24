@@ -1,0 +1,242 @@
+/**
+ * Firestore kuralları: istemci sosyal grafiğe ve paylaşımlara yazamaz; okuma yalnızca ilgili taraflara;
+ * uygulamanın çalıştırdığı sorgular kurallarca kabul edilir.
+ */
+import { randomUUID } from 'node:crypto';
+import { assertFails, assertSucceeds } from '@firebase/rules-unit-testing';
+import { blockId, friendshipId, requestId, shareId } from '@konum/core';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { db } from '../../functions/src/admin';
+import { cleanupRulesEnv, clientFirestore } from '../helpers/emulator';
+
+const uid = (p: string) => `${p}${randomUUID().slice(0, 8)}`;
+const A = uid('a');
+const B = uid('b');
+const C = uid('c');
+const now = Date.now();
+
+const share = (sender: string, receiver: string) => ({
+  share_id: shareId(sender, receiver),
+  session_id: randomUUID(),
+  audience: 'friend',
+  sender_id: sender,
+  receiver_id: receiver,
+  status: 'ended', // tetikleyici ACL yazmasın diye bitmiş paylaşım
+  share_mode: 'timed',
+  started_at: now,
+  expires_at: now + 3_600_000,
+  ended_at: now,
+  end_reason: 'stopped_by_sender',
+  version: 2,
+  extended_count: 0,
+  in_response_to: null,
+  updated_at: now,
+});
+
+beforeAll(async () => {
+  const [lo, hi] = A < B ? [A, B] : [B, A];
+  const batch = db().batch();
+  batch.set(db().doc(`users/${A}`), { user_id: A, display_name: 'A', avatar_url: null, invite_code: 'LOC-AAAAAA', created_at: now, rtdb_instance: 0 });
+  batch.set(db().doc(`users_private/${A}`), { phone_e164: '+905551112233', created_at: now, updated_at: now });
+  batch.set(db().doc('phone_index/+905551112233'), { user_id: A, created_at: now });
+  batch.set(db().doc('invite_codes/LOC-AAAAAA'), { user_id: A, created_at: now });
+  batch.set(db().doc(`ops/${A}_${randomUUID()}`), { uid: A, op: 'share_start', response: {} });
+  batch.set(db().doc(`friendships/${friendshipId(A, B)}`), {
+    id: friendshipId(A, B),
+    member_ids: [lo, hi],
+    status: 'accepted',
+    requested_by: A,
+    via: 'invite_code',
+    member_profiles: {},
+    created_at: now,
+    updated_at: now,
+    accepted_at: now,
+  });
+  // Bekleyen istek: A → C (hedef C).
+  const [plo, phi] = A < C ? [A, C] : [C, A];
+  batch.set(db().doc(`friendships/${friendshipId(A, C)}`), {
+    id: friendshipId(A, C),
+    member_ids: [plo, phi],
+    status: 'pending',
+    requested_by: A,
+    target_id: C,
+    via: 'phone',
+    member_profiles: {},
+    created_at: now,
+    updated_at: now,
+    accepted_at: null,
+  });
+  batch.set(db().doc(`users/${A}/outgoing_requests/o1`), {
+    id: 'o1',
+    via: 'phone',
+    label: '+90 *** *** 22 33',
+    created_at: now,
+    expires_at: now + 1_000,
+    purge_at: now + 1_000,
+  });
+  batch.set(db().doc(`location_shares/${shareId(A, B)}`), share(A, B));
+  batch.set(db().doc(`location_requests/${requestId(B, A)}`), {
+    request_id: requestId(B, A),
+    requester_id: B,
+    target_id: A,
+    status: 'pending',
+    created_at: now,
+    expires_at: now + 900_000,
+    responded_at: null,
+    share_id: null,
+  });
+  batch.set(db().doc(`blocks/${blockId(A, C)}`), { blocker_id: A, blocked_id: C, created_at: now });
+  await batch.commit();
+});
+
+afterAll(async () => {
+  await cleanupRulesEnv();
+});
+
+describe('yazma yasakları', () => {
+  it('istemci paylaşım ve arkadaşlık yazamaz (taraflar dahil)', async () => {
+    for (const who of [A, B, C]) {
+      const fs = await clientFirestore(who);
+      await assertFails(fs.doc(`location_shares/${shareId(A, B)}`).set(share(A, B)));
+      await assertFails(fs.doc(`location_shares/${shareId(A, B)}`).update({ status: 'active' }));
+      await assertFails(fs.doc(`location_shares/${shareId(who, C === who ? A : C)}`).set(share(who, C === who ? A : C)));
+      await assertFails(fs.doc(`location_shares/${shareId(A, B)}`).delete());
+      await assertFails(fs.doc(`friendships/${friendshipId(A, B)}`).update({ status: 'pending' }));
+      await assertFails(fs.doc(`friendships/${friendshipId(who, C === who ? B : C)}`).set({ member_ids: [who, C], status: 'accepted' }));
+      await assertFails(fs.doc(`location_requests/${requestId(who, A === who ? B : A)}`).set({ requester_id: who }));
+      await assertFails(fs.doc(`blocks/${blockId(who, A === who ? B : A)}`).set({ blocker_id: who }));
+      await assertFails(fs.doc(`users/${who}`).set({ user_id: who, display_name: 'x' }));
+    }
+  });
+
+  it('ops, users_private, phone_index, invite_codes, rate_limits ve sunucu iç koleksiyonları istemciye kapalı', async () => {
+    const fs = await clientFirestore(A);
+    for (const path of [
+      `users_private/${A}`,
+      'phone_index/+905551112233',
+      'invite_codes/LOC-AAAAAA',
+      `ops/${A}_x`,
+      `rate_limits/${A}_friend_request`,
+      `acl_pending/${shareId(A, B)}`,
+      `deleted_users/${A}`,
+      `phone_blocks/${A}_x`,
+      `outgoing_request_links/${A}_o1`,
+    ]) {
+      await assertFails(fs.doc(path).get());
+      await assertFails(fs.doc(path).set({ user_id: A }));
+    }
+    await assertFails(fs.collection('ops').where('uid', '==', A).get());
+  });
+});
+
+describe('okuma', () => {
+  it('paylaşımı iki taraf okur, üçüncü kişi okuyamaz', async () => {
+    await assertSucceeds((await clientFirestore(A)).doc(`location_shares/${shareId(A, B)}`).get());
+    await assertSucceeds((await clientFirestore(B)).doc(`location_shares/${shareId(A, B)}`).get());
+    await assertFails((await clientFirestore(C)).doc(`location_shares/${shareId(A, B)}`).get());
+  });
+
+  it('gönderen sender_id sorgusu, alıcı receiver_id sorgusu çalışır; kısıtsız sorgu reddedilir', async () => {
+    await assertSucceeds((await clientFirestore(A)).collection('location_shares').where('sender_id', '==', A).get());
+    await assertSucceeds(
+      (await clientFirestore(A)).collection('location_shares').where('sender_id', '==', A).where('status', '==', 'active').get(),
+    );
+    await assertSucceeds((await clientFirestore(B)).collection('location_shares').where('receiver_id', '==', B).get());
+    await assertFails((await clientFirestore(C)).collection('location_shares').where('sender_id', '==', A).get());
+    await assertFails((await clientFirestore(A)).collection('location_shares').get());
+  });
+
+  it('kabul edilmiş arkadaşlığı üyeler okur; member_ids + status sorgusu çalışır, kısıtsız sorgu reddedilir', async () => {
+    const id = friendshipId(A, B);
+    await assertSucceeds((await clientFirestore(A)).doc(`friendships/${id}`).get());
+    await assertSucceeds((await clientFirestore(B)).doc(`friendships/${id}`).get());
+    await assertFails((await clientFirestore(C)).doc(`friendships/${id}`).get());
+    const accepted = (who: string) =>
+      clientFirestore(who).then((fs) =>
+        fs.collection('friendships').where('member_ids', 'array-contains', who).where('status', '==', 'accepted').get(),
+      );
+    const snap = await assertSucceeds(accepted(A));
+    expect(snap.docs.map((d) => d.id)).toEqual([id]);
+    // status kısıtı olmayan sorgu bekleyen belgeleri kapsayabilir: reddedilir.
+    await assertFails((await clientFirestore(A)).collection('friendships').where('member_ids', 'array-contains', A).get());
+    await assertFails(
+      (await clientFirestore(C)).collection('friendships').where('member_ids', 'array-contains', A).where('status', '==', 'accepted').get(),
+    );
+  });
+
+  it('bekleyen isteği YALNIZCA hedef okur (target_id sorgusu); isteyen kendi bekleyen isteğini göremez', async () => {
+    const id = friendshipId(A, C);
+    await assertSucceeds((await clientFirestore(C)).doc(`friendships/${id}`).get());
+    const snap = await assertSucceeds(
+      (await clientFirestore(C)).collection('friendships').where('target_id', '==', C).where('status', '==', 'pending').get(),
+    );
+    expect(snap.docs.map((d) => d.id)).toEqual([id]);
+    await assertFails((await clientFirestore(A)).doc(`friendships/${id}`).get());
+    await assertFails((await clientFirestore(A)).collection('friendships').where('target_id', '==', C).where('status', '==', 'pending').get());
+    await assertFails((await clientFirestore(B)).doc(`friendships/${id}`).get());
+  });
+
+  it('giden istekler (users/{uid}/outgoing_requests) yalnızca sahibine açık, istemci yazamaz', async () => {
+    const mine = await clientFirestore(A);
+    await assertSucceeds(mine.collection(`users/${A}/outgoing_requests`).get());
+    await assertSucceeds(mine.doc(`users/${A}/outgoing_requests/o1`).get());
+    await assertFails(mine.doc(`users/${A}/outgoing_requests/o2`).set({ id: 'o2' }));
+    await assertFails(mine.doc(`users/${A}/outgoing_requests/o1`).delete());
+    await assertFails((await clientFirestore(C)).collection(`users/${A}/outgoing_requests`).get());
+  });
+
+  it('konum isteğini iki taraf okur; requester_id / target_id sorguları çalışır', async () => {
+    const id = requestId(B, A);
+    await assertSucceeds((await clientFirestore(A)).doc(`location_requests/${id}`).get());
+    await assertSucceeds((await clientFirestore(B)).doc(`location_requests/${id}`).get());
+    await assertFails((await clientFirestore(C)).doc(`location_requests/${id}`).get());
+    await assertSucceeds((await clientFirestore(A)).collection('location_requests').where('target_id', '==', A).get());
+    await assertSucceeds((await clientFirestore(B)).collection('location_requests').where('requester_id', '==', B).get());
+  });
+
+  it('profil yalnızca sahibine açık', async () => {
+    await assertSucceeds((await clientFirestore(A)).doc(`users/${A}`).get());
+    await assertFails((await clientFirestore(B)).doc(`users/${A}`).get());
+  });
+
+  it('engeli yalnızca engelleyen görür', async () => {
+    const id = blockId(A, C);
+    await assertSucceeds((await clientFirestore(A)).doc(`blocks/${id}`).get());
+    await assertSucceeds((await clientFirestore(A)).collection('blocks').where('blocker_id', '==', A).get());
+    await assertFails((await clientFirestore(C)).doc(`blocks/${id}`).get());
+    await assertFails((await clientFirestore(C)).collection('blocks').where('blocked_id', '==', C).get());
+  });
+});
+
+describe('devices/{uid}/tokens', () => {
+  const valid = { token: 'fcm-token-123', platform: 'ios', updated_at: now };
+
+  it('sahibi şemaya uygun yazar, günceller, siler', async () => {
+    const fs = await clientFirestore(A);
+    const ref = fs.doc(`devices/${A}/tokens/t1`);
+    await assertSucceeds(ref.set(valid));
+    await assertSucceeds(ref.set({ ...valid, platform: 'android', updated_at: now + 1 }));
+    // Sunucu saat farkı kesirli olabilir (Date.now() + offset): kesirli epoch ms kabul edilir.
+    await assertSucceeds(ref.set({ ...valid, updated_at: now + 0.25 }));
+    await assertSucceeds(ref.delete());
+  });
+
+  it('şema dışı belge reddedilir', async () => {
+    const ref = (await clientFirestore(A)).doc(`devices/${A}/tokens/t2`);
+    await assertFails(ref.set({ ...valid, platform: 'web' }));
+    await assertFails(ref.set({ ...valid, extra: true }));
+    await assertFails(ref.set({ token: '', platform: 'ios', updated_at: now }));
+    await assertFails(ref.set({ token: 'x', platform: 'ios' }));
+    await assertFails(ref.set({ ...valid, updated_at: 'dün' }));
+    await assertFails(ref.set({ ...valid, updated_at: 0 }));
+  });
+
+  it('başkası okuyamaz ve yazamaz', async () => {
+    await assertSucceeds((await clientFirestore(A)).doc(`devices/${A}/tokens/t3`).set(valid));
+    const other = await clientFirestore(B);
+    await assertFails(other.doc(`devices/${A}/tokens/t3`).get());
+    await assertFails(other.collection(`devices/${A}/tokens`).get());
+    await assertFails(other.doc(`devices/${A}/tokens/t3`).set(valid));
+    await assertFails(other.doc(`devices/${A}/tokens/t3`).delete());
+  });
+});

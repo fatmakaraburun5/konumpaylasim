@@ -1,0 +1,9 @@
+node_modules
+dist
+dist-mock
+.env.local
+.env.*.local
+*.log
+e2e-output
+dist-emu
+dist-mock-maps

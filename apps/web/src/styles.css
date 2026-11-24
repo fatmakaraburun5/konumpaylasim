@@ -1,0 +1,849 @@
+/*
+ * Konum web görüntüleyici. Belirteçler mobil `src/ui/tokens.ts` ile birebir aynı (açık + koyu).
+ * Font: tasarımda Inter; yüklü değilse sistem fontu (dış font isteği yok).
+ */
+:root {
+  color-scheme: light;
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --surface-alt: #eef2f6;
+  --text: #0f172a;
+  --text-2: #475569;
+  --border: #e2e8f0;
+  --primary: #2563eb;
+  --primary-pressed: #1d4ed8;
+  --on-primary: #ffffff;
+  --primary-soft: #dbeafe;
+  --live: #15803d;
+  --live-soft: #dcfce7;
+  --warning: #b45309;
+  --warning-soft: #fef3c7;
+  --danger: #b91c1c;
+  --danger-soft: #fee2e2;
+  --stale: #64748b;
+  --map-water: #cfe3f5;
+  --map-park: #ddefd9;
+  --map-road: #ffffff;
+  --map-land: #eef1f4;
+  --map-edge: #dfe5ec;
+  --shadow: 0 8px 24px rgba(15, 23, 42, 0.12);
+  --sheet-shadow: 0 -8px 24px rgba(15, 23, 42, 0.1);
+  --badge-bg: #0f172a;
+  --badge-fg: #ffffff;
+  --font: Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --bg: #0b1220;
+    --surface: #111a2e;
+    --surface-alt: #18233b;
+    --text: #e5e7eb;
+    --text-2: #a3b1c6;
+    --border: #22304d;
+    --primary: #3b82f6;
+    --primary-pressed: #2563eb;
+    --on-primary: #ffffff;
+    --primary-soft: #172554;
+    --live: #22c55e;
+    --live-soft: #052e16;
+    --warning: #f59e0b;
+    --warning-soft: #3a2a05;
+    --danger: #f87171;
+    --danger-soft: #3b0d0d;
+    --stale: #94a3b8;
+    --map-water: #0e2a47;
+    --map-park: #10291e;
+    --map-road: #1e2b44;
+    --map-land: #0f172a;
+    --map-edge: #16213a;
+    --shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+    --sheet-shadow: 0 -8px 24px rgba(0, 0, 0, 0.35);
+    --badge-bg: #000000;
+    --badge-fg: #ffffff;
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 15px;
+  line-height: 20px;
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+  overflow-x: hidden;
+}
+
+h1,
+p {
+  margin: 0;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------------ yerleşim */
+
+.app {
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+}
+
+.map-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 46vh;
+  min-height: 46dvh;
+  overflow: hidden;
+  background: var(--map-land);
+}
+
+.gmap {
+  position: absolute;
+  inset: 0;
+}
+
+.topbar {
+  position: absolute;
+  top: calc(12px + env(safe-area-inset-top));
+  left: 16px;
+  right: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  pointer-events: none;
+  z-index: 3;
+}
+
+.brand,
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 36px;
+  padding: 0 14px 0 12px;
+  border-radius: 999px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  pointer-events: auto;
+}
+
+.brand svg {
+  color: var(--primary);
+}
+
+.chip {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.chip-warning {
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+
+/* ------------------------------------------------------------------ alt kart */
+
+.sheet {
+  position: relative;
+  z-index: 4;
+  margin-top: -24px;
+  background: var(--surface);
+  border-radius: 28px 28px 0 0;
+  box-shadow: var(--sheet-shadow);
+  padding: 10px 16px calc(20px + env(safe-area-inset-bottom));
+}
+
+.grabber {
+  width: 36px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border);
+  margin: 0 auto 16px;
+}
+
+.person {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.avatar {
+  flex: none;
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--primary-soft);
+  color: var(--primary);
+  font-size: 21px;
+  font-weight: 700;
+}
+
+.avatar-stale {
+  background: var(--surface-alt);
+  color: var(--stale);
+}
+
+.person-text {
+  min-width: 0;
+}
+
+.person-name {
+  font-size: 20px;
+  line-height: 26px;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fresh {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 600;
+  color: var(--live);
+}
+
+.fresh .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.fresh-live .dot {
+  animation: blink 1.6s ease-in-out infinite;
+}
+
+/* Faz 3: zamanında gelen seyrek paket (sabit/arka plan) sakin yeşil; gecikme ve kopma turuncu, uzun sessizlik gri. */
+.fresh-recent {
+  color: var(--live);
+}
+
+.fresh-delayed,
+.fresh-offline_suspected,
+.fresh-offline {
+  color: var(--warning);
+}
+
+.fresh-stale {
+  color: var(--stale);
+}
+
+.verified {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 14px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--surface-alt);
+  font-size: 14px;
+  line-height: 19px;
+}
+
+.verified svg {
+  flex: none;
+  margin-top: 1px;
+  color: var(--text-2);
+}
+
+.verified strong {
+  font-weight: 600;
+}
+
+.verified-delayed svg,
+.verified-offline_suspected svg,
+.verified-offline svg {
+  color: var(--warning);
+}
+
+.verified-detail,
+.notice-body {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  font-size: 14px;
+  line-height: 19px;
+}
+
+.notice svg {
+  flex: none;
+  margin-top: 1px;
+}
+
+.notice strong {
+  font-weight: 600;
+}
+
+.notice-warning {
+  background: var(--warning-soft);
+  color: var(--text);
+}
+
+.notice-warning svg {
+  color: var(--warning);
+}
+
+.notice-calm {
+  background: var(--primary-soft);
+  color: var(--text);
+}
+
+.notice-calm svg {
+  color: var(--primary);
+}
+
+.fact.fact-warning {
+  background: var(--warning-soft);
+}
+
+.fact.fact-warning svg {
+  color: var(--warning);
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.fact {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--surface-alt);
+  font-size: 14px;
+  line-height: 18px;
+}
+
+.fact svg {
+  flex: none;
+  color: var(--text-2);
+}
+
+.fact-wide {
+  grid-column: 1 / -1;
+}
+
+.fact strong {
+  font-weight: 600;
+}
+
+.muted {
+  color: var(--text-2);
+}
+
+.actions {
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.actions:empty {
+  display: none;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 48px;
+  padding: 0 16px;
+  border: 1px solid transparent;
+  border-radius: 14px;
+  font: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background-color 120ms ease, transform 120ms ease;
+}
+
+.btn:active {
+  transform: scale(0.985);
+}
+
+.btn:focus-visible,
+.badge:focus-visible,
+.recenter:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.btn-primary {
+  background: var(--primary);
+  color: var(--on-primary);
+}
+
+.btn-primary:active {
+  background: var(--primary-pressed);
+}
+
+.btn-secondary {
+  background: var(--surface);
+  color: var(--text);
+  border-color: var(--border);
+}
+
+.btn-secondary:active {
+  background: var(--surface-alt);
+}
+
+.badges {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.badge {
+  flex: 1 1 0;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 6px 12px;
+  border-radius: 12px;
+  background: var(--badge-bg);
+  color: var(--badge-fg);
+  text-decoration: none;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.badge-placeholder {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.badge-text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.1;
+  min-width: 0;
+}
+
+.badge-small {
+  font-size: 10px;
+  font-weight: 500;
+  opacity: 0.85;
+}
+
+.badge-big {
+  font-size: 15px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.foot {
+  margin-top: 12px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--text-2);
+  text-align: center;
+}
+
+/* durum kartı */
+
+.sheet-status {
+  text-align: center;
+  padding-top: 10px;
+}
+
+.status-icon {
+  width: 56px;
+  height: 56px;
+  margin: 0 auto 12px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+}
+
+.tone-danger {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.tone-neutral {
+  background: var(--surface-alt);
+  color: var(--text-2);
+}
+
+.tone-primary {
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+
+.tone-warning {
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+
+.status-title {
+  font-size: 20px;
+  line-height: 26px;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+  text-wrap: balance;
+}
+
+.status-detail {
+  max-width: 32ch;
+  margin: 6px auto 0;
+  color: var(--text-2);
+  text-wrap: pretty;
+}
+
+.skeleton {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+  text-align: left;
+}
+
+.sk-avatar,
+.sk-line {
+  display: block;
+  background: linear-gradient(90deg, var(--surface-alt) 0%, var(--border) 50%, var(--surface-alt) 100%);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s linear infinite;
+}
+
+.sk-avatar {
+  flex: none;
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+}
+
+.sk-lines {
+  flex: 1;
+  display: grid;
+  gap: 8px;
+}
+
+.sk-line {
+  height: 14px;
+  border-radius: 7px;
+}
+
+.sk-short {
+  width: 55%;
+}
+
+/* ------------------------------------------------------------------ pin */
+
+.gm-pin-host {
+  position: absolute;
+  left: 0;
+  top: 0;
+  will-change: transform;
+}
+
+.pin {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 46px;
+  height: 46px;
+  transform: translate(-50%, -50%);
+}
+
+.pin-face {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--primary);
+  color: #ffffff;
+  border: 3px solid #ffffff;
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.32);
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.pin-stale .pin-face {
+  background: var(--stale);
+}
+
+.pin-dim .pin-face {
+  filter: grayscale(0.7);
+  opacity: 0.8;
+}
+
+.pin-pulse {
+  position: absolute;
+  inset: -12px;
+  border-radius: 50%;
+  background: var(--primary);
+  opacity: 0;
+  animation: pulse 2.2s ease-out infinite;
+}
+
+.pin-heading {
+  position: absolute;
+  inset: -13px;
+  display: flex;
+  justify-content: center;
+  color: var(--primary);
+}
+
+.pin-heading svg {
+  fill: currentColor;
+  filter: drop-shadow(0 1px 1px rgba(15, 23, 42, 0.3));
+}
+
+.pin-stale .pin-heading {
+  color: var(--stale);
+}
+
+.accuracy {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--primary) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--primary) 38%, transparent);
+}
+
+.recenter {
+  position: absolute;
+  right: 16px;
+  bottom: 40px;
+  z-index: 3;
+  width: 48px;
+  height: 48px;
+  border: 0;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--surface);
+  color: var(--primary);
+  box-shadow: var(--shadow);
+  cursor: pointer;
+}
+
+/* ------------------------------------------------------------------ yedek harita */
+
+.fallback-map {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background: var(--map-land);
+}
+
+.fallback-svg {
+  display: block;
+  transition: opacity 240ms ease;
+}
+
+.fb-land {
+  fill: var(--map-land);
+}
+
+.fb-road {
+  fill: var(--map-road);
+}
+
+.fb-avenue {
+  fill: var(--map-road);
+  stroke: var(--map-edge);
+  stroke-width: 1;
+}
+
+.fb-park {
+  fill: var(--map-park);
+}
+
+.fb-diagonal {
+  fill: none;
+  stroke: var(--map-road);
+  stroke-width: 9;
+}
+
+.fallback-center {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 0;
+  height: 0;
+}
+
+.fallback-legend {
+  position: absolute;
+  left: 16px;
+  bottom: 40px;
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  z-index: 2;
+}
+
+.scale {
+  display: block;
+  height: 18px;
+  padding-left: 4px;
+  border: 2px solid var(--text-2);
+  border-top: 0;
+  font-size: 11px;
+  line-height: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
+.legend-chip {
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  color: var(--text-2);
+  font-size: 11px;
+  line-height: 14px;
+  font-weight: 600;
+}
+
+.fallback-empty .fallback-legend {
+  display: none;
+}
+
+.map-muted .fallback-svg {
+  opacity: 0.5;
+}
+
+.map-muted .gmap {
+  filter: saturate(0.5);
+}
+
+/* ------------------------------------------------------------------ geniş ekran */
+
+@media (min-width: 768px) {
+  .app {
+    display: block;
+    position: relative;
+    height: 100vh;
+    height: 100dvh;
+  }
+
+  .map-wrap {
+    position: absolute;
+    inset: 0;
+    min-height: 0;
+  }
+
+  .sheet {
+    position: absolute;
+    left: 24px;
+    bottom: 24px;
+    width: 380px;
+    margin: 0;
+    border-radius: 28px;
+    box-shadow: var(--shadow);
+    padding: 20px;
+  }
+
+  .grabber {
+    display: none;
+  }
+
+  .fallback-legend,
+  .recenter {
+    bottom: 24px;
+  }
+
+  .fallback-legend {
+    left: auto;
+    right: 24px;
+  }
+}
+
+/* ------------------------------------------------------------------ hareket */
+
+@keyframes pulse {
+  0% {
+    transform: scale(0.55);
+    opacity: 0.35;
+  }
+  100% {
+    transform: scale(1.35);
+    opacity: 0;
+  }
+}
+
+@keyframes blink {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@keyframes shimmer {
+  to {
+    background-position: -200% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pin-pulse,
+  .fresh-live .dot,
+  .sk-avatar,
+  .sk-line {
+    animation: none;
+  }
+  .btn {
+    transition: none;
+  }
+}

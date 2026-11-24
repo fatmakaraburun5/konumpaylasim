@@ -1,0 +1,9 @@
+{
+  "platforms": ["apple", "android"],
+  "apple": {
+    "modules": ["KonumActivityModule"]
+  },
+  "android": {
+    "modules": ["expo.modules.konumactivity.KonumActivityModule"]
+  }
+}

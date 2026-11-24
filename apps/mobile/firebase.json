@@ -1,0 +1,9 @@
+{
+  "react-native": {
+    "app_data_collection_default_enabled": false,
+    "app_check_token_auto_refresh": true,
+    "messaging_auto_init_enabled": true,
+    "messaging_android_notification_channel_id": "location_requests",
+    "messaging_android_notification_color": "#2563EB"
+  }
+}

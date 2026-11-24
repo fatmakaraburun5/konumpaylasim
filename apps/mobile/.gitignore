@@ -1,0 +1,19 @@
+node_modules/
+.expo/
+dist/
+web-build/
+# Continuous Native Generation: yerel klasörler `expo prebuild` ile üretilir, depoya girmez.
+/ios
+/android
+# Sırlar
+.env
+.env.local
+firebase/google-services.json
+firebase/GoogleService-Info.plist
+*.jks
+*.p8
+*.p12
+*.keystore
+*.mobileprovision
+expo-env.d.ts
+dist-web/

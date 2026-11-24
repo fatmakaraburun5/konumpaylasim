@@ -1,0 +1,178 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "share_acl": {
+      ".read": false,
+      ".write": false,
+      ".indexOn": [
+        "status",
+        "ended_at"
+      ]
+    },
+    "live_locations": {
+      "$receiver_id": {
+        ".read": "auth != null && auth.uid === $receiver_id",
+        "$share_id": {
+          ".write": "auth != null && root.child('share_acl').child($share_id).child('status').val() === 'active' && root.child('share_acl').child($share_id).child('sender_id').val() === auth.uid && root.child('share_acl').child($share_id).child('receiver_id').val() === $receiver_id && (!newData.exists() || ((!root.child('share_acl').child($share_id).child('expires_at').exists() || root.child('share_acl').child($share_id).child('expires_at').val() > now) && newData.hasChildren(['v', 'share_id', 'sender_id', 'lat', 'lng', 'accuracy', 'activity_state', 'timestamp', 'share_mode', 'server_ts']) && newData.child('server_ts').val() === now && ((newData.child('q').val() !== 1 && newData.child('timestamp').val() >= now - 120000) || (newData.child('q').val() === 1 && newData.child('timestamp').val() >= now - 86400000 && (!data.child('timestamp').exists() || newData.child('timestamp').val() > data.child('timestamp').val()) && (!root.child('share_acl').child($share_id).child('started_at').exists() || newData.child('timestamp').val() >= root.child('share_acl').child($share_id).child('started_at').val()))) && newData.child('timestamp').val() <= now + 60000 && newData.child('share_mode').val() === root.child('share_acl').child($share_id).child('share_mode').val() && (root.child('share_acl').child($share_id).child('expires_at').exists() ? newData.child('expires_at').val() === root.child('share_acl').child($share_id).child('expires_at').val() : !newData.child('expires_at').exists())))",
+          "v": {
+            ".validate": "newData.isNumber() && newData.val() === 1"
+          },
+          "share_id": {
+            ".validate": "newData.isString() && newData.val() === $share_id"
+          },
+          "sender_id": {
+            ".validate": "newData.isString() && newData.val() === auth.uid"
+          },
+          "lat": {
+            ".validate": "newData.isNumber() && newData.val() >= -90 && newData.val() <= 90"
+          },
+          "lng": {
+            ".validate": "newData.isNumber() && newData.val() >= -180 && newData.val() <= 180"
+          },
+          "accuracy": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 1000"
+          },
+          "speed_mps": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 120"
+          },
+          "heading": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() < 360"
+          },
+          "battery_pct": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 100 && newData.val() % 1 === 0"
+          },
+          "is_charging": {
+            ".validate": "newData.isBoolean()"
+          },
+          "activity_state": {
+            ".validate": "newData.isString() && newData.val().matches(/^(still|walking|running|cycling|automotive|unknown)$/)"
+          },
+          "timestamp": {
+            ".validate": "newData.isNumber() && newData.val() % 1 === 0 && (newData.val() >= now - 120000 || (newData.parent().child('q').val() === 1 && newData.val() >= now - 86400000)) && newData.val() <= now + 60000"
+          },
+          "expires_at": {
+            ".validate": "newData.isNumber() && newData.val() === root.child('share_acl').child($share_id).child('expires_at').val()"
+          },
+          "share_mode": {
+            ".validate": "newData.isString() && newData.val().matches(/^(timed|until_end_of_day|weekly|indefinite)$/)"
+          },
+          "server_ts": {
+            ".validate": "newData.isNumber() && newData.val() === now"
+          },
+          "hb": {
+            ".validate": "newData.isNumber() && newData.val() % 1 === 0 && newData.val() >= 10000 && newData.val() <= 21600000"
+          },
+          "q": {
+            ".validate": "newData.isNumber() && newData.val() === 1"
+          },
+          "recorded_at": {
+            ".validate": "newData.isNumber() && newData.val() % 1 === 0 && newData.val() >= 1500000000000 && newData.val() <= now + 3600000"
+          },
+          "$other": {
+            ".validate": false
+          }
+        }
+      }
+    },
+    "live_trail": {
+      "$receiver_id": {
+        ".read": "auth != null && auth.uid === $receiver_id",
+        "$share_id": {
+          "$point_id": {
+            ".write": "auth != null && root.child('share_acl').child($share_id).child('status').val() === 'active' && root.child('share_acl').child($share_id).child('sender_id').val() === auth.uid && root.child('share_acl').child($share_id).child('receiver_id').val() === $receiver_id && (!root.child('share_acl').child($share_id).child('expires_at').exists() || root.child('share_acl').child($share_id).child('expires_at').val() > now) && (!newData.exists() || ($point_id.matches(/^[0-9]{13}-[0-9]{3}$/) && newData.hasChildren(['v', 'lat', 'lng', 'accuracy', 'timestamp', 'recorded_at', 'q', 'server_ts']) && newData.child('server_ts').val() === now))",
+            "v": {
+              ".validate": "newData.isNumber() && newData.val() === 1"
+            },
+            "lat": {
+              ".validate": "newData.isNumber() && newData.val() >= -90 && newData.val() <= 90"
+            },
+            "lng": {
+              ".validate": "newData.isNumber() && newData.val() >= -180 && newData.val() <= 180"
+            },
+            "accuracy": {
+              ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 1000"
+            },
+            "timestamp": {
+              ".validate": "newData.isNumber() && newData.val() % 1 === 0 && newData.val() >= now - 86400000 && newData.val() <= now + 60000 && (!root.child('share_acl').child($share_id).child('started_at').exists() || newData.val() >= root.child('share_acl').child($share_id).child('started_at').val())"
+            },
+            "recorded_at": {
+              ".validate": "newData.isNumber() && newData.val() % 1 === 0 && newData.val() >= 1500000000000 && newData.val() <= now + 3600000"
+            },
+            "battery_pct": {
+              ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 100 && newData.val() % 1 === 0"
+            },
+            "q": {
+              ".validate": "newData.isNumber() && newData.val() === 1"
+            },
+            "server_ts": {
+              ".validate": "newData.isNumber() && newData.val() === now"
+            },
+            "$other": {
+              ".validate": false
+            }
+          }
+        }
+      }
+    },
+    "link_acl": {
+      ".read": false,
+      ".write": false,
+      ".indexOn": [
+        "status",
+        "ended_at"
+      ]
+    },
+    "link_live": {
+      "$token_hash": {
+        ".read": "root.child('link_acl').child($token_hash).child('status').val() === 'active' && (!root.child('link_acl').child($token_hash).child('expires_at').exists() || root.child('link_acl').child($token_hash).child('expires_at').val() > now)",
+        ".write": "auth != null && root.child('link_acl').child($token_hash).child('status').val() === 'active' && root.child('link_acl').child($token_hash).child('sender_id').val() === auth.uid && (!newData.exists() || ((!root.child('link_acl').child($token_hash).child('expires_at').exists() || root.child('link_acl').child($token_hash).child('expires_at').val() > now) && newData.hasChildren(['v', 'lat', 'lng', 'accuracy', 'timestamp', 'server_ts', 'sender_name', 'share_mode']) && newData.child('server_ts').val() === now && ((newData.child('q').val() !== 1 && newData.child('timestamp').val() >= now - 120000) || (newData.child('q').val() === 1 && newData.child('timestamp').val() >= now - 86400000 && (!data.child('timestamp').exists() || newData.child('timestamp').val() > data.child('timestamp').val()) && (!root.child('link_acl').child($token_hash).child('started_at').exists() || newData.child('timestamp').val() >= root.child('link_acl').child($token_hash).child('started_at').val()))) && newData.child('timestamp').val() <= now + 60000 && newData.child('share_mode').val() === root.child('link_acl').child($token_hash).child('share_mode').val() && (root.child('link_acl').child($token_hash).child('expires_at').exists() ? newData.child('expires_at').val() === root.child('link_acl').child($token_hash).child('expires_at').val() : !newData.child('expires_at').exists())))",
+        "v": {
+          ".validate": "newData.isNumber() && newData.val() === 1"
+        },
+        "lat": {
+          ".validate": "newData.isNumber() && newData.val() >= -90 && newData.val() <= 90"
+        },
+        "lng": {
+          ".validate": "newData.isNumber() && newData.val() >= -180 && newData.val() <= 180"
+        },
+        "accuracy": {
+          ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 1000"
+        },
+        "heading": {
+          ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() < 360"
+        },
+        "speed_mps": {
+          ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 120"
+        },
+        "battery_pct": {
+          ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 100 && newData.val() % 1 === 0"
+        },
+        "timestamp": {
+          ".validate": "newData.isNumber() && newData.val() % 1 === 0 && (newData.val() >= now - 120000 || (newData.parent().child('q').val() === 1 && newData.val() >= now - 86400000)) && newData.val() <= now + 60000"
+        },
+        "server_ts": {
+          ".validate": "newData.isNumber() && newData.val() === now"
+        },
+        "sender_name": {
+          ".validate": "newData.isString() && newData.val().length >= 1 && newData.val().length <= 80"
+        },
+        "expires_at": {
+          ".validate": "newData.isNumber() && newData.val() === root.child('link_acl').child($token_hash).child('expires_at').val()"
+        },
+        "share_mode": {
+          ".validate": "newData.isString() && newData.val().matches(/^(timed|until_end_of_day|weekly|indefinite)$/)"
+        },
+        "hb": {
+          ".validate": "newData.isNumber() && newData.val() % 1 === 0 && newData.val() >= 10000 && newData.val() <= 21600000"
+        },
+        "q": {
+          ".validate": "newData.isNumber() && newData.val() === 1"
+        },
+        "$other": {
+          ".validate": false
+        }
+      }
+    }
+  }
+}

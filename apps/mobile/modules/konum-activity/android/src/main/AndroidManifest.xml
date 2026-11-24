@@ -1,0 +1,11 @@
+<!--
+  ACTIVITY_RECOGNITION izni BURADA değil, app.config.ts'te (yalnızca KONUM_ACTIVITY_RECOGNITION açıkken) eklenir:
+  özellik kapalıyken mağaza incelemesine kullanılmayan bir izin gitmesin.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <application>
+    <receiver
+      android:name="expo.modules.konumactivity.ActivityTransitionReceiver"
+      android:exported="false" />
+  </application>
+</manifest>

@@ -1,0 +1,43 @@
+# Bağımlılıklar ve derleme çıktıları
+node_modules/
+dist/
+dist-web/
+web-build/
+.expo/
+functions/lib/
+coverage/
+test-results/
+playwright-report/
+*.tsbuildinfo
+
+# Expo prebuild çıktıları (development build yerelde üretilir)
+apps/mobile/ios/
+apps/mobile/android/
+
+# Günlükler
+*.log
+npm-debug.log*
+firebase-debug*.log
+*-debug.log
+.firebase/
+
+# Gizli bilgiler ve imza dosyaları (asla depoya girmez)
+.env
+.env.*
+!.env.example
+google-services.json
+GoogleService-Info.plist
+*.jks
+*.keystore
+*.p8
+*.p12
+*.pem
+*.key
+*.mobileprovision
+service-account*.json
+
+# İşletim sistemi / editör
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

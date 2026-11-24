@@ -1,0 +1,22 @@
+// Faz 3: Android Activity Recognition Transition API köprüsü (yerel Expo modülü).
+// [Varsayım] Bu ortamda Android SDK yok: derlenmedi; ilk development build'de doğrulanmalı.
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'expo.modules.konumactivity'
+version = '0.1.0'
+
+android {
+  namespace "expo.modules.konumactivity"
+  defaultConfig {
+    versionCode 1
+    versionName '0.1.0'
+  }
+}
+
+dependencies {
+  // expo-location ile aynı sürüm (21.x): tek kopya.
+  implementation 'com.google.android.gms:play-services-location:21.0.1'
+}

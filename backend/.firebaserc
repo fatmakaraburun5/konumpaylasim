@@ -1,0 +1,14 @@
+{
+  "projects": {
+    "default": "demo-konum"
+  },
+  "targets": {
+    "demo-konum": {
+      "database": {
+        "live": [
+          "demo-konum"
+        ]
+      }
+    }
+  }
+}

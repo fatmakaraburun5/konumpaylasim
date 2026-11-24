@@ -1,0 +1,37 @@
+{
+  "name": "@konum/web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Konum Faz 2 salt okunur web haritası: https://<alan>/s/<token> bağlantısını açan, uygulaması olmayan kişinin canlı konumu gördüğü sayfa.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "dev:mock": "vite --mode mock",
+    "build": "tsc --noEmit -p tsconfig.json && vite build",
+    "build:mock": "vite build --mode mock --outDir dist-mock",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "e2e": "npm run build:mock && node e2e/smoke.cjs",
+    "e2e:emulator": "bash e2e/run-emulator.sh"
+  },
+  "dependencies": {
+    "@googlemaps/js-api-loader": "^2.1.3",
+    "@konum/core": "file:../../packages/core",
+    "firebase": "^12.19.0",
+    "libphonenumber-js": "^1.13.17",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/google.maps": "~3.66.10",
+    "@types/node": "^22.20.5",
+    "@types/react": "~19.3.0",
+    "@types/react-dom": "~19.3.0",
+    "@vitejs/plugin-react": "~6.2.1",
+    "typescript": "~5.9.3",
+    "vite": "~8.3.8",
+    "vitest": "^5.1.1"
+  }
+}

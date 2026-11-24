@@ -1,0 +1,15 @@
+{
+  "applinks": {
+    "details": [
+      {
+        "appIDs": ["TEAMID.com.example.konum"],
+        "components": [
+          {
+            "/": "/s/*",
+            "comment": "Konum QR / paylaşım bağlantısı: https://<alan>/s/<token>"
+          }
+        ]
+      }
+    ]
+  }
+}

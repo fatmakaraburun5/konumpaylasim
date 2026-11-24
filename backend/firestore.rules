@@ -1,0 +1,100 @@
+rules_version = '2';
+
+// Konum Firestore kuralları (Faz 1 + Faz 2).
+//  - Varsayılan: her şey kapalı.
+//  - İstemci sosyal grafiğe ve paylaşımlara YAZMAZ; tüm geçişler Cloud Functions callable'larıyla.
+//  - Okuma yalnızca ilgili taraflara. Kurallar filtre değildir: istemci sorgusu kısıtı taşımalıdır
+//    (where sender_id == uid, where receiver_id == uid, where member_ids array-contains uid + status ...).
+//  - ops, users_private, phone_index, invite_codes, rate_limits, acl_pending, deleted_users, phone_blocks,
+//    outgoing_request_links: istemciye tamamen kapalı (kural yok).
+//  - Faz 2: link_acl_pending, route_cache, geocode_cache, maps_quota, maps_budget, config: istemciye tamamen
+//    kapalı (yalnızca Functions). Google yanıtları yalnızca callable üzerinden döner.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isSelf(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    // Kendi profili: yalnızca sahibi okur. Arkadaşların adı friendships.member_profiles içindedir.
+    match /users/{uid} {
+      allow read: if isSelf(uid);
+      allow write: if false;
+
+      // Giden arkadaşlık istekleri: yalnızca sahibi okur. Hedef kayıtlı olsun olmasın, engelli olsun olmasın
+      // aynı kayıt yazılır ve hedefin uid'ini İÇERMEZ (maskeli telefon / davet kodu).
+      match /outgoing_requests/{oid} {
+        allow read: if isSelf(uid);
+        allow write: if false;
+      }
+    }
+
+    // Arkadaşlık:
+    //  - kabul edilmiş: iki üye okur (sorgu: member_ids array-contains ben + status == 'accepted');
+    //  - bekleyen: YALNIZCA hedef okur (sorgu: target_id == ben + status == 'pending').
+    // İsteyen kendi bekleyen isteğini göremez: aksi hâlde numaranın kayıtlı olduğu, hedefin uid'i ve
+    // "engelledi / reddetti" ayrımı isteyene sızardı. İsteyenin görünümü users/{uid}/outgoing_requests.
+    match /friendships/{friendshipId} {
+      allow read: if signedIn() && (
+        (resource.data.status == 'accepted' && request.auth.uid in resource.data.member_ids)
+        || (resource.data.status == 'pending' && resource.data.target_id == request.auth.uid)
+      );
+      allow write: if false;
+    }
+
+    // Engelleme: yalnızca engelleyen okur (sorgu: blocker_id == uid). Engellenen hiçbir şey görmez
+    // (paylaşım belgelerine de 'blocked' nedeni yazılmaz).
+    match /blocks/{blockId} {
+      allow read: if signedIn() && resource.data.blocker_id == request.auth.uid;
+      allow write: if false;
+    }
+
+    // Yönlü paylaşım: yalnızca gönderen ve alıcı okur. Alıcı başka alıcıları göremez
+    // (her alıcının ayrı belgesi vardır ve belgede receiver_ids listesi yoktur).
+    match /location_shares/{shareId} {
+      allow read: if signedIn()
+        && (resource.data.sender_id == request.auth.uid || resource.data.receiver_id == request.auth.uid);
+      allow write: if false;
+    }
+
+    // Konum isteği: isteyen ve hedef okur.
+    match /location_requests/{requestId} {
+      allow read: if signedIn()
+        && (resource.data.requester_id == request.auth.uid || resource.data.target_id == request.auth.uid);
+      allow write: if false;
+    }
+
+    // FCM token'ları: sahibi şemaya uygun yazar/siler; başka kimse okuyamaz.
+    // updated_at: epoch ms (Date.now() + sunucu saat farkı); fark kesirli olabildiği için tam sayı zorunlu değil
+    // [Varsayım: doğrulanmalı]. Sahiplik sunucuda çözülür (aynı token iki uid altında olabilir, bkz. push.ts).
+    match /devices/{uid}/tokens/{tokenId} {
+      function validToken(d) {
+        return d.keys().hasOnly(['token', 'platform', 'updated_at'])
+          && d.keys().hasAll(['token', 'platform', 'updated_at'])
+          && d.token is string && d.token.size() > 0 && d.token.size() <= 4096
+          && d.platform in ['ios', 'android']
+          && d.updated_at is number && d.updated_at > 0;
+      }
+      allow read: if isSelf(uid);
+      allow create, update: if isSelf(uid) && validToken(request.resource.data);
+      allow delete: if isSelf(uid);
+    }
+
+    // Faz 2: bağlantı (QR) paylaşımı. Yalnızca gönderen okur (sorgu: sender_id == ben [+ status]); hiç kimse
+    // yazamaz. Belgede düz token YOKTUR (yalnızca token_hash). Token sahibi (web / uygulama) bu belgeyi okumaz,
+    // yalnızca RTDB link_live/{token_hash} düğümünü okur.
+    match /link_shares/{linkId} {
+      allow read: if signedIn() && resource.data.sender_id == request.auth.uid;
+      allow write: if false;
+    }
+
+    // Açıkça: geri kalan her şey kapalı.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

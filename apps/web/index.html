@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <!-- Token adreste: başka sitelere Referer ile yol (token) gitmez. Değer derlemede yazılır. -->
+    <meta name="referrer" content="%KONUM_REFERRER%" />
+    <!--KONUM_CSP-->
+    <meta name="robots" content="noindex, nofollow, noarchive, nosnippet" />
+    <meta name="googlebot" content="noindex, nofollow" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#f6f7f9" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0b1220" media="(prefers-color-scheme: dark)" />
+    <meta name="format-detection" content="telephone=no" />
+    <!-- Bağlantı önizlemesi: kişisel bilgi YOK (sayfa statik, kimin paylaştığını bilmez). -->
+    <meta property="og:title" content="Canlı konum" />
+    <meta property="og:description" content="Biri seninle Konum üzerinden canlı konumunu paylaşıyor." />
+    <meta property="og:type" content="website" />
+    <title>Canlı konum · Konum</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <noscript>Canlı konumu görmek için tarayıcında JavaScript açık olmalı.</noscript>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
