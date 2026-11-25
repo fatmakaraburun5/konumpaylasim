@@ -12,7 +12,7 @@
  *   ├─ RecenterButton (+ paylaşım sürerken "QR ile paylaş" kısayolu)
  *   ├─ alt alan:
  *   │   seçim varsa:  ExpiryBanner(lar) → EtaCard (ad/adres, Araç|Yürüyüş|Bisiklet, ETA · mesafe, "Rotayı kapat")
- *   │   yoksa:        BackgroundPermissionHint → ExpiryBanner(lar) → ActiveShareCard × oturum → ActiveLinkCard × bağlantı | ShareButton
+ *   │   yoksa:        BackgroundPermissionHint → ExpiryBanner(lar) → ShareDeck (tüm giden paylaşımlar tek kitapçıkta: öndeki kart + arka katmanlar, liste, ince çubuk) | ShareButton
  *   ├─ ShareSheet ("Arkadaşlar | Bağlantı (QR)") ─ PermissionFlow
  *   ├─ LinkQrSheet (QR, bağlantı, Kopyala/Paylaş, kalan süre, +30 dk / +1 saat, "Paylaşımı durdur")
  *   ├─ çıkış sırasında ilerleme örtüsü
@@ -81,14 +81,13 @@ import { sosPins, sosRouteFrom } from '../sos/sosModel';
 import { BackgroundPermissionHint } from '../permissions/BackgroundPermissionHint';
 import { activeShareContext } from '../permissions/permissionPlanner';
 import { ShareSheet, type ShareSheetHandle } from '../share/ShareSheet';
-import { ActiveLinkCard } from './ActiveLinkCard';
-import { ActiveShareCard } from './ActiveShareCard';
 import { EtaCard } from './EtaCard';
 import { ExpiryBanner } from './ExpiryBanner';
 import { IncomingStrip } from './IncomingStrip';
 import { MapCanvas, type MapCanvasHandle } from './MapCanvas';
 import { RecenterButton } from './RecenterButton';
 import { ShareButton } from './ShareButton';
+import { ShareDeck, type ShareDeckActions } from './ShareDeck';
 import { TopBar } from './TopBar';
 import { useAddress, useRouteEta, type EtaTarget } from './useEta';
 
@@ -437,6 +436,30 @@ export function MapHome() {
     ]);
   }, [anyLinkRunning, anyRunning, links, sessions]);
 
+  // Kitapçık yalnızca seçim (rota / yer notu / buluşma kartı) yokken görünür; görünürken "bitmek üzere" afişi
+  // ayrıca gösterilmez: süresi dolmak üzere olan kart öne gelir ve uzatma çipleri kartın üstündedir.
+  const deckVisible = !selectedNote && !target && !focusedMeetup;
+  const deckActions = useMemo<ShareDeckActions>(
+    () => ({
+      extend: (id, m) => void extend(id, m),
+      stop,
+      dismiss,
+      linkExtend: (id, m) => void linkStore.getState().extend(id, m),
+      linkShowQr: showQr,
+      linkStop: stopLink,
+      linkDismiss: (id) => linkStore.getState().dismiss(id),
+      // Onay kitapçıkta iki adımda alındı; burada yeniden sorulmaz.
+      stopAll: (items) => {
+        for (const it of items) {
+          if (it.kind === 'share') void sharingStore.getState().stop(it.session.session_id);
+          else void linkStore.getState().stop(it.link.link_id);
+        }
+      },
+      newShare: () => sheet.current?.present(),
+    }),
+    [dismiss, extend, showQr, stop, stopLink],
+  );
+
   // Buluşma sayfası açıkken alt dolgu sayfanın ilk durağı (%52) kadar: pinler sayfanın üstünde kalsın.
   const padding = useMemo(
     () => ({ top: insets.top + 140, right: 0, bottom: meetupOpen ? Math.round(windowH * 0.52) + 8 : bottomH + 8, left: 0 }),
@@ -445,7 +468,7 @@ export function MapHome() {
   const onBottomLayout = (e: LayoutChangeEvent) => setBottomH(e.nativeEvent.layout.height);
 
   return (
-    <View style={styles.root}>
+    <View style={styles.root} testID="map-home">
       <MapCanvas
         ref={map}
         friends={incoming}
@@ -505,8 +528,8 @@ export function MapHome() {
             <SosLauncher route={sosRoute} />
           </View>
           {!target ? <BackgroundPermissionHint visible={anyRunning || anyLinkRunning} context={permContext} /> : null}
-          {expiring ? <ExpiryBanner session={expiring} now={shareNow} onExtend={(m) => void extend(expiring.session_id, m)} /> : null}
-          {expiringLink ? (
+          {expiring && !deckVisible ? <ExpiryBanner session={expiring} now={shareNow} onExtend={(m) => void extend(expiring.session_id, m)} /> : null}
+          {expiringLink && !deckVisible ? (
             <ExpiryBanner session={expiringLink} now={linkNow} subject="QR bağlantın" onExtend={(m) => void linkStore.getState().extend(expiringLink.link_id, m)} />
           ) : null}
           {selectedNote ? (
@@ -550,28 +573,15 @@ export function MapHome() {
           ) : (
             <>
               <MeetupPills meetups={meetupList} myUid={myUid} onOpen={(m) => meetupStore.getState().focus(m.meetup_id)} />
-              {sessions.map((s) => (
-                <ActiveShareCard
-                  key={s.session_id}
-                  session={s}
-                  names={names}
-                  now={shareNow}
-                  trackingError={trackingError}
-                  onExtend={(m) => void extend(s.session_id, m)}
-                  onStop={() => stop(s.session_id)}
-                  onDismiss={() => dismiss(s.session_id)}
-                />
-              ))}
-              {links.map((l) => (
-                <ActiveLinkCard
-                  key={l.link_id}
-                  link={l}
-                  now={linkNow}
-                  onShowQr={() => showQr(l.link_id)}
-                  onStop={() => (l.phase === 'stopping' ? void linkStore.getState().stop(l.link_id) : stopLink(l.link_id))}
-                  onDismiss={() => linkStore.getState().dismiss(l.link_id)}
-                />
-              ))}
+              <ShareDeck
+                sessions={sessions}
+                links={links}
+                names={names}
+                shareNow={shareNow}
+                linkNow={linkNow}
+                trackingError={trackingError}
+                actions={deckActions}
+              />
               {!anyRunning ? <ShareButton onPress={() => sheet.current?.present()} /> : null}
             </>
           )}
