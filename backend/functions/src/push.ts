@@ -35,6 +35,10 @@ import {
   normalizeScopes,
   permissionGrantedText,
   permissionRequestText,
+  LOCATION_REQUEST_LIMITS,
+  LOCATION_REQUEST_NOTIFICATION,
+  locationRequestAnsweredText,
+  locationRequestPushText,
 } from '@konum/core';
 import type { DocumentReference, Timestamp } from 'firebase-admin/firestore';
 import type { MulticastMessage } from 'firebase-admin/messaging';
@@ -51,15 +55,32 @@ import { chunk } from './util';
 export type PushMessage = Omit<MulticastMessage, 'tokens'> & { data: PushData };
 
 /**
- * [Varsayım] Kilit ekranında adı gizleme tercihi Faz 1'de yok; ad bildirim metninde görünür.
- * Tercih eklendiğinde `requesterName` yerine genel metin kullanılır.
+ * "Konum İste" bildirimi (hedefe). [Varsayım] Kilit ekranında adı gizleme tercihi yok; ad bildirim metninde görünür.
+ *  - iOS: APNs uyarısı + kategori `LOCATION_REQUEST` → bildirimde "Onayla" / "Reddet" eylemleri (uygulama kategoriyi
+ *    açılışta kaydeder). `mutable-content` yok; metin sunucudan.
+ *  - Android: YALNIZCA VERİ (yüksek öncelik). Uzak "notification" mesajına eylem eklenemediği için uygulamanın
+ *    başsız işleyicisi `title` / `body` ile eylemli yerel bildirim gösterir (kanal `location_requests`).
+ * Koordinat yok.
  */
-export function buildLocationRequestPush(requesterName: string, requestId: string): PushMessage {
+export function buildLocationRequestPush(requesterName: string, requestId: string, from: UserId): PushMessage {
+  const text = locationRequestPushText(requesterName);
   return {
-    notification: { title: 'Konum isteği', body: `${requesterName || 'Bir arkadaşın'} konumunu paylaşmanı istiyor` },
-    data: { type: 'location_request', request_id: requestId },
-    android: { priority: 'high', notification: { channelId: 'location_requests' } },
-    apns: { payload: { aps: { category: 'LOCATION_REQUEST' } } },
+    data: { type: 'location_request', request_id: requestId, from, title: text.title, body: text.body },
+    android: { priority: 'high', ttl: LOCATION_REQUEST_LIMITS.ttlMs },
+    apns: {
+      headers: { 'apns-priority': '10', 'apns-push-type': 'alert', 'apns-collapse-id': `lr_${requestId}`.slice(0, 64) },
+      payload: { aps: { alert: { title: text.title, body: text.body }, sound: 'default', category: LOCATION_REQUEST_NOTIFICATION.category, 'thread-id': 'location_requests' } },
+    },
+  };
+}
+
+/** İsteyene: onaylandı / sade ret. Koordinat yok; neden söylenmez. */
+export function buildLocationRequestAnsweredPush(targetName: string, requestId: string, by: UserId, status: 'approved' | 'rejected'): PushMessage {
+  return {
+    notification: locationRequestAnsweredText(targetName, status),
+    data: { type: 'location_request_answered', request_id: requestId, by, status },
+    android: { priority: status === 'approved' ? 'high' : 'normal', notification: { channelId: LOCATION_REQUEST_NOTIFICATION.channelId, tag: `lr_${requestId}` } },
+    apns: { payload: { aps: { 'thread-id': 'location_requests', ...(status === 'approved' ? { sound: 'default' } : {}) } } },
   };
 }
 

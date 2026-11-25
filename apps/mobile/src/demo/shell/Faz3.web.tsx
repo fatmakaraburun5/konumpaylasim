@@ -644,7 +644,9 @@ const isF5Push = (n: DemoNotification) => isF5PushType(n.data?.type) || n.data?.
 /** Faz 6: widget'tan başlatılan paylaşımın gönderen onayı (uygulama bunu yerel bildirimle gösterirse). */
 const isF6Push = (n: DemoNotification) => n.data?.type === 'quick_share_started';
 /** Dokunulunca uygulamadaki gerçek yanıt yoluna giren push'lar (Faz 4 + Faz 5 + Faz 6). */
-const isRoutedPush = (n: DemoNotification) => isF4Push(n) || isF5Push(n) || isF6Push(n);
+/** Konum İste: gelen istek (Onayla / Reddet eylemli) ve yanıt bildirimi. */
+const isLocationRequestPush = (n: DemoNotification) => n.data?.type === 'location_request' || n.data?.type === 'location_request_answered';
+const isRoutedPush = (n: DemoNotification) => isF4Push(n) || isF5Push(n) || isF6Push(n) || isLocationRequestPush(n);
 const isBatteryPush = (n: DemoNotification) => n.data?.type === 'battery_low' || isRoutedPush(n);
 
 /** Bildirime dokunma: Faz 4/5 push'u uygulamadaki gerçek yanıt yoluna girer (SOS kartı / ping vurgusu / buluşma kartı). */
@@ -666,7 +668,34 @@ function useBatteryPushes(): DemoNotification[] {
   return list;
 }
 
-function NoticeCard({ title, body, at, dark, testID, sos }: { title: string; body: string; at: number | null; dark: boolean; testID?: string; sos?: boolean }) {
+/** Bildirim eylem düğmeleri (iOS / Android eylemli bildirim: ör. Konum İste "Onayla / Reddet"). */
+function NoticeActions({ n, dark, onDone }: { n: DemoNotification; dark: boolean; onDone?: () => void }) {
+  if (!n.actions || n.actions.length === 0) return null;
+  return (
+    <View style={styles.noticeActions}>
+      {n.actions.map((a) => (
+        <Pressable
+          key={a.identifier}
+          accessibilityRole="button"
+          accessibilityLabel={a.buttonTitle}
+          testID={`notice-action-${a.identifier}`}
+          onPress={() => {
+            demoControls.setScreenLocked(false);
+            respondToDemoNotification(n.identifier, a.identifier);
+            onDone?.();
+          }}
+          style={[styles.noticeAction, { backgroundColor: dark ? 'rgba(255,255,255,0.14)' : 'rgba(15,23,42,0.06)' }]}
+        >
+          <Text variant="label" style={{ color: dark ? '#FFFFFF' : '#0F172A', fontWeight: '600', textAlign: 'center' }} maxFontSizeMultiplier={1.2}>
+            {a.buttonTitle}
+          </Text>
+        </Pressable>
+      ))}
+    </View>
+  );
+}
+
+function NoticeCard({ title, body, at, dark, testID, sos, actions }: { title: string; body: string; at: number | null; dark: boolean; testID?: string; sos?: boolean; actions?: ReactNode }) {
   return (
     <View
       testID={testID}
@@ -693,6 +722,7 @@ function NoticeCard({ title, body, at, dark, testID, sos }: { title: string; bod
       <Text variant="label" style={{ color: dark ? 'rgba(255,255,255,0.86)' : '#334155', fontWeight: '400' }} maxFontSizeMultiplier={1.2}>
         {body}
       </Text>
+      {actions}
     </View>
   );
 }
@@ -722,7 +752,14 @@ export function PushBanner() {
       style={styles.pushBanner}
       testID="push-banner"
     >
-      <NoticeCard title={latest.title} body={latest.body} at={latest.date} dark={scheme === 'dark'} sos={isSosPush(latest)} />
+      <NoticeCard
+        title={latest.title}
+        body={latest.body}
+        at={latest.date}
+        dark={scheme === 'dark'}
+        sos={isSosPush(latest)}
+        actions={<NoticeActions n={latest} dark={scheme === 'dark'} onDone={() => setHidden((h) => new Set(h).add(latest.identifier))} />}
+      />
     </Pressable>
   );
 }
@@ -766,7 +803,7 @@ export function LockScreen() {
                 openPush(p);
               }}
             >
-              <NoticeCard title={p.title} body={p.body} at={p.date} dark sos={isSosPush(p)} />
+              <NoticeCard title={p.title} body={p.body} at={p.date} dark sos={isSosPush(p)} actions={<NoticeActions n={p} dark />} />
             </Pressable>
           ) : (
             <NoticeCard key={p.identifier} title={p.title} body={p.body} at={p.date} dark />
@@ -915,6 +952,8 @@ const styles = StyleSheet.create({
   appIcon: { backgroundColor: '#2563EB', alignItems: 'center', justifyContent: 'center' },
   notice: { borderRadius: 20, borderWidth: 1, paddingHorizontal: 14, paddingVertical: 11, gap: 2 },
   noticeHead: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 3 },
+  noticeActions: { flexDirection: 'row', gap: 8, marginTop: 8 },
+  noticeAction: { flex: 1, minHeight: 36, borderRadius: 12, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 10 },
   pushBanner: { position: 'absolute', top: 6, left: 8, right: 8, zIndex: 30, boxShadow: '0px 10px 30px rgba(15, 23, 42, 0.25)', borderRadius: 20 },
   lock: { zIndex: 35, backgroundColor: '#0E1B33', paddingHorizontal: 14 },
   lockTop: { alignItems: 'center', paddingTop: 58, gap: 4 },

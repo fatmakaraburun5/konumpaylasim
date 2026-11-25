@@ -33,6 +33,7 @@ export const CALLABLES = {
   shareRevoke: 'share_revoke',
   locationRequestSend: 'location_request_send',
   locationRequestRespond: 'location_request_respond',
+  locationRequestCancel: 'location_request_cancel',
   accountDelete: 'account_delete',
   // Faz 2
   linkShareCreate: 'link_share_create',
@@ -535,7 +536,13 @@ export type ClientEvent =
 
 /** FCM data mesajı: KOORDİNAT TAŞIMAZ. */
 export type PushData =
-  | { type: 'location_request'; request_id: string }
+  /**
+   * Hedefe, görünür: "Ayşe konumunu paylaşmanı istiyor". Kategori `LOCATION_REQUEST` (Onayla / Reddet eylemleri).
+   * Android'de yalnızca veri olarak gelir; uygulama `title` / `body` ile eylemli yerel bildirim gösterir.
+   */
+  | { type: 'location_request'; request_id: string; from: string; title: string; body: string }
+  /** İsteyene, görünür: onaylandı ("… konumunu seninle paylaşıyor") ya da ret ("… şu an konumunu paylaşamıyor"). */
+  | { type: 'location_request_answered'; request_id: string; by: string; status: string }
   | { type: 'friend_request'; friendship_id: string }
   | { type: 'share_started'; share_id: string }
   | { type: 'share_ending_soon'; session_id: string }
@@ -606,3 +613,6 @@ export const PUSH_TYPES_F6 = ['quick_share_started', 'widget_refresh'] as const 
 
 /** Faz 8 FCM veri türleri. */
 export const PUSH_TYPES_F8 = ['permission_request', 'permission_granted'] as const satisfies readonly PushData['type'][];
+
+/** "Konum İste" FCM veri türleri. */
+export const PUSH_TYPES_LOCATION_REQUEST = ['location_request', 'location_request_answered'] as const satisfies readonly PushData['type'][];

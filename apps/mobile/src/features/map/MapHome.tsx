@@ -88,6 +88,7 @@ import { explainInvisibleShare, openRestoreFlow } from '../invisible/invisibleFl
 import { invisibleStore, selectIsInvisible, useIsInvisible } from '../../state/invisibleStore';
 import type { ShareAudience } from '../share/AudienceSwitch';
 import { InvisibleBanner } from './InvisibleBanner';
+import { IncomingLocationRequests } from '../locationRequest/IncomingLocationRequests';
 import { EtaCard } from './EtaCard';
 import { ExpiryBanner } from './ExpiryBanner';
 import { IncomingStrip } from './IncomingStrip';
@@ -543,6 +544,10 @@ export function MapHome() {
       <View style={[styles.strip, { top: insets.top + 72, gap: spacing.xs }]} pointerEvents="box-none">
         {invisible ? <InvisibleBanner onVisible={openRestoreFlow} /> : null}
         <SosIncomingBanner alerts={incomingSos} now={incomingNow} />
+        {/* Konum İste: "X konumunu paylaşmanı istiyor" → Reddet / Onayla (süre seçici). */}
+        <View style={{ paddingHorizontal: spacing.md }} pointerEvents="box-none">
+          <IncomingLocationRequests max={2} />
+        </View>
         <IncomingStrip items={incoming} names={names} now={incomingNow} onFocus={focusFriend} />
         {syncFailing ? (
           <View

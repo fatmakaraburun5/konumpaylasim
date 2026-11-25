@@ -28,6 +28,12 @@ export function Faz8Section({ snap, renderRow }: Faz8Props) {
 
   const rows: ControlRow[] = [
     {
+      key: 'lr-mehmet-request',
+      title: 'Mehmet konumunu istiyor',
+      hint: 'Konum İste: Onayla / Reddet eylemli bildirim + haritada istek kartı. Onaylayınca süre seçersin. (Sen birinden isteyince Zeynep reddeder, diğerleri 1 saat paylaşır.)',
+      run: () => (demoControls.friendRequestsMyLocation('mehmet') ? 'Mehmet konumunu paylaşmanı istiyor.' : 'Mehmet ile arkadaş değilsin.'),
+    },
+    {
       key: 'f8-can-request',
       title: 'Can konumunu görmek istiyor',
       hint: 'Can\'dan izin isteği: bildirim + Arkadaşlar ekranında "İzin istekleri" kartı.',

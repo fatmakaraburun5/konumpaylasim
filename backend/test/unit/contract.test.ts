@@ -157,9 +157,11 @@ describe('functions ↔ core', () => {
     expect(aclValue({ ...base, status: 'ended', expires_at: 123 }, 789)).toEqual({ status: 'ended', version: 3, ended_at: 789 });
   });
 
-  it('konum isteği bildirimi koordinat taşımaz; data = {type, request_id}', () => {
-    const msg = buildLocationRequestPush('Ayşe', 'uA_uB');
-    expect(msg.data).toEqual({ type: 'location_request', request_id: 'uA_uB' });
+  it('konum isteği bildirimi koordinat taşımaz; iOS kategorisi eylemli, Android yalnızca veri', () => {
+    const msg = buildLocationRequestPush('Ayşe', 'uA_uB', 'uA');
+    expect(msg.data).toEqual({ type: 'location_request', request_id: 'uA_uB', from: 'uA', title: 'Konum isteği', body: 'Ayşe konumunu paylaşmanı istiyor' });
+    expect(msg.notification).toBeUndefined();
+    expect(msg.apns?.payload?.aps?.category).toBe('LOCATION_REQUEST');
     const json = JSON.stringify(msg);
     for (const banned of ['lat', 'lng', 'accuracy', 'phone', 'receiver']) expect(json).not.toContain(banned);
   });

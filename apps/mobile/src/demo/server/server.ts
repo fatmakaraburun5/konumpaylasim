@@ -326,6 +326,20 @@ import {
   type ProfileConsent,
   type RequestableScope,
 } from '@konum/core';
+import {
+  effectiveRequestStatus as lrEffectiveStatus,
+  LOCATION_REQUEST_LIMITS,
+  LocationRequestCancelSchema,
+  LocationRequestRespondSchema,
+  LocationRequestSendSchema,
+  locationRequestAnsweredText,
+  locationRequestPushText,
+  requestId as locationRequestId,
+  type LocationRequestCancelResponse,
+  type LocationRequestRespondResponse,
+  type LocationRequestSendResponse,
+  type LocationRequestStatus,
+} from '@konum/core';
 import { z } from 'zod';
 import { botAvatarUrls, DEMO_STORAGE_BUCKET, DEMO_STORAGE_HOST, DemoAvatarStore, DemoStorageError, uriToDataUrl } from './avatars';
 import { fakeComputeRoutes, fakeReverseGeocode } from './fakeGoogle';
@@ -621,6 +635,25 @@ interface Db {
   perm_auto: Record<string, EpochMs>;
   /** `users/{uid}/consents/{version}`. */
   consents: Record<UserId, Record<string, ConsentRecord>>;
+  // --- Konum İste (eski kayıtlarda yok: `withPhase8` tamamlar) ---
+  /** Firestore `location_requests/{requester}_{target}`. */
+  loc_requests: Record<string, LocReqRec>;
+  /** Günlük konum isteği sayacı `{uid}_{gün}`. */
+  loc_req_day: Record<string, number>;
+  /** Demo: bot hedefin isteğime otomatik yanıt anı (istek kimliği → an). */
+  loc_req_auto: Record<string, EpochMs>;
+}
+
+interface LocReqRec {
+  request_id: string;
+  requester_id: UserId;
+  target_id: UserId;
+  status: LocationRequestStatus;
+  created_at: EpochMs;
+  expires_at: EpochMs;
+  responded_at: EpochMs | null;
+  share_id: string | null;
+  updated_at: EpochMs;
 }
 
 /** Faz 1'de kaydedilmiş demo durumuna Faz 2 alanlarını ekler (demo verisi silinmeden). */
@@ -755,6 +788,9 @@ function withPhase8(db: Db): Db {
   db.perm_day ??= {};
   db.perm_auto ??= {};
   db.consents ??= {};
+  db.loc_requests ??= {};
+  db.loc_req_day ??= {};
+  db.loc_req_auto ??= {};
   for (const u of Object.values(db.users)) {
     u.invisible ??= null;
     if (u.consent === undefined) u.consent = demoConsentOf(u.uid, u.created_at);
@@ -1130,6 +1166,9 @@ export class DemoServer {
       perm_day: {},
       perm_auto: {},
       consents: {},
+      loc_requests: {},
+      loc_req_day: {},
+      loc_req_auto: {},
     };
     this.db = db;
     withPhase4(db);
@@ -1659,6 +1698,7 @@ export class DemoServer {
     if (this.sweepPhase4(now)) changed = true;
     if (this.sweepPhase5(now)) changed = true;
     if (this.sweepPhase8(now)) changed = true;
+    if (this.sweepLocationRequests(now)) changed = true;
     if (now - this.lastPrune > MINUTE) {
       this.lastPrune = now;
       if (this.prunePhase2(now)) changed = true;
@@ -2217,6 +2257,13 @@ export class DemoServer {
         return this.consentAcceptCall(payload, uid, now);
       case 'consent_withdraw':
         return this.consentWithdrawCall(payload, uid, now);
+      // Konum İste
+      case 'location_request_send':
+        return this.locationRequestSendCall(payload, uid, now);
+      case 'location_request_respond':
+        return this.locationRequestRespondCall(payload, uid, now);
+      case 'location_request_cancel':
+        return this.locationRequestCancelCall(payload, uid, now);
       default:
         return fail('invalid_argument', `Demo sunucusunda yok: ${name}`);
     }
@@ -2486,6 +2533,11 @@ export class DemoServer {
     for (const id of [shareId(uid, other), shareId(other, uid)]) {
       const s = this.db.shares[id];
       if (s) this.endShare(s, 'friendship_removed', now);
+    }
+    // Konum İste: iki yöndeki bekleyen istek iptal.
+    for (const id of [locationRequestId(uid, other), locationRequestId(other, uid)]) {
+      const r = this.db.loc_requests[id];
+      if (r && r.status === 'pending') Object.assign(r, { status: 'cancelled', responded_at: now, updated_at: now });
     }
     // Faz 8: iki yöndeki izin belgeleri silinir.
     this.dropPairGrants(uid, other);
@@ -4381,6 +4433,185 @@ export class DemoServer {
     if (b && b.kind === 'idle') b.kind = 'heartbeat';
     if (b) b.offline = false;
     this.botPublish(bot, now, true);
+    return true;
+  }
+
+
+  // --- Konum İste (backend `handlers/requests.ts` ile aynı anlam) -----------------------------------
+
+  /** Firestore `location_requests where requester_id == uid` ∪ `where target_id == uid`. */
+  locationRequestsOf(uid: UserId): LocReqRec[] {
+    return Object.values(this.db.loc_requests)
+      .filter((r) => r.requester_id === uid || r.target_id === uid)
+      .sort((a, b) => a.request_id.localeCompare(b.request_id))
+      .map((r) => ({ ...r }));
+  }
+
+  private liveShare(sender: UserId, receiver: UserId, now: EpochMs): ShareRec | null {
+    const s = this.db.shares[shareId(sender, receiver)];
+    return s && s.status === 'active' && (s.expires_at === null || s.expires_at > now) ? s : null;
+  }
+
+  private locationRequestSendCall(payload: unknown, uid: UserId, now: EpochMs): LocationRequestSendResponse {
+    const req = this.parse(LocationRequestSendSchema, payload);
+    return this.locationRequestNow(uid, req.target_id, now);
+  }
+
+  private locationRequestNow(uid: UserId, target: UserId, now: EpochMs): LocationRequestSendResponse {
+    if (target === uid) fail('invalid_argument');
+    if (!this.areFriends(uid, target)) fail('not_friends');
+    const id = locationRequestId(uid, target);
+    if (this.liveShare(target, uid, now)) return { request_id: id, status: 'already_sharing', expires_at: null, server_now: now };
+    const existing = this.db.loc_requests[id];
+    if (existing && existing.status === 'pending' && existing.expires_at > now) {
+      return { request_id: id, status: 'pending', expires_at: existing.expires_at, server_now: now };
+    }
+    if (existing && now - existing.created_at < LOCATION_REQUEST_LIMITS.pairCooldownMs) {
+      fail('rate_limited');
+    }
+    const dayKey = `${uid}_${quotaDay(now)}`;
+    const count = this.db.loc_req_day[dayKey] ?? 0;
+    if (count >= LOCATION_REQUEST_LIMITS.perDay) fail('rate_limited');
+    this.db.loc_req_day[dayKey] = count + 1;
+    const rec: LocReqRec = {
+      request_id: id,
+      requester_id: uid,
+      target_id: target,
+      status: 'pending',
+      created_at: now,
+      expires_at: now + LOCATION_REQUEST_LIMITS.ttlMs,
+      responded_at: null,
+      share_id: null,
+      updated_at: now,
+    };
+    this.db.loc_requests[id] = rec;
+    const text = locationRequestPushText(this.db.users[uid]?.display_name);
+    const data: Extract<PushData, { type: 'location_request' }> = { type: 'location_request', request_id: id, from: uid, title: text.title, body: text.body };
+    this.push(target, { notification: text, data });
+    if (target !== DEMO_ME && this.db.bots[target]) this.db.loc_req_auto[id] = now + AUTO_ACCEPT_MS;
+    return { request_id: id, status: 'pending', expires_at: rec.expires_at, server_now: now };
+  }
+
+  private answeredPush(rec: LocReqRec, status: 'approved' | 'rejected'): void {
+    const text = locationRequestAnsweredText(this.db.users[rec.target_id]?.display_name, status);
+    const data: Extract<PushData, { type: 'location_request_answered' }> = { type: 'location_request_answered', request_id: rec.request_id, by: rec.target_id, status };
+    this.push(rec.requester_id, { notification: text, data });
+  }
+
+  private locationRequestRespondCall(payload: unknown, uid: UserId, now: EpochMs): LocationRequestRespondResponse {
+    const req = this.parse(LocationRequestRespondSchema, payload);
+    const rec = this.db.loc_requests[req.request_id];
+    if (!rec || rec.target_id !== uid) return fail('invalid_argument', 'İstek bulunamadı');
+    if (rec.status !== 'pending') return fail('invalid_argument', 'İstek artık geçerli değil');
+    if (rec.expires_at <= now) return fail('already_expired', 'İsteğin süresi doldu');
+    if (!req.accept) {
+      Object.assign(rec, { status: 'rejected', responded_at: now, updated_at: now });
+      this.answeredPush(rec, 'rejected');
+      return { request_id: rec.request_id, status: 'rejected', session_id: null, share: null, server_now: now };
+    }
+    return this.approveLocationRequest(rec, req.duration ?? { kind: 'preset', preset: 'h1' }, req.time_zone ?? DEFAULT_TZ, now);
+  }
+
+  private approveLocationRequest(rec: LocReqRec, duration: DurationChoice, tz: string, now: EpochMs): LocationRequestRespondResponse {
+    const uid = rec.target_id;
+    const requester = rec.requester_id;
+    if (isInvisible(this.db.users[uid])) fail('invisible_mode');
+    if (!this.areFriends(uid, requester)) fail('not_friends');
+    let resolved: { share_mode: ShareMode; expires_at: EpochMs | null };
+    try {
+      resolved = resolveDuration(duration, now, offsetFnForTimeZone(tz));
+    } catch (e) {
+      if (e instanceof DurationError) fail('invalid_duration', e.message);
+      throw e;
+    }
+    // Kabul = hedef → isteyen `location_view` (ters yön yazılmaz).
+    if (!hasGrant(this.grantOf(uid, requester), 'location_view')) this.grantScope(uid, requester, 'location_view', 'location_request', now);
+    if (!canShareLocation(this.pair(uid, requester))) fail('not_permitted');
+    const current = this.liveShare(uid, requester, now);
+    let share: ShareRec;
+    if (current && (current.expires_at === null || (resolved.expires_at !== null && current.expires_at >= resolved.expires_at))) {
+      share = current; // kabul asla kısaltmaz
+    } else if (current) {
+      Object.assign(current, { share_mode: resolved.share_mode, expires_at: resolved.expires_at, version: current.version + 1, updated_at: now, in_response_to: rec.request_id });
+      this.mirrorAcl(current);
+      share = current;
+    } else {
+      share = this.startShare(uid, requester, uuidV4(), resolved.share_mode, resolved.expires_at, now);
+      share.in_response_to = rec.request_id;
+    }
+    Object.assign(rec, { status: 'approved', responded_at: now, share_id: share.share_id, updated_at: now });
+    this.answeredPush(rec, 'approved');
+    return { request_id: rec.request_id, status: 'approved', session_id: share.session_id, share: this.toView(share), server_now: now };
+  }
+
+  private locationRequestCancelCall(payload: unknown, uid: UserId, now: EpochMs): LocationRequestCancelResponse {
+    const req = this.parse(LocationRequestCancelSchema, payload);
+    const rec = this.db.loc_requests[req.request_id];
+    if (!rec || rec.requester_id !== uid) return fail('invalid_argument', 'İstek bulunamadı');
+    if (rec.status === 'pending') Object.assign(rec, { status: lrEffectiveStatus(rec, now) === 'expired' ? 'expired' : 'cancelled', responded_at: now, updated_at: now });
+    return { status: rec.status, server_now: now } as LocationRequestCancelResponse;
+  }
+
+  /** Süresi dolan istek `expired`; bot hedefler isteğime 6 sn sonra yanıt verir (Zeynep reddeder, diğerleri 1 saat onaylar). */
+  private sweepLocationRequests(now: EpochMs): boolean {
+    let changed = false;
+    for (const r of Object.values(this.db.loc_requests)) {
+      if (r.status === 'pending' && r.expires_at <= now) {
+        Object.assign(r, { status: 'expired', updated_at: now });
+        changed = true;
+      }
+    }
+    for (const [id, at] of Object.entries(this.db.loc_req_auto)) {
+      if (at > now) continue;
+      delete this.db.loc_req_auto[id];
+      changed = true;
+      const r = this.db.loc_requests[id];
+      if (!r || r.status !== 'pending') continue;
+      const rejects = r.target_id === PEOPLE.zeynep.uid || isInvisible(this.db.users[r.target_id]);
+      if (rejects) {
+        Object.assign(r, { status: 'rejected', responded_at: now, updated_at: now });
+        this.answeredPush(r, 'rejected');
+        continue;
+      }
+      try {
+        this.approveLocationRequest(r, { kind: 'preset', preset: 'h1' }, DEFAULT_TZ, now);
+        const b = this.db.bots[r.target_id];
+        if (b) {
+          if (b.kind === 'walker') b.walk_origin = now - 3 * MINUTE;
+          if (b.kind === 'idle') b.kind = 'heartbeat';
+          b.offline = false;
+        }
+        this.botPublish(r.target_id, now, true);
+      } catch {
+        // izin / arkadaşlık değiştiyse yanıt yok (istek süresi dolunca expired olur)
+      }
+    }
+    const today = quotaDay(now);
+    for (const k of Object.keys(this.db.loc_req_day)) {
+      if (k.endsWith(`_${today}`)) continue;
+      delete this.db.loc_req_day[k];
+      changed = true;
+    }
+    return changed;
+  }
+
+  /** Demo paneli: "Mehmet konumunu istiyor" — Mehmet bana konum isteği gönderir (bekleme atlanır). */
+  friendRequestsMyLocation(who: 'mehmet' | 'ayse' | 'can' = 'mehmet'): boolean {
+    const now = Date.now();
+    const from = PEOPLE[who].uid;
+    if (!this.areFriends(from, DEMO_ME)) return false;
+    const id = locationRequestId(from, DEMO_ME);
+    const prev = this.db.loc_requests[id];
+    if (prev && prev.status !== 'pending') delete this.db.loc_requests[id];
+    // Ben ona zaten paylaşıyorsam istek oluşmaz: demo için önce o paylaşım biter.
+    const mine = this.liveShare(DEMO_ME, from, now);
+    if (mine) this.endShare(mine, 'stopped_by_sender', now);
+    try {
+      this.locationRequestNow(from, DEMO_ME, now);
+    } catch {
+      return false;
+    }
+    this.commit();
     return true;
   }
 

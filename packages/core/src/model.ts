@@ -120,7 +120,8 @@ export interface LocationShare {
   in_response_to: RequestId | null;
 }
 
-export type LocationRequestStatus = 'pending' | 'accepted' | 'declined' | 'expired' | 'cancelled';
+/** "Konum İste" durumları (`locationRequest.ts` durum akışı). */
+export type LocationRequestStatus = 'pending' | 'approved' | 'rejected' | 'expired' | 'cancelled';
 
 export interface LocationRequest {
   request_id: RequestId;

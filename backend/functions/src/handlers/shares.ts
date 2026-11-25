@@ -218,7 +218,7 @@ export async function shareStart(ctx: CallCtx, data: z.output<typeof ShareStartR
     const skipped: UserId[] = [...requested.filter((r) => r === ctx.uid), ...w.skipped];
     if (request && started.some((s) => s.receiver_id === request.requester_id)) {
       tx.update(refs.requestById(request.request_id), {
-        status: 'accepted',
+        status: 'approved',
         responded_at: ctx.now,
         share_id: shareId(ctx.uid, request.requester_id),
         updated_at: ctx.now,

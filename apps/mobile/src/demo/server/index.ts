@@ -207,6 +207,12 @@ export const demoControls = {
     return demoServer().setFavoritesOf(DEMO_ME, DEMO_ME_FAVORITES);
   },
 
+  // --- Konum İste ----------------------------------------------------------------------------------
+  /** "Mehmet konumunu istiyor": Mehmet bana konum isteği gönderir (Onayla / Reddet bildirimi + harita kartı). */
+  friendRequestsMyLocation(who: 'mehmet' | 'ayse' | 'can' = 'mehmet'): boolean {
+    return demoServer().friendRequestsMyLocation(who);
+  },
+
   // --- Faz 8 ---------------------------------------------------------------------------------------
   /** "Can konumunu görmek istiyor": bana `location_view` isteği (push + "İzin istekleri" kartı). Dönen: gönderildi mi. */
   canRequestsMyLocation(): boolean {

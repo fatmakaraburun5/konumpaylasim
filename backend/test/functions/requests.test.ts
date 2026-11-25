@@ -52,11 +52,29 @@ describe('location_request_send', () => {
     const [X, Y] = await friends();
     const r = await call('location_request_send', { op_id: opId(), target_id: Y.uid }, X);
     await call('location_request_respond', { op_id: opId(), request_id: r.request_id, accept: false }, Y);
-    expect((await reqDoc(r.request_id))?.status).toBe('declined');
+    expect((await reqDoc(r.request_id))?.status).toBe('rejected');
     const e = await callError('location_request_send', { op_id: opId(), target_id: Y.uid }, X);
     expect(e.status).toBe('RESOURCE_EXHAUSTED');
     expect(e.details).toMatchObject({ code: 'rate_limited', retryable: true });
     expect(Number(e.details?.retry_after_ms)).toBeGreaterThan(0);
+  });
+});
+
+describe('location_request_cancel', () => {
+  it('yalnızca isteyen geri çeker; idempotent; bekleme süresi sıfırlanmaz', async () => {
+    const [X, Y] = await friends();
+    const r = await call('location_request_send', { op_id: opId(), target_id: Y.uid }, X);
+    const notMine = await callError('location_request_cancel', { op_id: opId(), request_id: r.request_id }, Y);
+    expect(notMine.status).toBe('NOT_FOUND');
+    const c = await call('location_request_cancel', { op_id: opId(), request_id: r.request_id }, X);
+    expect(c.status).toBe('cancelled');
+    expect((await reqDoc(r.request_id))?.status).toBe('cancelled');
+    const again = await call('location_request_cancel', { op_id: opId(), request_id: r.request_id }, X);
+    expect(again.status).toBe('cancelled');
+    const late = await callError('location_request_respond', { op_id: opId(), request_id: r.request_id, accept: true }, Y);
+    expect(late.status).toBe('FAILED_PRECONDITION');
+    const resend = await callError('location_request_send', { op_id: opId(), target_id: Y.uid }, X);
+    expect(resend.details).toMatchObject({ code: 'rate_limited' });
   });
 });
 
@@ -69,10 +87,10 @@ describe('location_request_respond', () => {
     expect(wrong.status).toBe('NOT_FOUND');
 
     const ok = await call('location_request_respond', { op_id: opId(), request_id: r.request_id, accept: true }, Y);
-    expect(ok.status).toBe('accepted');
+    expect(ok.status).toBe('approved');
     expect(ok.share).toMatchObject({ share_id: shareId(Y.uid, X.uid), receiver_id: X.uid, status: 'active', share_mode: 'timed' });
     expect(ok.share.expires_at - ok.share.started_at).toBe(60 * MINUTE);
-    expect(await reqDoc(r.request_id)).toMatchObject({ status: 'accepted', share_id: shareId(Y.uid, X.uid) });
+    expect(await reqDoc(r.request_id)).toMatchObject({ status: 'approved', share_id: shareId(Y.uid, X.uid) });
     expect((await db().doc(`location_shares/${shareId(Y.uid, X.uid)}`).get()).data()).toMatchObject({
       in_response_to: r.request_id,
       sender_id: Y.uid,
@@ -94,15 +112,15 @@ describe('location_request_respond', () => {
     expect(ok.share.expires_at - ok.share.started_at).toBe(15 * MINUTE);
   });
 
-  it('kabul mevcut paylaşımı kısaltmaz: daha kısa paylaşım aynı oturumda uzar, daha uzun olana dokunulmaz', async () => {
+  it('kabul mevcut paylaşımı kısaltmaz: istek beklerken başlayan daha kısa paylaşım aynı oturumda uzar', async () => {
     const [X, Y] = await friends();
+    const r1 = await call('location_request_send', { op_id: opId(), target_id: Y.uid }, X);
     const short = await call(
       'share_start',
       { op_id: opId(), receiver_ids: [X.uid], duration: { kind: 'preset', preset: 'm15' }, time_zone: 'Europe/Istanbul' },
       Y,
     );
     const s0 = short.shares[0];
-    const r1 = await call('location_request_send', { op_id: opId(), target_id: Y.uid }, X);
     const up = await call('location_request_respond', { op_id: opId(), request_id: r1.request_id, accept: true }, Y);
     // Varsayılan 1 saat > 15 dk: aynı oturum, sürüm +1, yeni bitiş; ACL yeni sürümde.
     expect(up.session_id).toBe(short.session_id);
@@ -114,18 +132,34 @@ describe('location_request_respond', () => {
       expires_at: up.share.expires_at,
     });
     expect((await db().doc(`location_shares/${s0.share_id}`).get()).data()).toMatchObject({ in_response_to: r1.request_id });
+    expect(await reqDoc(r1.request_id)).toMatchObject({ status: 'approved', share_id: s0.share_id });
+  });
 
-    // İkinci istek 15 dk ile kabul: mevcut 1 saatlik paylaşım daha uzun → değişmez.
-    // Bekleme süresini (10 dk) atla: ilk isteğin oluşturulma zamanını geri al (yalnızca test düzeni).
-    await db().doc(`location_requests/${r1.request_id}`).update({ created_at: Date.now() - 11 * MINUTE });
-    const r2 = await call('location_request_send', { op_id: opId(), target_id: Y.uid }, X);
-    const keep = await call(
-      'location_request_respond',
-      { op_id: opId(), request_id: r2.request_id, accept: true, duration: { kind: 'preset', preset: 'm15' }, time_zone: 'Europe/Istanbul' },
-      Y,
-    );
-    expect(keep.share).toMatchObject({ version: s0.version + 1, expires_at: up.share.expires_at });
-    expect(await reqDoc(r2.request_id)).toMatchObject({ status: 'accepted', share_id: s0.share_id });
+  it('hedef zaten paylaşıyorsa yeni istek oluşmaz (already_sharing)', async () => {
+    const [X, Y] = await friends();
+    await call('share_start', { op_id: opId(), receiver_ids: [X.uid], duration: { kind: 'preset', preset: 'h1' }, time_zone: 'Europe/Istanbul' }, Y);
+    const r = await call('location_request_send', { op_id: opId(), target_id: Y.uid }, X);
+    expect(r).toMatchObject({ status: 'already_sharing', expires_at: null });
+    expect(await reqDoc(r.request_id)).toBeUndefined();
+  });
+
+  it('izin yokken onay yalnızca hedef → isteyen location_view yazar; ters yön yok', async () => {
+    const [X, Y] = await friends({ grants: 'none' });
+    const r = await call('location_request_send', { op_id: opId(), target_id: Y.uid }, X);
+    await call('location_request_respond', { op_id: opId(), request_id: r.request_id, accept: true, duration: { kind: 'weekly' }, time_zone: 'Europe/Istanbul' }, Y);
+    const out = (await db().doc(`permission_grants/${Y.uid}_${X.uid}`).get()).data();
+    expect(out?.scopes?.location_view?.via).toBe('location_request');
+    expect((await db().doc(`permission_grants/${X.uid}_${Y.uid}`).get()).data()?.scopes?.location_view).toBeUndefined();
+  });
+
+  it('görünmez hedef onaylayamaz (invisible_mode), reddedebilir', async () => {
+    const [X, Y] = await friends();
+    const r = await call('location_request_send', { op_id: opId(), target_id: Y.uid }, X);
+    await call('invisible_set', { op_id: opId(), invisible: true }, Y);
+    const e = await callError('location_request_respond', { op_id: opId(), request_id: r.request_id, accept: true }, Y);
+    expect(e.details).toMatchObject({ code: 'invisible_mode' });
+    const no = await call('location_request_respond', { op_id: opId(), request_id: r.request_id, accept: false }, Y);
+    expect(no.status).toBe('rejected');
   });
 
   it('share_start(in_response_to) isteği de kapatır', async () => {
@@ -136,7 +170,7 @@ describe('location_request_respond', () => {
       { op_id: opId(), receiver_ids: [X.uid], duration: { kind: 'preset', preset: 'h8' }, time_zone: 'Europe/Istanbul', in_response_to: r.request_id },
       Y,
     );
-    expect(await reqDoc(r.request_id)).toMatchObject({ status: 'accepted', share_id: shareId(Y.uid, X.uid) });
+    expect(await reqDoc(r.request_id)).toMatchObject({ status: 'approved', share_id: shareId(Y.uid, X.uid) });
   });
 
   it('15 dk sonra tarama isteği expired yapar; süresi dolmuş isteğe yanıt already_expired', async () => {

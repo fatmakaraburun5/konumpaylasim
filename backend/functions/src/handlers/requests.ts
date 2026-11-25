@@ -1,10 +1,14 @@
 /**
- * Konum istekleri: location_request_send / location_request_respond.
+ * "Konum İste": location_request_send / location_request_respond / location_request_cancel.
+ * Durum akışı ve kurallar: core `locationRequest.ts` (pending → approved | rejected | cancelled | expired).
  *
  *  - Çift başına tek kayıt: `location_requests/{requester}_{target}`; aynı anda bir bekleyen istek.
  *  - Aynı çift için iki istek arasında 10 dk, kullanıcı başına günde 30 istek. [Varsayım]
  *  - Yanıtlanmayan istek 15 dk sonra `expired` (süre dolumu taraması). [Varsayım]
- *  - Push yalnızca `{type: 'location_request', request_id}` taşır; koordinat yok.
+ *  - Push (hedefe) eylemli bildirimdir (Onayla / Reddet, `buildLocationRequestPush`); yanıt isteyene sade bir push
+ *    ile döner (`buildLocationRequestAnsweredPush`). Koordinat yok.
+ *  - Hedef isteyene zaten aktif paylaşım yapıyorsa istek oluşmaz (`already_sharing`, push yok).
+ *  - Geri çekme yalnızca isteyen içindir ve idempotenttir; bekleme süresini sıfırlamaz.
  *  - Kabul: hedef → isteyen paylaşımı (varsayılan 1 saat) ve istek AYNI transaction'da güncellenir.
  *    Hedef isteyene zaten EN AZ o kadar süren (ya da süresiz) aktif bir paylaşım yapıyorsa paylaşıma dokunulmaz;
  *    daha kısaysa aynı oturumda daha geç bitişe uzatılır (oturum ve başlangıç korunur). Kabul asla kısaltmaz.
@@ -15,10 +19,15 @@ import {
   CALLABLES,
   DAY,
   type EpochMs,
+  type LocationRequestCancelResponse,
+  type LocationRequestCancelSchema,
+  type LocationRequestRespondResponse,
   type LocationRequestRespondSchema,
+  type LocationRequestSendResponse,
   type LocationRequestSendSchema,
   type ResolvedDuration,
   canShareLocation,
+  effectiveRequestStatus,
   emptyGrantDoc,
   hasGrant,
   isInvisible,
@@ -34,8 +43,7 @@ import { type FriendshipDoc, type RequestDoc, type ShareDoc, purgeAt, refs, toVi
 import { fail } from '../errors';
 import { callerAccess, isFriend, pairInput, readCaller } from '../graph';
 import { readRateLimit, runOp, writeRateLimit } from '../ops';
-import { buildLocationRequestPush, sendPushToUser } from '../push';
-import type { LocationRequestRespondResponse, LocationRequestSendResponse } from '../schemas';
+import { buildLocationRequestAnsweredPush, buildLocationRequestPush, sendPushToUser } from '../push';
 import { assertDocId, assertUid, isServerUid, newSessionId, resolveForZone } from '../util';
 import { buildActiveShare, readStartCandidates } from './shares';
 
@@ -49,14 +57,22 @@ export async function locationRequestSend(
 
   return runOp(ctx, data.op_id, CALLABLES.locationRequestSend, data, async (tx) => {
     await readCaller(tx, ctx.uid);
-    const [fSnap, b1, b2, reqSnap] = await tx.getAll(
+    const [fSnap, b1, b2, reqSnap, shareSnap] = await tx.getAll(
       refs.friendship(ctx.uid, data.target_id),
       refs.block(ctx.uid, data.target_id),
       refs.block(data.target_id, ctx.uid),
       refs.request(ctx.uid, data.target_id),
+      refs.shareById(shareId(data.target_id, ctx.uid)),
     );
     const friendship = fSnap?.exists ? (fSnap.data() as FriendshipDoc) : null;
     if (!isFriend({ friendship, blocked: Boolean(b1?.exists || b2?.exists) })) throw fail('not_friends');
+
+    // Hedef bana zaten paylaşıyor: istek ve push yok.
+    const incoming = shareSnap?.exists ? (shareSnap.data() as ShareDoc) : null;
+    if (isLive(incoming, ctx.now)) {
+      const response: LocationRequestSendResponse = { request_id: id, status: 'already_sharing', expires_at: null, server_now: ctx.now };
+      return { response };
+    }
 
     const existing = reqSnap?.exists ? (reqSnap.data() as RequestDoc) : null;
     if (existing && existing.status === 'pending' && existing.expires_at > ctx.now) {
@@ -102,7 +118,7 @@ export async function locationRequestSend(
     return {
       response,
       after: async () => {
-        await sendPushToUser(data.target_id, buildLocationRequestPush(requesterName, id));
+        await sendPushToUser(data.target_id, buildLocationRequestPush(requesterName, id, ctx.uid));
       },
     };
   });
@@ -146,16 +162,28 @@ export async function locationRequestRespond(
     }
     if (req.expires_at <= ctx.now) throw fail('already_expired', { message: 'İsteğin süresi doldu' });
 
+    // Hedefin adı (isteyene giden yanıt push'u için) arkadaşlık belgesindeki profil kopyasından.
+    const targetName = async () => {
+      const f = (await refs.friendship(ctx.uid, requester).get()).data() as FriendshipDoc | undefined;
+      return f?.member_profiles?.[ctx.uid]?.display_name ?? '';
+    };
+
     if (!data.accept || !resolved) {
-      tx.update(reqRef, { status: 'declined', responded_at: ctx.now, updated_at: ctx.now, purge_at: purgeAt(ctx.now) });
+      // Ret: onaysız da çalışır (kişi kendi verisini korur). İsteyene sade metin: "… şu an konumunu paylaşamıyor".
+      tx.update(reqRef, { status: 'rejected', responded_at: ctx.now, updated_at: ctx.now, purge_at: purgeAt(ctx.now) });
       const response: LocationRequestRespondResponse = {
         request_id: req.request_id,
-        status: 'declined',
+        status: 'rejected',
         session_id: null,
         share: null,
         server_now: ctx.now,
       };
-      return { response };
+      return {
+        response,
+        after: async () => {
+          await sendPushToUser(requester, buildLocationRequestAnsweredPush(await targetName(), req.request_id, ctx.uid, 'rejected'));
+        },
+      };
     }
 
     const me = await readCaller(tx, ctx.uid);
@@ -208,7 +236,7 @@ export async function locationRequestRespond(
       tx.set(refs.shareById(share.share_id), share);
     }
     tx.update(reqRef, {
-      status: 'accepted',
+      status: 'approved',
       responded_at: ctx.now,
       share_id: share.share_id,
       updated_at: ctx.now,
@@ -216,11 +244,47 @@ export async function locationRequestRespond(
     });
     const response: LocationRequestRespondResponse = {
       request_id: req.request_id,
-      status: 'accepted',
+      status: 'approved',
       session_id: share.session_id,
       share: toView(share),
       server_now: ctx.now,
     };
-    return { response, shareEffects: changed ? [share] : [] };
+    return {
+      response,
+      shareEffects: changed ? [share] : [],
+      after: async () => {
+        await sendPushToUser(requester, buildLocationRequestAnsweredPush(await targetName(), req.request_id, ctx.uid, 'approved'));
+      },
+    };
+  });
+}
+
+/**
+ * İsteyen bekleyen isteğini geri çeker. Yalnızca isteyen; idempotent (yanıtlanmış / süresi dolmuş istek hata
+ * vermez, durumunu döndürür). Bekleme süresi (`created_at`) korunur: geri çek / yeniden gönder ile spam yapılamaz.
+ * Onaysız da çalışır (koruyucu işlem).
+ */
+export async function locationRequestCancel(
+  ctx: CallCtx,
+  data: z.output<typeof LocationRequestCancelSchema>,
+): Promise<LocationRequestCancelResponse> {
+  assertDocId(data.request_id, 'request_id');
+  const prefix = `${ctx.uid}_`;
+  if (!data.request_id.startsWith(prefix) || !isServerUid(data.request_id.slice(prefix.length))) {
+    throw fail('invalid_argument', { httpsCode: 'not-found', message: 'İstek bulunamadı' });
+  }
+  return runOp(ctx, data.op_id, CALLABLES.locationRequestCancel, data, async (tx) => {
+    const reqRef = refs.requestById(data.request_id);
+    const snap = await tx.get(reqRef);
+    const req = snap.exists ? (snap.data() as RequestDoc) : null;
+    if (!req || req.requester_id !== ctx.uid) throw fail('invalid_argument', { httpsCode: 'not-found', message: 'İstek bulunamadı' });
+    const status = effectiveRequestStatus(req, ctx.now);
+    if (status !== 'pending') {
+      const response: LocationRequestCancelResponse = { request_id: req.request_id, status, server_now: ctx.now };
+      return { response };
+    }
+    tx.update(reqRef, { status: 'cancelled', responded_at: ctx.now, updated_at: ctx.now, purge_at: purgeAt(ctx.now) });
+    const response: LocationRequestCancelResponse = { request_id: req.request_id, status: 'cancelled', server_now: ctx.now };
+    return { response };
   });
 }

@@ -11,6 +11,7 @@ import {
   LinkShareCreateRequestSchema,
   LinkShareExtendRequestSchema,
   LinkShareStopRequestSchema,
+  LocationRequestCancelSchema,
   LocationRequestRespondSchema,
   LocationRequestSendSchema,
   RouteComputeRequestSchema,
@@ -68,7 +69,7 @@ import {
 import { handleLinkExpiryTask, linkShareCreate, linkShareExtend, linkShareStop } from './handlers/links';
 import { batteryLowNotify } from './handlers/battery';
 import { geocodeReverseHandler, routeComputeHandler } from './handlers/maps';
-import { locationRequestRespond, locationRequestSend } from './handlers/requests';
+import { locationRequestCancel, locationRequestRespond, locationRequestSend } from './handlers/requests';
 import { shareExtend, shareRevoke, shareStart, shareStop } from './handlers/shares';
 import { handleExpiryTask, isAuditSlot, sweepExpired } from './handlers/sweeper';
 import { accountDelete, inviteCodeRegenerate, sweepInactive, userBootstrap } from './handlers/user';
@@ -125,6 +126,7 @@ export const share_revoke = callable('share_revoke', ShareRevokeRequestSchema, s
 // --- konum isteği ---
 export const location_request_send = callable('location_request_send', LocationRequestSendSchema, locationRequestSend);
 export const location_request_respond = callable('location_request_respond', LocationRequestRespondSchema, locationRequestRespond);
+export const location_request_cancel = callable('location_request_cancel', LocationRequestCancelSchema, locationRequestCancel);
 
 // --- Faz 2: bağlantı (QR) paylaşımı ---
 export const link_share_create = callable('link_share_create', LinkShareCreateRequestSchema, linkShareCreate);

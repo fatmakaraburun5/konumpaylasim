@@ -141,8 +141,8 @@ async function doConfigure(): Promise<void> {
     });
     await Notifications.setNotificationChannelAsync(CHANNELS.locationRequests, {
       name: 'Konum istekleri',
-      description: 'Arkadaşların konumunu istediğinde',
-      importance: Notifications.AndroidImportance.DEFAULT,
+      description: 'Bir arkadaşın konumunu paylaşmanı istediğinde (Onayla / Reddet)',
+      importance: Notifications.AndroidImportance.HIGH,
     });
     await Notifications.setNotificationChannelAsync(CHANNELS.shareStatus, {
       name: 'Paylaşım durumu',

@@ -352,6 +352,8 @@ export const CONSENT_EXEMPT_CALLABLES: readonly CallableName[] = [
   CALLABLES.invisibleSet,
   CALLABLES.friendshipRemove,
   CALLABLES.friendRequestCancel,
+  CALLABLES.locationRequestCancel,
+  CALLABLES.locationRequestRespond,
   CALLABLES.userBlock,
   CALLABLES.accountDelete,
   CALLABLES.widgetTokenRevoke,
@@ -372,6 +374,8 @@ export function consentExemptCall(name: string, data?: unknown): boolean {
   const d = (data ?? {}) as Record<string, unknown>;
   if (name === CALLABLES.permissionSet) return d.granted === false;
   if (name === CALLABLES.invisibleSet) return d.invisible === true;
+  // Konum isteğini reddetmek kendi verini korur; onaylamak (paylaşım başlatır) onay ister.
+  if (name === CALLABLES.locationRequestRespond) return d.accept === false;
   return true;
 }
 

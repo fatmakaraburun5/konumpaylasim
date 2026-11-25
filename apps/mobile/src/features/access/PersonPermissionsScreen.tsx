@@ -19,6 +19,7 @@ import { FriendAvatar } from '../profile/FriendAvatar';
 import { EmergencyContactsSheet, type EmergencyContactsSheetHandle } from '../sos/EmergencyContactsSheet';
 import { givenRows, LOCATION_OFF_CONFIRM, missingRequestable, RECEIVED_STATE_TEXT, receivedRows, requestFeedback } from './accessModel';
 import { RequestPermissionButton } from './RequestPermissionButton';
+import { RequestLocationButton } from '../locationRequest/RequestLocationButton';
 
 export function PersonPermissionsScreen({ friendId }: { friendId: UserId }) {
   const { colors, radius, spacing } = useTheme();
@@ -97,6 +98,9 @@ export function PersonPermissionsScreen({ friendId }: { friendId: UserId }) {
               {PAIR_ACCESS_TEXT[summary]}
             </Text>
           </View>
+        </View>
+        <View style={card}>
+          <RequestLocationButton to={friendId} name={name} />
         </View>
 
         <View style={card} testID="person-given">

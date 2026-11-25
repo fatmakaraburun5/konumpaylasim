@@ -278,3 +278,44 @@ export const UserBootstrapResponseSchema = z
     server_now: z.number().optional(),
   })
   .loose();
+
+// --- Konum İste ------------------------------------------------------------------------------
+
+export const LocationRequestSendResponseSchema = z.object({
+  request_id: z.string(),
+  status: z.enum(['pending', 'already_sharing']),
+  expires_at: z.number().nullable(),
+  server_now: z.number(),
+});
+
+export const LocationRequestRespondResponseSchema = z.object({
+  request_id: z.string(),
+  status: z.enum(['approved', 'rejected']),
+  session_id: z.string().nullable(),
+  share: OutgoingShareViewSchema.nullable(),
+  server_now: z.number(),
+});
+
+export const LocationRequestCancelResponseSchema = z.object({
+  request_id: z.string(),
+  status: z.enum(['pending', 'approved', 'rejected', 'expired', 'cancelled']),
+  server_now: z.number(),
+});
+
+/** Firestore `location_requests` belgesi (iki taraf okur). Eski durum adları (accepted/declined) yeniye çevrilir. */
+export const LocationRequestDocSchema = z
+  .object({
+    request_id: z.string(),
+    requester_id: z.string(),
+    target_id: z.string(),
+    status: z.preprocess(
+      (v) => (v === 'accepted' ? 'approved' : v === 'declined' ? 'rejected' : v),
+      z.enum(['pending', 'approved', 'rejected', 'expired', 'cancelled']),
+    ),
+    created_at: z.number(),
+    expires_at: z.number(),
+    responded_at: z.number().nullable().default(null),
+    share_id: z.string().nullable().default(null),
+  })
+  .loose();
+export type LocationRequestDoc = z.output<typeof LocationRequestDocSchema>;

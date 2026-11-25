@@ -163,10 +163,10 @@ describe('konum isteği kabulü', () => {
     await befriend(X, Y);
     const before = (await start(Y, [X], { kind: 'indefinite' })).shares[0] as OutgoingShareView;
     expect(before.expires_at).toBeNull();
+    // Paylaşım zaten canlı: istek oluşmaz (already_sharing), süresiz oturum olduğu gibi kalır.
     const req = await call('location_request_send', { op_id: opId(), target_id: Y.uid }, X);
-    const ok = await call('location_request_respond', { op_id: opId(), request_id: req.request_id, accept: true }, Y);
-    // İlk incelemede: share_mode 'timed', expires_at = şimdi + 1 saat; Y'nin "Süresiz" oturumu da yeni oturuma taşınıyordu.
-    expect(ok.share.expires_at).toBeNull();
+    expect(req).toMatchObject({ status: 'already_sharing', expires_at: null });
+    expect((await db().doc(`location_shares/${before.share_id}`).get()).data()).toMatchObject({ status: 'active', expires_at: null });
   });
 });
 

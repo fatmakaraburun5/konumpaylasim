@@ -129,6 +129,12 @@ import {
   type PermissionRequestSendResponse,
   type PermissionSetRequest,
   type PermissionSetResponse,
+  LocationRequestCancelSchema,
+  LocationRequestRespondSchema,
+  LocationRequestSendSchema,
+  type LocationRequestCancelResponse,
+  type LocationRequestRespondResponse,
+  type LocationRequestSendResponse,
 } from '@konum/core';
 import { z } from 'zod';
 import { KonumError, toKonumError } from '../../lib/errors';
@@ -147,6 +153,9 @@ import {
   ShareStopResponseSchema,
   UserBootstrapRequestSchema,
   UserBootstrapResponseSchema,
+  LocationRequestCancelResponseSchema,
+  LocationRequestRespondResponseSchema,
+  LocationRequestSendResponseSchema,
 } from '../../lib/schemas';
 import { defaultCallTransport, type CallTransport } from './callTransport';
 
@@ -519,3 +528,41 @@ export interface ConsentApi {
   consentWithdraw: typeof consentWithdraw;
 }
 export const consentApi: ConsentApi = { consentAccept, consentWithdraw };
+
+// --- Konum İste (core `locationRequest.ts`) ---------------------------------------------------------
+
+/**
+ *  - `location_request_send`: hedef zaten paylaşıyorsa `already_sharing` (istek / push yok); bekleyen varsa aynısı döner.
+ *  - `location_request_respond`: `accept: true` + süre → hedef → isteyen paylaşımı başlar; `accept: false` = ret
+ *    (onaysız da çalışır).
+ *  - `location_request_cancel`: yalnızca isteyen; idempotent.
+ */
+export function locationRequestSend(input: { target_id: UserId; op_id?: string }): Promise<LocationRequestSendResponse> {
+  return invoke(CALLABLES.locationRequestSend, LocationRequestSendSchema, { ...input, op_id: input.op_id ?? uuidV4() }, LocationRequestSendResponseSchema);
+}
+
+export function locationRequestRespond(input: {
+  request_id: string;
+  accept: boolean;
+  duration?: DurationChoice;
+  time_zone?: string;
+  op_id?: string;
+}): Promise<LocationRequestRespondResponse> {
+  return invoke(
+    CALLABLES.locationRequestRespond,
+    LocationRequestRespondSchema,
+    { ...input, op_id: input.op_id ?? uuidV4() },
+    LocationRequestRespondResponseSchema,
+  );
+}
+
+export function locationRequestCancel(input: { request_id: string; op_id?: string }): Promise<LocationRequestCancelResponse> {
+  return invoke(CALLABLES.locationRequestCancel, LocationRequestCancelSchema, { ...input, op_id: input.op_id ?? uuidV4() }, LocationRequestCancelResponseSchema);
+}
+
+export interface LocationRequestApi {
+  locationRequestSend: typeof locationRequestSend;
+  locationRequestRespond: typeof locationRequestRespond;
+  locationRequestCancel: typeof locationRequestCancel;
+}
+export const locationRequestApi: LocationRequestApi = { locationRequestSend, locationRequestRespond, locationRequestCancel };

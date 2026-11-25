@@ -110,20 +110,8 @@ export interface ShareRevokeResponse {
   server_now: EpochMs;
 }
 
-export interface LocationRequestSendResponse {
-  request_id: RequestId;
-  status: 'pending';
-  expires_at: EpochMs;
-  server_now: EpochMs;
-}
-
-export interface LocationRequestRespondResponse {
-  request_id: RequestId;
-  status: 'accepted' | 'declined';
-  session_id: SessionId | null;
-  share: OutgoingShareView | null;
-  server_now: EpochMs;
-}
+/** "Konum İste" yanıtları core `locationRequest.ts`'te (mobil ve demo aynı türleri kullanır). */
+export type { LocationRequestCancelResponse, LocationRequestRespondResponse, LocationRequestSendResponse } from '@konum/core';
 
 export interface AccountDeleteResponse {
   status: 'deleted';

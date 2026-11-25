@@ -39,6 +39,8 @@ import { QuickShareButton } from '../quickShare/QuickShareButton';
 import { EmergencyContactsSheet, type EmergencyContactsSheetHandle } from '../sos/EmergencyContactsSheet';
 import { pickerRowAccess } from '../access/accessModel';
 import { PermissionRequestsCard } from '../access/PermissionRequestsCard';
+import { IncomingLocationRequests } from '../locationRequest/IncomingLocationRequests';
+import { RequestLocationButton } from '../locationRequest/RequestLocationButton';
 import { useCanFn } from '../access/useAccess';
 
 export function FriendsScreen() {
@@ -104,6 +106,8 @@ export function FriendsScreen() {
       <ScrollView contentContainerStyle={{ padding: spacing.md, gap: spacing.md, paddingBottom: insets.bottom + spacing.xl }} keyboardShouldPersistTaps="handled">
         {/* --- Faz 8: İzin istekleri --- */}
         <PermissionRequestsCard />
+        {/* Konum İste: gelen istekler */}
+        <IncomingLocationRequests />
 
         {profile ? (
           <Pressable
@@ -335,6 +339,7 @@ export function FriendsScreen() {
                 </View>
                 <View style={{ paddingLeft: 36 + spacing.sm }}>
                   <PingButtons to={f.uid} name={f.displayName} compact />
+                  <RequestLocationButton to={f.uid} name={f.displayName} compact />
                 </View>
                 {rowError[f.friendshipId] ? (
                   <Text variant="label" color="danger" accessibilityLiveRegion="polite">

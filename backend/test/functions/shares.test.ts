@@ -331,9 +331,10 @@ describe('arkadaşlık kaldırma ve engelleme', () => {
   it('user_block paylaşımları bitirir (engellenene "blocked" sızdırmadan) ve bekleyen konum isteğini iptal eder', async () => {
     const [X, Y] = await Promise.all([newUser('X'), newUser('Y')]);
     await befriend(X, Y);
+    // İstek, X paylaşmaya başlamadan önce (paylaşırken istek oluşmaz: already_sharing).
+    const req = await call('location_request_send', { op_id: opId(), target_id: X.uid }, Y);
     const xy = (await start(X, [Y])).shares[0] as OutgoingShareView;
     const yx = (await start(Y, [X])).shares[0] as OutgoingShareView;
-    const req = await call('location_request_send', { op_id: opId(), target_id: X.uid }, Y);
     await call('user_block', { op_id: opId(), user_id: Y.uid }, X);
     // Engellenen de paylaşım belgesini okuyabilir: neden arkadaşlıktan çıkarılmayla aynıdır.
     expect(await shareDoc(X, Y)).toMatchObject({ status: 'ended', end_reason: 'friendship_removed' });

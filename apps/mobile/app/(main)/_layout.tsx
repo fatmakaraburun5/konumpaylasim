@@ -2,6 +2,7 @@ import { Redirect, Stack } from 'expo-router';
 import { useEffect } from 'react';
 import { ConsentGate } from '../../src/features/consent/ConsentScreen';
 import { InvisibleRestoreSheet } from '../../src/features/invisible/InvisibleRestoreSheet';
+import { ApproveLocationRequestSheet } from '../../src/features/locationRequest/ApproveLocationRequestSheet';
 import { GenderGate } from '../../src/features/profile/GenderGate';
 import { QuickShareSheet } from '../../src/features/quickShare/QuickShareSheet';
 import { startGateServices, startSessionServices } from '../../src/services/sharingCoordinator';
@@ -50,6 +51,8 @@ export default function MainLayout() {
       </Stack>
       <QuickShareSheet />
       <InvisibleRestoreSheet />
+      {/* Konum İste: Onayla → süre seçici (bildirimden de açılır). */}
+      <ApproveLocationRequestSheet />
     </>
   );
 }

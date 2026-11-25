@@ -37,3 +37,5 @@ export * from './widget';
 export * from './access';
 export * from './invisible';
 export * from './consent';
+// Konum İste: süre seçerek onaylanan konum isteği
+export * from './locationRequest';

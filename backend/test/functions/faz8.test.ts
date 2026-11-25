@@ -153,7 +153,7 @@ describe('izin isteği yönü', () => {
       { op_id: opId(), request_id: requestId(A.uid, B.uid), accept: true, duration: { kind: 'preset', preset: 'h1' }, time_zone: TZ },
       B,
     );
-    expect(r.status).toBe('accepted');
+    expect(r.status).toBe('approved');
     expect((await grantOf(B, A))?.scopes.location_view?.via).toBe('location_request');
     expect(await grantOf(A, B)).toBeNull();
     expect(await shareDoc(B, A)).toMatchObject({ status: 'active', in_response_to: requestId(A.uid, B.uid) });

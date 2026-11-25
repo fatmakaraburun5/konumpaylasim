@@ -110,6 +110,7 @@ import { resetF4Stores, startF4Services } from './f4Services';
 import { onF5Connected, resetF5State, startF5Services } from './f5Services';
 import { resetF6State, startF6Services } from './f6Services';
 import { installF8Guards, onF8Connected, resetF8State, startF8Services } from './f8Services';
+import { resetLocationRequestState, startLocationRequestServices } from './locationRequestServices';
 import { grantsStore, isLocationRevoked } from '../state/grantsStore';
 import { isPublishHeld, onPublishHoldChange } from '../state/publishHold';
 import { linkTokenVault } from './security/linkTokenVault';
@@ -401,6 +402,8 @@ export function startSessionServices(uid: UserId): () => void {
   unsubs.push(startF6Services(uid));
   // Faz 8: yönlü izinler, izin push'ları, bekleyen görünmez olma isteği.
   unsubs.push(startF8Services(uid));
+  // Konum İste: gelen / giden istekler, Onayla / Reddet bildirim eylemleri.
+  unsubs.push(startLocationRequestServices(uid));
 
   unsubs.push(
     listenConnected((c) => {
@@ -753,4 +756,5 @@ onSignedOut(async () => {
   await resetF6State();
   // Faz 8: kesme anahtarı (görünmez niyeti / onay kapısı) ve izin / görünmez / onay bellek durumu.
   await resetF8State();
+  resetLocationRequestState();
 });

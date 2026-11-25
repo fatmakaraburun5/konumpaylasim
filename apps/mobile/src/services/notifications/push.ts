@@ -38,6 +38,7 @@ import { f4ForegroundContent, routeF4Open } from './f4Push';
 import { f5ForegroundContent, isF5PushType, routeF5Open, routeF5Received } from './f5Push';
 import { f6ForegroundContent, isF6PushType, routeF6Received } from './f6Push';
 import { f8ForegroundContent, isF8PushType, routeF8Open, routeF8Received } from './f8Push';
+import { isLocationRequestPushType, locationRequestLocalContent } from './locationRequestPush';
 import { friendsStore, selectFriends } from '../../state/friendsStore';
 import { handleWidgetBackgroundPush } from '../widgets/widgetBackground';
 
@@ -123,6 +124,28 @@ function friendName(uid: UserId): string | null {
   return selectFriends(friendsStore.getState()).find((f) => f.uid === uid)?.displayName || null;
 }
 
+/**
+ * Konum İste: yerel bildirim (Onayla / Reddet kategorisiyle). Android'de FCM yalnızca veri taşır (eylemler yerel
+ * bildirimde çalışır) → önde ve arka planda buradan gösterilir; iOS'ta APNs alert'i sistem gösterir, önde buradan.
+ */
+async function showLocationRequestNotification(m: PushLike): Promise<void> {
+  const c = locationRequestLocalContent(m, friendName);
+  if (!c) return;
+  await Notifications.scheduleNotificationAsync({
+    // Aynı istek için tek bildirim (tekrar gelirse yerini alır).
+    identifier: `location-request-${c.data.request_id ?? ''}-${c.data.type}`,
+    content: {
+      title: c.title,
+      body: c.body,
+      data: c.data,
+      sound: c.categoryIdentifier ? 'default' : false,
+      interruptionLevel: 'active',
+      ...(c.categoryIdentifier ? { categoryIdentifier: c.categoryIdentifier } : {}),
+    },
+    trigger: Platform.OS === 'android' ? { channelId: c.channelId } : null,
+  });
+}
+
 async function handleForegroundMessage(msg: RemoteMessage): Promise<void> {
   const m = msg as unknown as PushLike;
   const type = pushType(m);
@@ -133,6 +156,10 @@ async function handleForegroundMessage(msg: RemoteMessage): Promise<void> {
   const content = batteryLowContent(m);
   if (content) {
     await Notifications.scheduleNotificationAsync({ content: { title: content.title, body: content.body, data: { type: 'battery_low' } }, trigger: null });
+    return;
+  }
+  if (isLocationRequestPushType(type)) {
+    await showLocationRequestNotification(m);
     return;
   }
   // Faz 4: SOS ön planda da sesli gösterilir (iOS'ta setNotificationHandler sos için banner + ses açar).
@@ -219,6 +246,8 @@ export function registerBackgroundMessageHandler(): void {
         return;
       }
       if (isF6PushType(type)) await handleWidgetBackgroundPush(p.data).catch(() => undefined);
+      // Konum İste (Android veri mesajı): eylemli bildirimi uygulama gösterir. iOS'ta alert'i sistem göstermiştir.
+      if (isLocationRequestPushType(type) && Platform.OS === 'android' && !p.notification) await showLocationRequestNotification(p).catch(() => undefined);
     });
   } catch {
     // Firebase yapılandırılmamışsa (ör. test) sessizce geç.
