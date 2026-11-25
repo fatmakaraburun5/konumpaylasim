@@ -34,8 +34,8 @@ MapHome (app/(main)/index.tsx) — seçim durumu, ulaşım modu, sayfalar
 ├─ TopBar · IncomingStrip (bana paylaşanlar; dokununca seçer) · SyncBanner · RecenterButton
 ├─ alt alan
 │   ├─ seçim VARSA: ExpiryBanner(lar) → EtaCard
-│   └─ seçim YOKSA: BackgroundPermissionHint → ExpiryBanner(lar) → ActiveShareCard × oturum
-│                    → ActiveLinkCard × bağlantı | ShareButton
+│   └─ seçim YOKSA: BackgroundPermissionHint → ShareDeck (oturumlar + bağlantılar tek kitapçıkta;
+│                    bkz. docs/SHARE_DECK.md) | ShareButton
 ├─ ShareSheet — "Arkadaşlar | Bağlantı (QR)" (AudienceSwitch) → DurationPicker → PermissionFlow
 └─ LinkQrSheet — QR, bağlantı, Kopyala / Paylaş, kalan süre, +30 dk / +1 saat, "Paylaşımı durdur"
 

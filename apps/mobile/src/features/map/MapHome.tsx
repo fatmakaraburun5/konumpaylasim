@@ -447,12 +447,29 @@ export function MapHome() {
       linkExtend: (id, m) => void linkStore.getState().extend(id, m),
       linkShowQr: showQr,
       linkStop: stopLink,
+      linkRetryStop: (id) => void linkStore.getState().stop(id),
       linkDismiss: (id) => linkStore.getState().dismiss(id),
       // Onay kitapçıkta iki adımda alındı; burada yeniden sorulmaz.
+      // Onaylanan durdurmalarda kart da kapatılır (tek tek "Kapat"a basmak gerekmesin).
       stopAll: (items) => {
         for (const it of items) {
-          if (it.kind === 'share') void sharingStore.getState().stop(it.session.session_id);
-          else void linkStore.getState().stop(it.link.link_id);
+          if (it.kind === 'share') {
+            const id = it.session.session_id;
+            void sharingStore
+              .getState()
+              .stop(id)
+              .then((ok) => {
+                if (ok) sharingStore.getState().dismiss(id);
+              });
+          } else {
+            const id = it.link.link_id;
+            void linkStore
+              .getState()
+              .stop(id)
+              .then((ok) => {
+                if (ok) linkStore.getState().dismiss(id);
+              });
+          }
         }
       },
       newShare: () => sheet.current?.present(),

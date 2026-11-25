@@ -3,7 +3,7 @@
  * kompakt kart destesinde durur. Eskiden her paylaşım için ayrı büyük kart alt alta diziliyordu; 4 kişide
  * haritanın yalnızca %14'ü görünüyordu.
  *
- *   ┌ arka katman 2 ─────────────────────┐  ← kitapçık sırtı (her biri 8 px; dokununca sonraki kart)
+ *   ┌ arka katman 2 ─────────────────────┐  ← kitapçık sırtı (her biri 6 pt; dokununca sonraki kart)
  *   ├ arka katman 1 ─────────────────────┤
  *   │ ▬▬ (tutamaç: dokun / aşağı sürükle → küçült)                │
  *   │ (◯AY) Ayşe Yılmaz                     [1/4 ⌃] ← tüm liste   │
@@ -64,17 +64,23 @@ import {
 export type DeckMode = 'deck' | 'list' | 'collapsed';
 
 /** Ana ekran yeniden kurulsa (ör. rota kartından dönüş) kullanıcının seçtiği görünüm korunur. */
-let rememberedMode: DeckMode = 'deck';
+let rememberedMode: DeckMode | null = null;
+/**
+ * Kısa ekran (ör. iPhone SE 667 pt, 360×640 Android): üst çubuk ve "bana paylaşanlar" şeridi zaten ekranın ~%30'unu
+ * kaplıyor; açık deste haritayı %55'e indirir. Bu ekranlarda kitapçık ince çubuk olarak başlar.
+ */
+const SHORT_SCREEN_H = 720;
 
 /** Kitapçık sırtı: arka katman başına görünen şerit (pt) ve yan içe çekilme. */
-export const DECK_PEEK = 7;
+export const DECK_PEEK = 6;
 const DECK_INSET = 10;
 /** Tam genişlikte (masaüstü web) kart en çok bu kadar geniş. */
 const DECK_MAX_W = 560;
 /** Liste görünümü ekranın en çok bu oranını kaplar (başlık + satırlar + alt düğmeler). */
-const LIST_MAX_SHARE = 0.3;
+const LIST_MAX_SHARE = 0.28;
 const LIST_ROW_H = 56;
-const LIST_CHROME_H = 100;
+/** Satırlar dışındaki sabit yükseklik: 8+8 dikey dolgu + 44 başlık + 8+44 alt satır (ölçüldü). */
+const LIST_CHROME_H = 114;
 
 const ND = Platform.OS !== 'web';
 
@@ -86,8 +92,10 @@ export interface ShareDeckActions {
   linkShowQr: (linkId: LinkId) => void;
   /** Tek bağlantıyı durdur (ana ekran onay sorar). */
   linkStop: (linkId: LinkId) => void;
+  /** Başarısız durdurmayı yeniden dene (onay yeniden sorulmaz). */
+  linkRetryStop: (linkId: LinkId) => void;
   linkDismiss: (linkId: LinkId) => void;
-  /** "Tümünü durdur" (onay kitapçıkta iki adımda alındı). */
+  /** "Tümünü durdur" (onay kitapçıkta iki adımda alındı). Durdurulan kartlar kapatılır. */
   stopAll: (items: DeckItem[]) => void;
   newShare: () => void;
 }
@@ -106,7 +114,10 @@ export interface ShareDeckProps {
 export function ShareDeck({ sessions, links, names, shareNow, linkNow, trackingError, actions, style }: ShareDeckProps) {
   const { height: winH } = useWindowDimensions();
   const items = useMemo(() => buildDeckItems(sessions, links), [sessions, links]);
-  const [mode, setModeState] = useState<DeckMode>(rememberedMode);
+  const short = winH < SHORT_SCREEN_H;
+  const [mode, setModeState] = useState<DeckMode>(() => rememberedMode ?? (short ? 'collapsed' : 'deck'));
+  const shortRef = useRef(short);
+  shortRef.current = short;
   const setMode = useCallback((m: DeckMode) => {
     rememberedMode = m;
     setModeState(m);
@@ -137,7 +148,8 @@ export function ShareDeck({ sessions, links, names, shareNow, linkNow, trackingE
     const bring = items.find((it) => !prev.has(it.key) || (it.expiring && prev.get(it.key) === false));
     if (bring) {
       setFocusKey(bring.key);
-      if (rememberedMode !== 'deck') setMode('deck');
+      // Kısa ekranda yalnızca "bitmek üzere" açar; yeni paylaşım çubukta görünür ("Ayşe ile paylaşılıyor").
+      if (rememberedMode !== 'deck' && (!shortRef.current || bring.expiring)) setMode('deck');
     }
   }, [items, setMode]);
 
@@ -145,7 +157,8 @@ export function ShareDeck({ sessions, links, names, shareNow, linkNow, trackingE
 
   if (n === 0) return null;
 
-  const outer: StyleProp<ViewStyle> = [styles.outer, style];
+  // Web: fareyle sürüklerken sayfa metni seçilmesin (seçim, sonraki sürüklemeleri tarayıcının metin sürüklemesine çeviriyordu).
+  const outer: StyleProp<ViewStyle> = [styles.outer, Platform.OS === 'web' ? ({ userSelect: 'none' } as ViewStyle) : null, style];
   const anim = {
     opacity: appear,
     transform: [{ translateY: appear.interpolate({ inputRange: [0, 1], outputRange: [14, 0] }) }],
@@ -160,7 +173,8 @@ export function ShareDeck({ sessions, links, names, shareNow, linkNow, trackingE
   }
 
   if (mode === 'list') {
-    const rowsMax = Math.max(2 * LIST_ROW_H, Math.round(winH * LIST_MAX_SHARE) - LIST_CHROME_H);
+    // Yarım görünen satır kaydırılabildiğini belli eder.
+    const rowsMax = Math.max(Math.round(1.5 * LIST_ROW_H), Math.round(winH * LIST_MAX_SHARE) - LIST_CHROME_H);
     return (
       <Animated.View style={[outer, anim]} pointerEvents="box-none">
         <DeckList
@@ -224,6 +238,27 @@ function Deck({ items, idx, names, nowOf, trackingError, actions, onFocus, onCol
   const dragX = useRef(new Animated.Value(0)).current;
   const dragY = useRef(new Animated.Value(0)).current;
   const enter = useRef(new Animated.Value(1)).current;
+  const running = items.filter((it) => it.running).length;
+  /** Öndeki dışında süresi dolmak üzere kart var mı (sayfa göstergesi ve sırt turuncu olur). */
+  const behindExpiring = items.some((it, i) => i !== idx && it.expiring);
+
+  // Web: fareyle kaydırma bir düğmenin üstünde başlarsa, bırakınca tarayıcının "click"i o düğmeye gider
+  // (ör. kaydırılan kartın "Durdur"u). Sürükleme olduysa o tıklama yutulur. Native'de responder devri bunu önler.
+  const dragged = useRef(false);
+  const frontRef = useRef<React.ComponentRef<typeof View>>(null);
+  useEffect(() => {
+    if (Platform.OS !== 'web') return;
+    const node = frontRef.current as unknown as HTMLElement | null;
+    if (!node || typeof node.addEventListener !== 'function') return;
+    const swallow = (e: Event) => {
+      if (dragged.current) {
+        e.stopPropagation();
+        e.preventDefault();
+      }
+    };
+    node.addEventListener('click', swallow, true);
+    return () => node.removeEventListener('click', swallow, true);
+  }, []);
 
   // PanResponder bir kez kurulur; güncel değerleri ref'ten okur.
   const live = useRef({ items, idx, width, onFocus, onCollapse, onOpenList });
@@ -259,6 +294,7 @@ function Deck({ items, idx, names, nowOf, trackingError, actions, onFocus, onCol
       },
       onPanResponderGrant: () => {
         axis = null;
+        dragged.current = true;
       },
       onPanResponderMove: (_e, g) => {
         if (!axis) axis = Math.abs(g.dx) > Math.abs(g.dy) ? 'x' : 'y';
@@ -267,6 +303,9 @@ function Deck({ items, idx, names, nowOf, trackingError, actions, onFocus, onCol
         else dragY.setValue(g.dy > 0 ? g.dy : g.dy * 0.25);
       },
       onPanResponderRelease: (_e, g) => {
+        setTimeout(() => {
+          dragged.current = false;
+        }, 0);
         const many = live.current.items.length > 1;
         if (axis === 'x' && many && (Math.abs(g.dx) > 64 || Math.abs(g.vx) > 0.45)) {
           const dir = g.dx < 0 ? 1 : -1; // sola kaydır → sonraki
@@ -289,22 +328,42 @@ function Deck({ items, idx, names, nowOf, trackingError, actions, onFocus, onCol
         }
         settle();
       },
-      onPanResponderTerminate: settle,
+      onPanResponderTerminate: () => {
+        setTimeout(() => {
+          dragged.current = false;
+        }, 0);
+        settle();
+      },
       onPanResponderTerminationRequest: () => false,
     });
   }, [dragX, dragY, go]);
 
-  const frontStyle = {
-    transform: [
-      { translateX: dragX },
-      { translateY: Animated.add(dragY, enter.interpolate({ inputRange: [0, 1], outputRange: [-DECK_PEEK, 0] })) },
-      { rotate: dragX.interpolate({ inputRange: [-400, 0, 400], outputRange: ['-5deg', '0deg', '5deg'] }) },
-      { scale: enter.interpolate({ inputRange: [0, 1], outputRange: [0.96, 1] }) },
-    ],
-    opacity: enter.interpolate({ inputRange: [0, 1], outputRange: [0.5, 1] }),
-  };
-  // Öndeki kart kaydırıldıkça arkadaki katman bir adım öne yaklaşır.
-  const pull = dragX.interpolate({ inputRange: [-160, 0, 160], outputRange: [1, 0, 1], extrapolate: 'clamp' });
+  // Animated düğümleri bir kez kurulur (her saniyelik yeniden çizimde native düğüm kurulup atılmasın).
+  const frontStyle = useMemo(
+    () => ({
+      transform: [
+        { translateX: dragX },
+        { translateY: Animated.add(dragY, enter.interpolate({ inputRange: [0, 1], outputRange: [-DECK_PEEK, 0] })) },
+        { rotate: dragX.interpolate({ inputRange: [-400, 0, 400], outputRange: ['-5deg', '0deg', '5deg'] }) },
+        { scale: enter.interpolate({ inputRange: [0, 1], outputRange: [0.96, 1] }) },
+      ],
+      opacity: enter.interpolate({ inputRange: [0, 1], outputRange: [0.5, 1] }),
+    }),
+    [dragX, dragY, enter],
+  );
+  // Öndeki kart kaydırıldıkça birinci arka katman bir adım öne yaklaşır (iner ve önündeki kartın genişliğine açılır).
+  const pullStyle = useMemo(() => {
+    const pull = dragX.interpolate({ inputRange: [-160, 0, 160], outputRange: [1, 0, 1], extrapolate: 'clamp' });
+    const w = Math.max(width - 2 * DECK_INSET, 1);
+    return {
+      transform: [
+        { translateY: pull.interpolate({ inputRange: [0, 1], outputRange: [0, DECK_PEEK] }) },
+        { scaleX: pull.interpolate({ inputRange: [0, 1], outputRange: [1, (w + 2 * DECK_INSET) / w] }) },
+      ],
+    };
+  }, [dragX, width]);
+  /** Sırtın dokunma alanı en az 22 pt (görünen şerit 7 / 14 pt; fazlası haritanın üstüne taşar). */
+  const spineH = Math.max(22, layers * DECK_PEEK);
 
   return (
     <View
@@ -315,7 +374,7 @@ function Deck({ items, idx, names, nowOf, trackingError, actions, onFocus, onCol
       {/* Kitapçık sırtı: arka katmanlar (en arkadaki önce çizilir). */}
       {frontH > 0
         ? Array.from({ length: layers }, (_, k) => layers - k).map((i) => {
-            const shift = i === 1 ? pull : null;
+            const warn = items[cycle(idx, i, n)]?.expiring;
             return (
               <Animated.View
                 key={`layer${i}`}
@@ -329,17 +388,11 @@ function Deck({ items, idx, names, nowOf, trackingError, actions, onFocus, onCol
                     right: i * DECK_INSET,
                     borderRadius: radius.xl,
                     backgroundColor: colors.surface,
-                    borderColor: colors.border,
+                    borderColor: warn ? colors.warning : colors.border,
+                    borderWidth: warn ? 1.5 : StyleSheet.hairlineWidth,
                     opacity: i === 1 ? 0.96 : 0.88,
                   },
-                  shift
-                    ? {
-                        transform: [
-                          { translateY: shift.interpolate({ inputRange: [0, 1], outputRange: [0, DECK_PEEK] }) },
-                          { scaleX: shift.interpolate({ inputRange: [0, 1], outputRange: [1, 1 + (2 * DECK_INSET) / Math.max(width, 1)] }) },
-                        ],
-                      }
-                    : null,
+                  i === 1 ? pullStyle : null,
                 ]}
               />
             );
@@ -350,15 +403,15 @@ function Deck({ items, idx, names, nowOf, trackingError, actions, onFocus, onCol
           accessibilityRole="button"
           accessibilityLabel="Sonraki paylaşım kartı"
           onPress={() => go(1)}
-          hitSlop={{ top: 14, bottom: 0, left: 0, right: 0 }}
-          style={[styles.spine, { height: layers * DECK_PEEK, left: DECK_INSET, right: DECK_INSET }]}
+          style={[styles.spine, { top: layers * DECK_PEEK - spineH, height: spineH, left: DECK_INSET, right: DECK_INSET }]}
         />
       ) : null}
 
-      <Animated.View {...pan.panHandlers} style={frontStyle} onLayout={(e: LayoutChangeEvent) => setFrontH(e.nativeEvent.layout.height)}>
+      <Animated.View ref={frontRef} {...pan.panHandlers} style={frontStyle} onLayout={(e: LayoutChangeEvent) => setFrontH(e.nativeEvent.layout.height)}>
         <DeckCard
+          key={front.key}
           item={front}
-          position={n > 1 ? { index: idx, count: n } : null}
+          position={n > 1 ? { index: idx, count: n, running, behindExpiring } : null}
           names={names}
           now={nowOf(front)}
           trackingError={trackingError}
@@ -379,7 +432,7 @@ const toneColor = (tone: DeckTone, c: ReturnType<typeof useTheme>['colors']) =>
 
 interface DeckCardProps {
   item: DeckItem;
-  position: { index: number; count: number } | null;
+  position: { index: number; count: number; running: number; behindExpiring: boolean } | null;
   names: Record<UserId, string>;
   now: EpochMs;
   trackingError: string | null;
@@ -408,7 +461,7 @@ function DeckCard({ item, position, names, now, trackingError, actions, onCollap
         accessibilityLabel="Paylaşım kartlarını küçült"
         accessibilityHint="Kartlar ince bir durum çubuğuna iner; harita tamamen açılır"
         onPress={onCollapse}
-        hitSlop={{ top: 6, bottom: 6, left: 24, right: 24 }}
+        hitSlop={{ top: 0, bottom: 16, left: 16, right: 16 }}
         style={styles.handleHit}
       >
         <View style={[styles.handle, { backgroundColor: colors.border }]} />
@@ -433,16 +486,22 @@ function DeckCard({ item, position, names, now, trackingError, actions, onCollap
         {position ? (
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel={`Tüm aktif paylaşımlar (${position.count})`}
-            accessibilityHint={`${position.index + 1}. kart gösteriliyor; listeyi açar`}
+            accessibilityLabel={`${position.index + 1}/${position.count}, tüm aktif paylaşımlar (${position.running})`}
+            accessibilityHint={position.behindExpiring ? 'Listeyi açar. Süresi dolmak üzere bir paylaşım var' : 'Listeyi açar'}
             onPress={onOpenList}
-            hitSlop={8}
-            style={({ pressed }) => [styles.pager, { backgroundColor: pressed ? colors.border : colors.surfaceAlt, borderRadius: radius.pill }]}
+            style={({ pressed }) => [
+              styles.pager,
+              {
+                backgroundColor: position.behindExpiring ? colors.warningSoft : pressed ? colors.border : colors.surfaceAlt,
+                borderColor: position.behindExpiring ? colors.warning : 'transparent',
+                borderRadius: radius.pill,
+              },
+            ]}
           >
-            <Text variant="caption" color="textSecondary">
+            <Text variant="caption" style={{ color: position.behindExpiring ? colors.warning : colors.textSecondary }}>
               {`${position.index + 1}/${position.count}`}
             </Text>
-            <Icon name="chevronUp" size={14} color={colors.textSecondary} />
+            <Icon name="chevronUp" size={14} color={position.behindExpiring ? colors.warning : colors.textSecondary} />
           </Pressable>
         ) : null}
       </View>
@@ -487,8 +546,8 @@ function Lead({ item, names, size }: { item: DeckItem; names: Record<UserId, str
 
 function CardActions({ item, actions }: { item: DeckItem; actions: ShareDeckActions }) {
   const { spacing } = useTheme();
+  // Kart değişince sıfırlanır: DeckCard `key={item.key}` ile yeniden kurulur.
   const [extendOpen, setExtendOpen] = useState(false);
-  useEffect(() => setExtendOpen(false), [item.key]);
   const row = [styles.row, { gap: spacing.xs }];
 
   if (item.kind === 'link') {
@@ -503,7 +562,7 @@ function CardActions({ item, actions }: { item: DeckItem; actions: ShareDeckActi
         style={styles.flex}
         disabled={stopping}
         loading={stopping}
-        onPress={() => actions.linkStop(l.link_id)}
+        onPress={() => (l.phase === 'stopping' ? actions.linkRetryStop(l.link_id) : actions.linkStop(l.link_id))}
       />
     );
     if (item.expiring) {
@@ -583,48 +642,54 @@ function CollapsedBar({ items, names, now, onOpen }: { items: DeckItem[]; names:
   const { colors, spacing, radius } = useTheme();
   const sum = collapsedSummary(items, names, now);
   const tc = toneColor(sum.tone, colors);
+  const openRef = useRef(onOpen);
+  openRef.current = onOpen;
+  // Sürükleme sarmalayıcıda: Pressable kendi responder işleyicilerini verilenlerin ÜSTÜNE yazdığı için
+  // pan işleyicileri doğrudan Pressable'a verilemez.
   const pan = useMemo(
     () =>
       PanResponder.create({
         onMoveShouldSetPanResponderCapture: (_e, g) => g.dy < -10 && Math.abs(g.dy) > Math.abs(g.dx),
+        onPanResponderTerminationRequest: () => false,
         onPanResponderRelease: (_e, g) => {
-          if (g.dy < -20 || g.vy < -0.4) onOpen();
+          if (g.dy < -20 || g.vy < -0.4) openRef.current();
         },
       }),
-    [onOpen],
+    [],
   );
   const shown = items.slice(0, 3);
   return (
-    <Pressable
-      {...pan.panHandlers}
-      accessibilityRole="button"
-      accessibilityLabel={`${sum.text}. Paylaşım kartlarını aç`}
-      onPress={onOpen}
-      style={({ pressed }) => [
-        cardShadow,
-        styles.bar,
-        {
-          backgroundColor: pressed ? colors.surfaceAlt : colors.surface,
-          borderColor: sum.tone === 'warning' ? colors.warning : colors.border,
-          borderRadius: radius.pill,
-          paddingHorizontal: spacing.sm,
-          gap: spacing.xs,
-        },
-      ]}
-    >
-      <View style={[styles.dot, { backgroundColor: tc }]} />
-      <Text variant="label" numberOfLines={1} style={[styles.flex, { color: sum.tone === 'warning' ? colors.warning : colors.text }]}>
-        {sum.text}
-      </Text>
-      <View style={styles.row} pointerEvents="none">
-        {shown.map((it, i) => (
-          <View key={it.key} style={{ marginLeft: i === 0 ? 0 : -8, zIndex: 10 - i, borderRadius: 999, borderWidth: 2, borderColor: colors.surface, backgroundColor: colors.surface }}>
-            <MiniLead item={it} names={names} />
-          </View>
-        ))}
-      </View>
-      <Icon name="chevronUp" size={18} color={colors.textSecondary} />
-    </Pressable>
+    <View {...pan.panHandlers}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`${sum.text}. Paylaşım kartlarını aç`}
+        onPress={onOpen}
+        style={({ pressed }) => [
+          cardShadow,
+          styles.bar,
+          {
+            backgroundColor: pressed ? colors.surfaceAlt : colors.surface,
+            borderColor: sum.tone === 'warning' ? colors.warning : colors.border,
+            borderRadius: radius.pill,
+            paddingHorizontal: spacing.sm,
+            gap: spacing.xs,
+          },
+        ]}
+      >
+        <View style={[styles.dot, { backgroundColor: tc }]} />
+        <Text variant="label" numberOfLines={1} style={[styles.flex, { color: sum.tone === 'warning' ? colors.warning : colors.text }]}>
+          {sum.text}
+        </Text>
+        <View style={styles.row} pointerEvents="none">
+          {shown.map((it, i) => (
+            <View key={it.key} style={{ marginLeft: i === 0 ? 0 : -8, zIndex: 10 - i }}>
+              <MiniLead item={it} names={names} />
+            </View>
+          ))}
+        </View>
+        <Icon name="chevronUp" size={18} color={colors.textSecondary} />
+      </Pressable>
+    </View>
   );
 }
 
@@ -632,13 +697,14 @@ function MiniLead({ item, names }: { item: DeckItem; names: Record<UserId, strin
   const { colors } = useTheme();
   if (item.kind === 'link') {
     return (
-      <View style={[styles.qr, { width: 24, height: 24, borderRadius: 12, backgroundColor: colors.surfaceAlt }]}>
-        <Icon name="qr" size={13} color={colors.text} />
+      <View style={[styles.qr, { width: 30, height: 30, borderRadius: 15, backgroundColor: colors.surfaceAlt, borderWidth: 2, borderColor: colors.surface }]}>
+        <Icon name="qr" size={14} color={colors.text} />
       </View>
     );
   }
   const id = receiversOf(item.session)[0];
-  return id ? <FriendAvatar uid={id} fallbackName={names[id] ?? 'Arkadaş'} size={24} ring={false} /> : null;
+  // Çerçeveli (cinsiyet rengi + yüzey rengi boşluk): koyu temada baş harfli avatar da çubuktan ayrışır.
+  return id ? <FriendAvatar uid={id} fallbackName={names[id] ?? 'Arkadaş'} size={20} /> : null;
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -659,8 +725,11 @@ interface DeckListProps {
 function DeckList({ items, names, nowOf, trackingError, rowsMaxHeight, focusedKey, actions, onPick, onClose }: DeckListProps) {
   const { colors, spacing, radius } = useTheme();
   const [confirm, setConfirm] = useState(false);
+  /** İlk dokunuştan hemen sonraki ikinci dokunuş (çift dokunma) onay sayılmaz. */
+  const armedAt = useRef(0);
   const toStop = stoppable(items);
   const running = items.filter((it) => it.running).length;
+  const allFinished = items.every((it) => it.finished);
   // Onay 6 sn içinde verilmezse kendiliğinden kapanır (yanlışlıkla ikinci dokunuş olmasın).
   useEffect(() => {
     if (!confirm) return;
@@ -675,7 +744,7 @@ function DeckList({ items, names, nowOf, trackingError, rowsMaxHeight, focusedKe
     <View style={[cardShadow, styles.card, { backgroundColor: colors.surface, borderRadius: radius.xl, borderColor: colors.border, paddingVertical: spacing.xs }]}>
       <View style={[styles.row, { paddingLeft: spacing.md, paddingRight: spacing.xxs, minHeight: MIN_TOUCH }]}>
         <Text variant="heading" accessibilityRole="header" style={styles.flex} numberOfLines={1}>
-          {`Tüm aktif paylaşımlar (${running})`}
+          {running > 0 ? `Tüm aktif paylaşımlar (${running})` : `Biten paylaşımlar (${items.length})`}
         </Text>
         <IconButton icon="chevronDown" accessibilityLabel="Listeyi kapat" onPress={onClose} />
       </View>
@@ -686,23 +755,39 @@ function DeckList({ items, names, nowOf, trackingError, rowsMaxHeight, focusedKe
         ))}
       </ScrollView>
 
-      <View style={[styles.row, { paddingHorizontal: spacing.sm, paddingTop: spacing.xs, gap: spacing.xs, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border }]}>
+      <View
+        style={[
+          styles.row,
+          { flexWrap: 'wrap', justifyContent: 'flex-end', paddingHorizontal: spacing.sm, paddingTop: spacing.xs, gap: spacing.xs, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border },
+        ]}
+      >
         {confirm ? (
           <>
-            <Text variant="label" style={[styles.flex, { color: colors.danger }]} numberOfLines={2} accessibilityLiveRegion="assertive">
+            <Text variant="label" style={{ width: '100%', color: colors.danger, paddingHorizontal: spacing.xxs }} numberOfLines={1} accessibilityLiveRegion="assertive">
               {`${toStop.length} paylaşım durdurulsun mu?`}
             </Text>
-            <Button title="Vazgeç" variant="ghost" block={false} onPress={() => setConfirm(false)} />
+            {/* Sıra bilerek böyle: ilk dokunuşun yerine "Vazgeç" gelir. */}
             <Button
               title="Evet, durdur"
               variant="danger"
               block={false}
               onPress={() => {
+                if (Date.now() - armedAt.current < 600) return;
                 setConfirm(false);
                 actions.stopAll(toStop);
+                onClose();
               }}
             />
+            <Button title="Vazgeç" variant="ghost" block={false} onPress={() => setConfirm(false)} />
           </>
+        ) : allFinished ? (
+          <Button
+            title={`Tümünü kapat (${items.length})`}
+            variant="secondary"
+            block={false}
+            style={styles.flex}
+            onPress={() => items.forEach((it) => (it.kind === 'link' ? actions.linkDismiss(it.link.link_id) : actions.dismiss(it.session.session_id)))}
+          />
         ) : (
           <>
             <Button title="+ Yeni paylaşım" variant="secondary" block={false} style={styles.flex} onPress={actions.newShare} />
@@ -711,8 +796,10 @@ function DeckList({ items, names, nowOf, trackingError, rowsMaxHeight, focusedKe
                 accessibilityRole="button"
                 accessibilityLabel={`Tümünü durdur (${toStop.length})`}
                 accessibilityHint="Onay ister"
-                onPress={() => setConfirm(true)}
-                hitSlop={4}
+                onPress={() => {
+                  armedAt.current = Date.now();
+                  setConfirm(true);
+                }}
                 style={({ pressed }) => [styles.textBtn, { opacity: pressed ? 0.6 : 1 }]}
               >
                 <Text variant="label" style={{ color: colors.danger, fontWeight: '600' }}>
@@ -777,6 +864,7 @@ function ListRow({
           title="Kapat"
           variant="ghost"
           block={false}
+          style={{ paddingHorizontal: spacing.sm }}
           onPress={() => (item.kind === 'link' ? actions.linkDismiss(item.link.link_id) : actions.dismiss(item.session.session_id))}
         />
       ) : (
@@ -787,7 +875,14 @@ function ListRow({
           disabled={starting || stopping}
           loading={stopping}
           accessibilityLabel={`${title}: durdur`}
-          onPress={() => (item.kind === 'link' ? actions.linkStop(item.link.link_id) : actions.stop(item.session.session_id))}
+          style={{ paddingHorizontal: spacing.sm }}
+          onPress={() =>
+            item.kind === 'link'
+              ? item.link.phase === 'stopping'
+                ? actions.linkRetryStop(item.link.link_id)
+                : actions.linkStop(item.link.link_id)
+              : actions.stop(item.session.session_id)
+          }
         />
       )}
     </View>
@@ -798,14 +893,14 @@ const styles = StyleSheet.create({
   outer: { width: '100%', maxWidth: DECK_MAX_W, alignSelf: 'center' },
   row: { flexDirection: 'row', alignItems: 'center' },
   flex: { flex: 1, minWidth: 0 },
-  card: { borderWidth: StyleSheet.hairlineWidth, overflow: 'hidden', paddingTop: 14, paddingBottom: 12 },
+  card: { borderWidth: StyleSheet.hairlineWidth, overflow: 'hidden', paddingTop: 12, paddingBottom: 9 },
   layer: { position: 'absolute', borderWidth: StyleSheet.hairlineWidth, boxShadow: '0px 4px 12px rgba(15, 23, 42, 0.10)' },
   spine: { position: 'absolute', top: 0, zIndex: 2 },
-  handleHit: { position: 'absolute', top: 0, left: '50%', marginLeft: -32, width: 64, height: 16, alignItems: 'center', justifyContent: 'center', zIndex: 3 },
+  handleHit: { position: 'absolute', top: 0, left: '50%', marginLeft: -48, width: 96, height: 28, alignItems: 'center', justifyContent: 'flex-start', paddingTop: 5, zIndex: 3 },
   handle: { width: 36, height: 4, borderRadius: 2 },
   dot: { width: 7, height: 7, borderRadius: 4 },
-  pager: { flexDirection: 'row', alignItems: 'center', gap: 2, paddingHorizontal: 10, minHeight: 30, alignSelf: 'flex-start' },
-  progressTrack: { position: 'absolute', left: 28, right: 28, bottom: 4, height: 3, borderRadius: 2, overflow: 'hidden' },
+  pager: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 2, paddingHorizontal: 12, minHeight: MIN_TOUCH, minWidth: MIN_TOUCH, borderWidth: 1 },
+  progressTrack: { position: 'absolute', left: 28, right: 28, bottom: 3, height: 3, borderRadius: 2, overflow: 'hidden' },
   qr: { alignItems: 'center', justifyContent: 'center' },
   more: { position: 'absolute', right: -4, bottom: -2, minWidth: 20, height: 18, borderRadius: 9, borderWidth: 2, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 3 },
   textBtn: { minHeight: MIN_TOUCH, paddingHorizontal: 12, alignItems: 'center', justifyContent: 'center' },
