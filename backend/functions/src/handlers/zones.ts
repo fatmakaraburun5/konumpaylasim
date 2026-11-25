@@ -31,6 +31,11 @@
  *    (`readPairZoneCleanup` / `writePairZoneCleanup`, friends.ts). Hesap silmede bölgeler, olay kaydı ve soğuma
  *    belgeleri silinir (`deleteZonesOf`). [Varsayım] Silinen kullanıcı başkalarının kurallarında kalabilir; olay
  *    anında arkadaşlık yeniden doğrulandığı için ona bildirim gitmez.
+ *  - Faz 8 (core `canZoneNotify` / `canShareLocation`): notify kuralının alıcısı yalnızca bana `zone_notify` izni
+ *    vermiş arkadaş olabilir; start_share kuralının alıcısı yalnızca benim `location_view` izni verdiğim arkadaş.
+ *    İkisi de hem kayıtta (`zone_upsert`, düşenler `dropped_recipient_ids`) hem olay anında yeniden denetlenir.
+ *    Görünmezken her olay `suppressed: 'invisible'` (bildirim yok, `start_share` boş). İzin geri alınınca kişi
+ *    kurallardan çıkar (`permission_set`: `stripZoneRecipients`).
  */
 import {
   CALLABLES,
@@ -49,6 +54,10 @@ import {
   type ZoneRule,
   type ZoneUpsertRequestSchema,
   type ZoneUpsertResponse,
+  type ZoneAction,
+  canShareLocation,
+  canZoneNotify,
+  isInvisible,
   localClock,
   matchZoneRules,
   offsetFnForTimeZone,
@@ -62,7 +71,7 @@ import type { CallCtx } from '../callable';
 import { DEFAULT_TIME_ZONE, LIMITS } from '../config';
 import { COL, type ZoneCooldownDoc, type ZoneDoc, type ZoneEventDoc, refs, toZone } from '../docs';
 import { fail } from '../errors';
-import { canShare, readCaller, readPairStates } from '../graph';
+import { type CallerAccess, callerAccess, pairInput, readCaller, readPairStates } from '../graph';
 import { runOp } from '../ops';
 import { type PushMessage, type PushSender, buildZoneEventPush, sendPushToUser } from '../push';
 import { assertDocId, chunk, isServerUid, unique } from '../util';
@@ -97,17 +106,26 @@ function clockFor(timeZone: string, at: EpochMs) {
   return localClock(at, offset);
 }
 
-/** Aday alıcılar içinden kabul edilmiş + engelsiz arkadaşlar. */
-async function friendSet(tx: Transaction, me: UserId, ids: readonly UserId[]): Promise<Set<UserId>> {
+/** Kural eylemine göre izinli alıcılar (Faz 8 matrisi): notify → `canZoneNotify`, start_share → `canShareLocation`. */
+interface RecipientSets {
+  notify: Set<UserId>;
+  start_share: Set<UserId>;
+}
+
+/** Aday alıcılar için iki yönlü izin denetimi (tek `getAll`). */
+async function recipientSets(tx: Transaction, me: UserId, access: CallerAccess, ids: readonly UserId[]): Promise<RecipientSets> {
   const candidates = unique(ids).filter((u) => u !== me && isServerUid(u));
   const pairs = await readPairStates(tx, me, candidates);
-  return new Set(
-    candidates.filter((_, i) => {
-      const p = pairs[i];
-      return p !== undefined && canShare(p);
-    }),
-  );
+  const out: RecipientSets = { notify: new Set(), start_share: new Set() };
+  candidates.forEach((u, i) => {
+    const input = pairInput(pairs[i], access);
+    if (canZoneNotify(input)) out.notify.add(u);
+    if (canShareLocation(input)) out.start_share.add(u);
+  });
+  return out;
 }
+
+const allowedFor = (sets: RecipientSets, action: ZoneAction): Set<UserId> => (action === 'notify' ? sets.notify : sets.start_share);
 
 async function pushAll(uids: readonly UserId[], msg: PushMessage, send: PushSender, what: string): Promise<void> {
   const res = await Promise.allSettled(uids.map((u) => send(u, msg)));
@@ -132,7 +150,7 @@ export async function zoneUpsert(ctx: CallCtx, data: z.output<typeof ZoneUpsertR
   const allRecipients = data.rules.flatMap((r) => r.recipient_ids);
 
   return runOp(ctx, data.op_id, CALLABLES.zoneUpsert, data, async (tx) => {
-    await readCaller(tx, ctx.uid);
+    const me = await readCaller(tx, ctx.uid);
     const ref = refs.zone(ctx.uid, zoneId);
     let existing: ZoneDoc | null = null;
     if (data.zone_id !== null) {
@@ -143,13 +161,15 @@ export async function zoneUpsert(ctx: CallCtx, data: z.output<typeof ZoneUpsertR
       const mine = await tx.get(refs.zones(ctx.uid));
       if (mine.size >= ZONE_LIMITS.maxZones) throw fail('zone_limit_reached');
     }
-    const friends = await friendSet(tx, ctx.uid, allRecipients);
+    // Kayıtta görünmezlik denetlenmez (kural ileride çalışır); olay anında `invisible` bastırılır.
+    const sets = await recipientSets(tx, ctx.uid, { ...callerAccess(me), invisible: false }, allRecipients);
 
     const dropped = new Set<UserId>();
     const rules: ZoneRule[] = [];
     for (const r of data.rules) {
+      const allowed = allowedFor(sets, r.action);
       const kept = unique(r.recipient_ids).filter((u) => {
-        if (friends.has(u)) return true;
+        if (allowed.has(u)) return true;
         dropped.add(u);
         return false;
       });
@@ -232,7 +252,11 @@ export async function zoneEventReport(
 
     let suppressed: Suppressed = null;
     let matched: ZoneRule[] = [];
-    if (now - occurredAt > ZONE_LIMITS.maxEventAgeMs) suppressed = 'stale';
+    // Faz 8: görünmezken hiçbir bölge olayı bildirilmez / paylaşım açmaz (alıcıya neden söylenmez: push yok). Olay
+    // görünmezken OLDUYSA (ör. çevrimdışı ikinci cihaz görünür olunca bildirir) da düşer: `visible_since` görünür
+    // olma anıdır (yalnızca sunucu yazar).
+    if (isInvisible(me) || (typeof me.visible_since === 'number' && occurredAt < me.visible_since)) suppressed = 'invisible';
+    else if (now - occurredAt > ZONE_LIMITS.maxEventAgeMs) suppressed = 'stale';
     else if (!zone.enabled) suppressed = 'disabled';
     else {
       matched = matchZoneRules(zone, data.transition, clockFor(zone.time_zone, occurredAt));
@@ -244,15 +268,16 @@ export async function zoneEventReport(
     let notifyIds: UserId[] = [];
     let startShare: ZoneEventReportResponse['start_share'] = [];
     if (suppressed === null) {
-      const friends = await friendSet(
+      const sets = await recipientSets(
         tx,
         ctx.uid,
+        callerAccess(me),
         matched.flatMap((r) => r.recipient_ids),
       );
-      notifyIds = unique(matched.filter((r) => r.action === 'notify').flatMap((r) => r.recipient_ids)).filter((u) => friends.has(u));
+      notifyIds = unique(matched.filter((r) => r.action === 'notify').flatMap((r) => r.recipient_ids)).filter((u) => sets.notify.has(u));
       startShare = matched
         .filter((r) => r.action === 'start_share' && r.share_duration)
-        .map((r) => ({ rule_id: r.rule_id, recipient_ids: unique(r.recipient_ids).filter((u) => friends.has(u)), duration: r.share_duration as DurationChoice }))
+        .map((r) => ({ rule_id: r.rule_id, recipient_ids: unique(r.recipient_ids).filter((u) => sets.start_share.has(u)), duration: r.share_duration as DurationChoice }))
         .filter((s) => s.recipient_ids.length > 0);
     }
     const acted = notifyIds.length > 0 || startShare.length > 0;
@@ -326,6 +351,24 @@ export async function readPairZoneCleanup(tx: Transaction, a: UserId, b: UserId)
 
 export function writePairZoneCleanup(tx: Transaction, c: PairZoneCleanup, now: EpochMs): void {
   for (const u of c.updates) tx.update(u.ref, { rules: u.rules, updated_at: now });
+}
+
+/**
+ * Faz 8 izin geri alma zinciri: `owner`ın bölgelerinde `action` kurallarının alıcılarından `remove` çıkar (alıcısı
+ * kalmayan kural silinir). Okuma aşaması; yazma `writePairZoneCleanup`.
+ */
+export async function readZoneRecipientStrip(tx: Transaction, owner: UserId, remove: UserId, action: ZoneAction): Promise<PairZoneCleanup> {
+  const snap = await tx.get(refs.zones(owner));
+  const updates: PairZoneCleanup['updates'] = [];
+  for (const d of snap.docs) {
+    const rules = (d.data() as ZoneDoc).rules ?? [];
+    if (!rules.some((r) => r.action === action && r.recipient_ids.includes(remove))) continue;
+    const next = rules
+      .map((r) => (r.action === action ? { ...r, recipient_ids: r.recipient_ids.filter((u) => u !== remove) } : r))
+      .filter((r) => r.recipient_ids.length > 0);
+    updates.push({ ref: d.ref, rules: next });
+  }
+  return { updates };
 }
 
 // ---------------------------------------------------------------------------

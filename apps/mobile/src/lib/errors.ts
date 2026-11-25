@@ -9,6 +9,8 @@ export class KonumError extends Error {
     public readonly code: ErrorCode,
     message: string = ERROR_CODES[code].message,
     public readonly retryable: boolean = ERROR_CODES[code].retryable,
+    /** Sunucunun `details` ekleri (ör. `consent_required` → `current_version`); gösterilmez, yalnızca karar için. */
+    public readonly extra: Readonly<Record<string, unknown>> = {},
   ) {
     super(message);
     this.name = 'KonumError';
@@ -41,7 +43,7 @@ export function toKonumError(e: unknown): KonumError {
   if (e instanceof KonumError) return e;
   const err = (e ?? {}) as { code?: unknown; details?: unknown; message?: unknown; userInfo?: { details?: unknown } };
   const details = (err.details ?? err.userInfo?.details) as { code?: unknown } | null | undefined;
-  if (details && isErrorCode(details.code)) return new KonumError(details.code);
+  if (details && isErrorCode(details.code)) return new KonumError(details.code, undefined, undefined, details as Record<string, unknown>);
   if (typeof err.code === 'string') {
     const transport = err.code.replace(/^functions\//, '');
     const mapped = TRANSPORT_MAP[transport];

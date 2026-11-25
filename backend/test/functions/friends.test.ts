@@ -2,7 +2,7 @@
  * Hesap ve arkadaşlık callable'ları: bootstrap, davet kodu, istek gönderme (numara taraması koruması),
  * karşılıklı istek, kabul/ret/iptal, engel ve hesap silme.
  */
-import { INVITE_CODE_RE, friendshipId, shareId } from '@konum/core';
+import { CONSENT_VERSION, INVITE_CODE_RE, PATHS, friendshipId, shareId } from '@konum/core';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { adminAuth, db, rtdb } from '../../functions/src/admin';
 import {
@@ -15,6 +15,7 @@ import {
   randomPhone,
   signInWithPhone,
 } from '../helpers/emulator';
+import { grantAll } from '../review/helpers';
 
 const fDoc = async (a: TestUser, b: TestUser) => (await db().doc(`friendships/${friendshipId(a.uid, b.uid)}`).get()).data();
 const outgoing = async (u: TestUser) =>
@@ -226,6 +227,7 @@ describe('account_delete', () => {
     const [X, Y] = await Promise.all([newUser('X'), newUser('Y')]);
     await call('friend_request_send', { op_id: opId(), via: 'invite_code', invite_code: Y.invite_code }, X);
     await call('friend_request_respond', { op_id: opId(), friendship_id: friendshipId(X.uid, Y.uid), accept: true }, Y);
+    await grantAll(X, Y); // Faz 8: paylaşım için iki yönde izin
     await call('share_start', { op_id: opId(), receiver_ids: [Y.uid], duration: { kind: 'weekly' }, time_zone: 'Europe/Istanbul' }, X);
     await call('share_start', { op_id: opId(), receiver_ids: [X.uid], duration: { kind: 'weekly' }, time_zone: 'Europe/Istanbul' }, Y);
 
@@ -240,6 +242,10 @@ describe('account_delete', () => {
     expect(await fDoc(X, Y)).toBeUndefined();
     for (const id of [shareId(X.uid, Y.uid), shareId(Y.uid, X.uid)]) {
       expect((await db().doc(`location_shares/${id}`).get()).data()).toMatchObject({ status: 'ended', end_reason: 'account_deleted' });
+    }
+    // Faz 8: iki yöndeki izin belgeleri ve onay kayıtları da silinir.
+    for (const path of [PATHS.permissionGrant(X.uid, Y.uid), PATHS.permissionGrant(Y.uid, X.uid), PATHS.consent(X.uid, CONSENT_VERSION)]) {
+      expect((await db().doc(path).get()).exists, path).toBe(false);
     }
     await expect(adminAuth().getUser(X.uid)).rejects.toMatchObject({ code: 'auth/user-not-found' });
     // ACL düğümleri (mezar taşı dahil) silinir: uid çifti RTDB'de kalmaz.

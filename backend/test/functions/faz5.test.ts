@@ -364,7 +364,8 @@ describe('meetup_share → meetup_respond → meetup_cancel', () => {
     const r = await meetupShare(ctxOf(A, now), shareIn([B.uid, X.uid]), fcm);
     const m = r.meetup;
     expect(m).toMatchObject({ from: A.uid, from_name: 'Ayşe', to: [B.uid], status: 'active', responses: {}, note: 'Kapıda bekliyorum', created_at: now, expires_at: now + MEETUP_LIMITS.shareTtlMs });
-    expect(m.etas.map((e) => e.key)).toEqual([A.uid, B.uid]);
+    // Faz 8: yalnızca önerenin ETA'sı saklanır (başka katılımcınınki süzgeç sonucuyla onun görünmezliğini sızdırırdı).
+    expect(m.etas.map((e) => e.key)).toEqual([A.uid]);
     expect(fcm.sent).toHaveLength(1);
     expect(fcm.sent[0]?.uid).toBe(B.uid);
     expect(fcm.sent[0]?.msg.data).toEqual({ type: 'meetup', meetup_id: m.meetup_id, from: A.uid });

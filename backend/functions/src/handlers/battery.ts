@@ -23,6 +23,7 @@ import {
   type LowBatteryState,
   LOW_BATTERY_REARM_PCT,
   type EpochMs,
+  isInvisible,
   livePath,
   lowBatteryTrigger,
 } from '@konum/core';
@@ -84,6 +85,8 @@ export async function batteryLowNotify(
     if (active.length === 0) throw fail('share_not_active');
     const stateRef = refs.batteryAlert(ctx.uid, data.session_id);
     const [stateSnap, userSnap] = await tx.getAll(stateRef, refs.user(ctx.uid));
+    // Faz 8: görünmez gönderenin paylaşımı yoktur (görünmez olmak hepsini bitirir); yarışta da bildirim gitmez.
+    if (isInvisible(userSnap?.data() as UserDoc | undefined)) throw fail('share_not_active');
     const doc = stateSnap?.data() as BatteryAlertDoc | undefined;
     const name = (userSnap?.data() as UserDoc | undefined)?.display_name ?? '';
 

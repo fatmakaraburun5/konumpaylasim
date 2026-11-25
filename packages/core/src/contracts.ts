@@ -11,6 +11,8 @@
 import { z } from 'zod';
 import { SHARE_MODES, type DurationChoice, type ShareMode } from './duration';
 import { LINK_HASH_RE, LINK_LIMITS, LINK_TOKEN_RE, type LinkShareView } from './link';
+import type { AccessScope, RequestableScope } from './access';
+import { grantId } from './ids';
 import { GEOHASH_RE, TRAVEL_MODES, type TravelMode } from './mapsPolicy';
 import type { LinkEndReason, LinkId, SessionId, ShareEndReason, ShareId, UserId } from './model';
 import type { OutgoingShareView } from './sharing';
@@ -63,6 +65,13 @@ export const CALLABLES = {
   widgetTokenRevoke: 'widget_token_revoke',
   /** Oturumsuz / App Check'siz; yetki = widget token'ı (bkz. `quickShare.ts`). */
   widgetQuickShare: 'widget_quick_share',
+  // Faz 8 (bkz. `access.ts`, `invisible.ts`, `consent.ts`)
+  permissionRequestSend: 'permission_request_send',
+  permissionRequestRespond: 'permission_request_respond',
+  permissionSet: 'permission_set',
+  invisibleSet: 'invisible_set',
+  consentAccept: 'consent_accept',
+  consentWithdraw: 'consent_withdraw',
 } as const;
 
 export type CallableName = (typeof CALLABLES)[keyof typeof CALLABLES];
@@ -129,6 +138,15 @@ export const PATHS = {
   widgetToken: (tokenHash: string) => `widget_tokens/${tokenHash}`,
   /** Storage: kullanıcının avatar klasörü (`avatarObjectPaths`). */
   avatarFolder: (uid: UserId) => `avatars/${uid}`,
+  // --- Faz 8 ---
+  /** Firestore: yönlü izinler `permission_grants/{granter}_{grantee}` (iki taraf okur, yalnızca callable yazar). */
+  permissionGrants: 'permission_grants',
+  permissionGrant: (granterId: UserId, granteeId: UserId) => `permission_grants/${grantId(granterId, granteeId)}`,
+  /** Faz 8: ret anları (yalnızca granter okur, yalnızca sunucu yazar). */
+  permissionDeclines: 'permission_declines',
+  /** Firestore: onay kayıtları `users/{uid}/consents/{version}` (yalnızca sahibi okur, yalnızca callable yazar). */
+  consents: (uid: UserId) => `users/${uid}/consents`,
+  consent: (uid: UserId, version: string) => `users/${uid}/consents/${version}`,
 } as const;
 
 const opId = z.uuid();
@@ -153,6 +171,12 @@ export const ShareStartRequestSchema = z.object({
   time_zone: z.string().min(1).max(64),
   /** Bir konum isteğine yanıt olarak başlatıldıysa. */
   in_response_to: z.string().max(300).nullable().default(null),
+  /**
+   * Faz 8: alıcıda `location_view` izni yoksa aynı işlemde izni de yaz (`via:'share'`). İstemci bunu yalnızca
+   * kullanıcı "Konumunu görme izni de verilecek" onayını verdiyse açar. Kapalıyken izinsiz alıcı atlanır ve
+   * `needs_grant_receiver_ids`te döner.
+   */
+  grant_location_view: z.boolean().default(false),
 });
 export type ShareStartRequest = z.input<typeof ShareStartRequestSchema>;
 
@@ -161,6 +185,11 @@ export interface ShareStartResponse {
   shares: OutgoingShareView[];
   /** Arkadaş olmayan / engelli alıcılar hata vermez, yalnızca atlanır (bilgi sızmaz). */
   skipped_receiver_ids: UserId[];
+  /**
+   * Faz 8: arkadaş ama benim `location_view` iznimi almamış alıcılar (yalnızca çağırana döner). İstemci "Konumunu
+   * görme izni de verilecek" onayıyla `grant_location_view: true` göndererek yeniden dener.
+   */
+  needs_grant_receiver_ids: UserId[];
   server_now: EpochMs;
 }
 
@@ -472,6 +501,15 @@ export const ERROR_CODES = {
   not_favorite: { retryable: false, message: 'Bu kişi favorilerinde değil' },
   /** Widget çağrısındaki tekil biçim (`not_friends` ile aynı anlam; token sahibi zaten kimliği doğrulanmış kişidir). */
   not_friend: { retryable: false, message: 'Bu kişiyle artık arkadaş değilsiniz' },
+  // Faz 8
+  /** failed-precondition: etkileşim için gereken yönlü izin yok (`access.ts` matrisi). */
+  not_permitted: { retryable: false, message: 'Bu kişi sana bu izni vermedi.' },
+  /** failed-precondition: görünmezken paylaşım / uzatma / hızlı paylaşım / bölge olayı açılamaz. */
+  invisible_mode: { retryable: false, message: 'Görünmez moddasın. Paylaşmak için önce görünür ol.' },
+  /** failed-precondition: güncel onay sürümü yok ya da sürüm / özet uyuşmadı (`extra.current_version`). */
+  consent_required: { retryable: false, message: 'Devam etmek için güncel Güvenlik Sözleşmesi ve KVKK metnini onaylaman gerekiyor.' },
+  /** resource-exhausted: aynı çift için izin isteği soğuması (`PERMISSION_REQUEST_PAIR_COOLDOWN_MS`). */
+  permission_cooldown: { retryable: false, message: 'Bu kişiden kısa süre önce izin istedin. Biraz sonra tekrar dene.' },
 } as const;
 export type ErrorCode = keyof typeof ERROR_CODES;
 
@@ -488,7 +526,12 @@ export type ClientEvent =
   // Faz 2
   | { type: 'link.started'; link: LinkShareView }
   | { type: 'link.extended'; link: LinkShareView }
-  | { type: 'link.ended'; link_id: LinkId; reason: LinkEndReason };
+  | { type: 'link.ended'; link_id: LinkId; reason: LinkEndReason }
+  // Faz 8
+  | { type: 'permission.requested'; requester_id: UserId; scopes: RequestableScope[] }
+  | { type: 'permission.changed'; granter_id: UserId; grantee_id: UserId; scopes: AccessScope[] }
+  | { type: 'invisible.changed'; invisible: boolean }
+  | { type: 'consent.required'; current_version: string };
 
 /** FCM data mesajı: KOORDİNAT TAŞIMAZ. */
 export type PushData =
@@ -531,7 +574,15 @@ export type PushData =
    * Yalnızca veri (content-available): bir FAVORİM bana paylaşımı başlattı / durdurdu / bitti → widget yenilenir.
    * `from` = paylaşanın uid'i (alıcı onu zaten arkadaş olarak tanır).
    */
-  | { type: 'widget_refresh'; from: string };
+  | { type: 'widget_refresh'; from: string }
+  // Faz 8 (koordinat YOK)
+  /**
+   * Granter'a, görünür: "Can senden konumunu görmek istiyor" (`permissionRequestText`). `from` = isteyenin uid'i,
+   * `scopes` = bekleyen kapsamlar, virgülle ayrılmış. Dokununca Arkadaşlar > İzin istekleri açılır.
+   */
+  | { type: 'permission_request'; from: string; scopes: string }
+  /** İsteyene, görünür: "Can konumunu görmene izin verdi" (`permissionGrantedText`). Retde push YOKTUR. */
+  | { type: 'permission_granted'; by: string; scopes: string };
 
 /** Faz 3 FCM veri türleri (istemci işleyicileri ve sözleşme testi için). */
 export const PUSH_TYPES_F3 = ['battery_low', 'resume_tracking', 'tracking_stalled'] as const satisfies readonly PushData['type'][];
@@ -552,3 +603,6 @@ export const PUSH_TYPES_F5 = ['zone_event', 'meetup', 'meetup_response'] as cons
 
 /** Faz 6 FCM veri türleri. */
 export const PUSH_TYPES_F6 = ['quick_share_started', 'widget_refresh'] as const satisfies readonly PushData['type'][];
+
+/** Faz 8 FCM veri türleri. */
+export const PUSH_TYPES_F8 = ['permission_request', 'permission_granted'] as const satisfies readonly PushData['type'][];

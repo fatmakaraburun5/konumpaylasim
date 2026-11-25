@@ -48,6 +48,7 @@ import {
 import { Faz4Section } from './Faz4.web';
 import { Faz5Section } from './Faz5.web';
 import { Faz6Section } from './Faz6.web';
+import { Faz8Section } from './Faz8.web';
 
 const WIDE_MIN = 900;
 const SCREEN_W = 390;
@@ -256,14 +257,14 @@ function DemoPanel({ showNotice, onNavigate, padding, footer }: { showNotice: bo
     {
       key: 'ayse',
       title: 'Ayşe paylaşımı durdursun',
-      hint: 'Ayşe haritadan hemen kaybolur.',
+      hint: 'Ayşe haritadan hemen kaybolur (sana verdiği konum izni durur).',
       run: () => (demoControls.aysheStop() ? 'Ayşe paylaşımını durdurdu.' : 'Ayşe şu anda paylaşmıyor.'),
     },
     {
       key: 'mehmet',
       title: 'Mehmet yeniden paylaşsın',
-      hint: '1 saatlik yeni paylaşım, taze konumla.',
-      run: () => (demoControls.mehmetRestart() ? 'Mehmet konumunu yeniden paylaşıyor.' : 'Mehmet zaten paylaşıyor.'),
+      hint: '1 saatlik yeni paylaşım, taze konumla (Mehmet sana konum izni verdiği için).',
+      run: () => (demoControls.mehmetRestart() ? 'Mehmet konumunu yeniden paylaşıyor.' : 'Mehmet sana konum izni vermemiş.'),
     },
     {
       key: 'request',
@@ -386,6 +387,7 @@ function DemoPanel({ showNotice, onNavigate, padding, footer }: { showNotice: bo
       <Faz4Section snap={snap} renderRow={renderRow} />
       <Faz5Section snap={snap} renderRow={renderRow} />
       <Faz6Section snap={snap} renderRow={renderRow} onNavigate={onNavigate} />
+      <Faz8Section snap={snap} renderRow={renderRow} />
       <PermissionsSection renderRow={renderRow} />
 
       {showNotice ? (

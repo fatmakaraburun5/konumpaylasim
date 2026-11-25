@@ -258,7 +258,7 @@ describe('hızlı paylaşım derin bağlantısı', () => {
   });
 
   it('yoksa başlatır, kısa kaldıysa 60 dk’ya uzatır, uzunsa dokunmaz', async () => {
-    const startShare = jest.fn(async () => ({ ok: true as const, sessionId: 'se2', skippedReceiverIds: [] as string[] }));
+    const startShare = jest.fn(async () => ({ ok: true as const, sessionId: 'se2', skippedReceiverIds: [] as string[], needsGrantReceiverIds: [] as string[] }));
     const deps = (shares: OutgoingShareView[]) => ({
       state: () => ({ shares: Object.fromEntries(shares.map((s) => [s.share_id, s])) }),
       startShare,
@@ -277,7 +277,7 @@ describe('hızlı paylaşım derin bağlantısı', () => {
     await expect(runQuickShare('ayse', deps([share(null)]))).resolves.toMatchObject({ ok: true, status: 'already_active', expires_at: null });
     expect(startShare).toHaveBeenCalledTimes(2);
 
-    startShare.mockResolvedValueOnce({ ok: true, sessionId: 'se3', skippedReceiverIds: ['ayse'] });
+    startShare.mockResolvedValueOnce({ ok: true, sessionId: 'se3', skippedReceiverIds: ['ayse'], needsGrantReceiverIds: [] });
     await expect(runQuickShare('ayse', deps([]))).resolves.toMatchObject({ ok: false, error: { code: 'not_friends' } });
   });
 });

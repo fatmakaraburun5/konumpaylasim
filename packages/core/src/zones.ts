@@ -214,14 +214,14 @@ export interface ZoneEventReportResponse {
   notified: number;
   /** Cihazın `share_start` ile başlatması gereken paylaşımlar (sunucu arkadaşlığı doğruladı). */
   start_share: { rule_id: string; recipient_ids: UserId[]; duration: DurationChoice }[];
-  /** `cooldown` / `stale` / `outside_window` / `disabled` ise bildirim gitmedi. */
-  suppressed: 'cooldown' | 'stale' | 'outside_window' | 'disabled' | 'daily_limit' | null;
+  /** `cooldown` / `stale` / `outside_window` / `disabled` ise bildirim gitmedi. Faz 8: `invisible` = gönderen görünmez. */
+  suppressed: 'cooldown' | 'stale' | 'outside_window' | 'disabled' | 'daily_limit' | 'invisible' | null;
   server_now: EpochMs;
 }
 export const ZoneEventReportResponseSchema: z.ZodType<ZoneEventReportResponse> = z.object({
   notified: z.number(),
   start_share: z.array(z.object({ rule_id: z.string(), recipient_ids: z.array(uid), duration: DurationChoiceSchema })),
-  suppressed: z.enum(['cooldown', 'stale', 'outside_window', 'disabled', 'daily_limit']).nullable(),
+  suppressed: z.enum(['cooldown', 'stale', 'outside_window', 'disabled', 'daily_limit', 'invisible']).nullable(),
   server_now: z.number(),
 });
 

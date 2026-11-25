@@ -1,5 +1,5 @@
 /**
- * Konum Cloud Functions giriş noktası (Faz 1 + Faz 2 + Faz 3 + Faz 4 + Faz 5 + Faz 6). Dışa aktarılan adlar core `CALLABLES` ile birebir aynıdır
+ * Konum Cloud Functions giriş noktası (Faz 1 + Faz 2 + Faz 3 + Faz 4 + Faz 5 + Faz 6 + Faz 8). Dışa aktarılan adlar core `CALLABLES` ile birebir aynıdır
  * (istemci `httpsCallable(functions, 'share_start')` çağırır, bölge europe-west1).
  *
  * Burada YALNIZCA fonksiyon tanımları dışa aktarılır; saf mantık `handlers/*` içindedir.
@@ -40,6 +40,13 @@ import {
   WidgetQuickShareRequestSchema,
   WidgetTokenIssueRequestSchema,
   WidgetTokenRevokeRequestSchema,
+  // Faz 8
+  ConsentAcceptRequestSchema,
+  ConsentWithdrawSchema,
+  InvisibleSetRequestSchema,
+  PermissionRequestRespondSchema,
+  PermissionRequestSendSchema,
+  PermissionSetSchema,
 } from '@konum/core';
 import { setGlobalOptions } from 'firebase-functions';
 import { onDocumentWritten } from 'firebase-functions/firestore';
@@ -73,6 +80,14 @@ import { meetupCancel, meetupRespond, meetupShare, meetupSuggest } from './handl
 import { zoneDelete, zoneEventReport, zoneUpsert } from './handlers/zones';
 import { favoritesSet } from './handlers/favorites';
 import { notifyWidgetRefresh, widgetQuickShare, widgetTokenIssue, widgetTokenRevoke } from './handlers/widget';
+import {
+  consentAccept,
+  consentWithdraw,
+  invisibleSet,
+  permissionRequestRespond,
+  permissionRequestSend,
+  permissionSet,
+} from './handlers/access';
 import {
   AccountDeleteSchema,
   BatteryLowNotifySchema,
@@ -156,6 +171,18 @@ export const widget_token_issue = callable('widget_token_issue', WidgetTokenIssu
 export const widget_token_revoke = callable('widget_token_revoke', WidgetTokenRevokeRequestSchema, widgetTokenRevoke);
 /** Oturumsuz + App Check'siz: widget uzantısı / AppWidget alıcısı token ile çağırır (bkz. handlers/widget.ts). */
 export const widget_quick_share = tokenCallable('widget_quick_share', WidgetQuickShareRequestSchema, (data) => widgetQuickShare(data));
+
+// --- Faz 8: yönlü izinler, görünmez mod, Güvenlik Sözleşmesi / KVKK onayı ---
+// Onay ön kapısı `callable` içindedir (core `consentExemptCall`): permission_set yalnızca geri alırken, invisible_set
+// yalnızca görünmez olurken, consent_accept / consent_withdraw her zaman onaysız çalışır.
+export const permission_request_send = callable('permission_request_send', PermissionRequestSendSchema, (ctx, data) => permissionRequestSend(ctx, data));
+export const permission_request_respond = callable('permission_request_respond', PermissionRequestRespondSchema, (ctx, data) =>
+  permissionRequestRespond(ctx, data),
+);
+export const permission_set = callable('permission_set', PermissionSetSchema, permissionSet);
+export const invisible_set = callable('invisible_set', InvisibleSetRequestSchema, invisibleSet);
+export const consent_accept = callable('consent_accept', ConsentAcceptRequestSchema, consentAccept);
+export const consent_withdraw = callable('consent_withdraw', ConsentWithdrawSchema, consentWithdraw);
 
 // --- arka plan ---
 

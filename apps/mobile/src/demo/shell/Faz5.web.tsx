@@ -47,6 +47,7 @@ const SUPPRESSED_TEXT: Record<string, string> = {
   daily_limit: 'günlük sınır',
   queued: 'çevrimdışı: sırada',
   dropped: 'gönderilemedi',
+  invisible: 'görünmez mod',
 };
 
 const MONITORING_TEXT = { off: 'kapalı (etkin bölge yok)', active: 'etkin', needs_permission: "izin gerekli ('Her zaman')", unsupported: 'desteklenmiyor' } as const;
@@ -77,8 +78,8 @@ export function Faz5Section({ snap, renderRow }: Faz5Props) {
     {
       key: 'f5-save-home',
       title: 'Ev bölgemi buraya kaydet (demo)',
-      hint: "150 m · 'Vardığımda Ayşe'ye bildir' + 'Çıkınca Ayşe ile 1 saat paylaş'. Telefon burada bekler.",
-      run: () => (demoControls.saveHomeZoneHere() ? 'Ev bölgen kaydedildi (150 m, 2 kural).' : 'Ayşe ile arkadaş değilsin.'),
+      hint: "150 m · 'Vardığımda Ayşe'ye bildir' + 'Çıkınca Ayşe ile 1 saat paylaş'. İzni olmayan kural düşer. Telefon burada bekler.",
+      run: () => (demoControls.saveHomeZoneHere() ? 'Ev bölgen kaydedildi (150 m); kural sayısı aşağıda.' : 'Ayşe ile arkadaş değilsin.'),
     },
     {
       key: 'f5-leave',
@@ -101,17 +102,17 @@ export function Faz5Section({ snap, renderRow }: Faz5Props) {
     {
       key: 'f5-ayse-home',
       title: 'Ayşe eve vardı',
-      hint: 'Ayşe\'nin kuralı: "Vardığımda Deniz\'e bildir" → sana bildirim (konum yok, yalnızca bölge adı).',
+      hint: 'Ayşe\'nin kuralı: "Vardığımda Deniz\'e bildir" → sana bildirim (konum yok). Önce Ayşe\'ye bölge bildirimi izni ver.',
       run: () => {
         const n = demoControls.ayseArrivedHome();
-        return n === null ? 'Ayşe ile arkadaş değilsin.' : n > 0 ? 'Ayşe "Ev konumuna vardı" bildirimi gönderdi.' : 'Bildirim bastırıldı (soğuma / kural).';
+        return n === null ? 'Ayşe ile arkadaş değilsin.' : n > 0 ? 'Ayşe "Ev konumuna vardı" bildirimi gönderdi.' : 'Bildirim gitmedi (izin / soğuma / kural).';
       },
     },
     {
       key: 'f5-ayse-meetup',
       title: 'Ayşe buluşma noktası önersin',
-      hint: 'Ayşe ile senin aranda bir kafe → sana öneri kartı (herkesin varış süresiyle).',
-      run: () => (demoControls.ayseSuggestMeetup() ? 'Ayşe bir buluşma noktası önerdi.' : 'Öneri yapılamadı (arkadaş değil / yer bulunamadı).'),
+      hint: 'Ayşe ile senin aranda bir kafe → sana öneri kartı. Önce Ayşe\'ye davet izni ver.',
+      run: () => (demoControls.ayseSuggestMeetup() ? 'Ayşe bir buluşma noktası önerdi.' : 'Öneri yapılamadı (izin yok / yer bulunamadı).'),
     },
   ];
 

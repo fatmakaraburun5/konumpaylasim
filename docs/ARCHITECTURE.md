@@ -1,6 +1,6 @@
-# Mimari (Faz 1–6)
+# Mimari (Faz 1–6, Faz 8)
 
-Bu dosya kodun nasıl bir araya geldiğini kısaca anlatır. Ayrıntılar kodda ve alt README'lerdedir. Çelişki olursa `packages/core` geçerlidir. Faz 2 (harita, ETA, QR bağlantısı, web haritası, Maps maliyeti) ayrıntısı: [`PHASE2.md`](PHASE2.md). Faz 3 (arka plan takibi, pil, çevrimdışı kuyruk) ayrıntısı: [`PHASE3.md`](PHASE3.md). Faz 4 (ping, kısa notlar, tam konumlu SOS) ayrıntısı: [`PHASE4.md`](PHASE4.md). Faz 5 (varış / ayrılış tetikleyicileri, buluşma noktası) ayrıntısı: [`PHASE5.md`](PHASE5.md). Faz 6 (widget'lar, tek dokunuşla 1 saat, profil fotoğrafı, cinsiyet çerçevesi) ayrıntısı: [`PHASE6.md`](PHASE6.md). Mağaza yayını öncesi liste: [`RELEASE_CHECKLIST.md`](RELEASE_CHECKLIST.md).
+Bu dosya kodun nasıl bir araya geldiğini kısaca anlatır. Ayrıntılar kodda ve alt README'lerdedir. Çelişki olursa `packages/core` geçerlidir. Faz 2 (harita, ETA, QR bağlantısı, web haritası, Maps maliyeti) ayrıntısı: [`PHASE2.md`](PHASE2.md). Faz 3 (arka plan takibi, pil, çevrimdışı kuyruk) ayrıntısı: [`PHASE3.md`](PHASE3.md). Faz 4 (ping, kısa notlar, tam konumlu SOS) ayrıntısı: [`PHASE4.md`](PHASE4.md). Faz 5 (varış / ayrılış tetikleyicileri, buluşma noktası) ayrıntısı: [`PHASE5.md`](PHASE5.md). Faz 6 (widget'lar, tek dokunuşla 1 saat, profil fotoğrafı, cinsiyet çerçevesi) ayrıntısı: [`PHASE6.md`](PHASE6.md). Faz 8 (yönlü kişi izinleri, görünmez mod, Güvenlik Sözleşmesi / KVKK onayı) ayrıntısı: [`PHASE8.md`](PHASE8.md). Mağaza yayını öncesi liste: [`RELEASE_CHECKLIST.md`](RELEASE_CHECKLIST.md).
 
 ## Bileşenler
 
@@ -25,6 +25,9 @@ Bu dosya kodun nasıl bir araya geldiğini kısaca anlatır. Ayrıntılar kodda 
 | Faz 6: mobil | `apps/mobile/src/{services/widgets,services/profile,features/profile,features/quickShare}`, `state/{favoritesStore,profileStore,quickShareStore,widgetStore}.ts`, `services/f6Services.ts` | `widgetSync` (anlık görüntü yazma / yenileme kısıtı), `widgetBridge` (yerel modül köprüsü, web'de no-op), fotoğraf hattı (`avatarPipeline`: kırp, 512 + 160 px JPEG, `avatarUpload`), `GenderPicker` / `GenderGate`, `ProfileScreen`, `QuickShareSheet`, `app/quick-share.tsx` derin bağlantısı, "Durdur" bildirim eylemi |
 | Faz 6: native | `apps/mobile/targets/widgets` (Swift, `@bacons/apple-targets`), `modules/konum-widgets` (Expo modülü: iOS App Group yazıcı, Android AppWidget / Hızlı Ayar / WorkManager, config plugin) | iOS 17 WidgetKit (ana ekran + kilit ekranı, `StartQuickShareIntent`), Android RemoteViews 2x2 / 4x2, `QuickShareReceiver`, `QuickShareTileService`; widget token'ı anahtarlık (App Group erişim grubu) / AndroidKeyStore'da |
 | Faz 6: backend | `backend/functions/src/handlers/{widget,favorites,user}.ts`, `backend/storage.rules` | `widget_token_issue/revoke`, `widget_quick_share` (oturumsuz, token yetkili), `favorites_set`, `user_bootstrap` (+ `gender`, `avatar_thumb_url`), `widget_refresh` uyandırması, Storage avatar kuralları |
+| Faz 8: çekirdek | `packages/core/src/{access,invisible,consent}.ts` | Kapsamlar ve izin belgesi, saf belge geçişleri (`withGranted`, `withRevoked`, `withPendingRequest`, `withResponse`, `planPermissionRequest`), §4 matrisi (`canShareLocation`, `canPing`, `pingLocationAllowed`, `canZoneNotify`, `canInvite`, `meetupEtaAllowed`, `noteAudienceAllowed`, `canSendSos`, `canRequestPermission`), `REVOKE_EFFECTS`; görünmez anlık görüntü / geri yükleme planı; onay metni, `CONSENT_VERSION`, `CONSENT_TEXT_SHA256`, `isScrolledToBottom`, `consentExemptCall` |
+| Faz 8: mobil | `src/features/{access,consent,invisible}`, `app/(main)/{consent,friend/[id]}.tsx`, `state/{grantsStore,invisibleStore,consentStore,publishHold}.ts`, `services/{f8Services,firebase/grantsRepo,notifications/f8Push}.ts` | Onay kapısı (oturum servisleri onaydan sonra), İzin istekleri kartı + "İzin ver…", Kişi izinleri, seçicilerde "izin yok", paylaşırken "izin de verilecek" onayı, Görünmez ol kartı / harita şeridi / geri yükleme sayfası; görünmezken ve onay kapısındayken cihaz yayın yapmaz |
+| Faz 8: backend | `backend/functions/src/handlers/access.ts`, `graph.ts`, `callable.ts` (`consentGate`), tüm etkileşim işleyicileri | `permission_request_send/respond`, `permission_set` (zincirleme temizlik aynı transaction'da), `invisible_set`, `consent_accept/withdraw`; `readPairStates` iki yöndeki izni okur, `readCaller` onayı denetler |
 
 ## Paylaşım başlatma
 
@@ -168,6 +171,16 @@ widget "1 sa paylaş" (iOS AppIntent .requiresAuthentication / Android receiver,
   özetiyle durur, yalnızca sahibinin favorilerine 1 saatlik paylaşım açabilir (saatte 6, 30 gün). Fotoğraf yeniden
   kodlanır (EXIF / GPS gitmez); Storage nesnesini kurallarla yalnızca sahibi okur, arkadaşlar indirme token'lı URL ile
   görür. Favori listesi yalnızca sahibine açıktır. Cinsiyet yalnızca çerçeve rengi için arkadaş kopyasına gider.
+- Faz 8: arkadaşlık izin değildir. Her etkileşim verinin sahibinin ya da alıcının verdiği yönlü izne dayanır
+  (`permission_grants/{granter}_{grantee}`, yalnızca iki taraf okur); varsayılan kapalı, tek taraflı onay ters yönde
+  yetki doğurmaz. Karşı tarafa "görünmez oldu" ya da "izni geri aldı" denmez: paylaşım sıradan bir durdurma
+  (`stopped_by_sender`) gibi biter; ret ve geri almada push yoktur, ret anları sunucuya özel `permission_declines`'ta
+  durur (isteyen reddedildiğini öğrenmez). İzinsiz alıcı `share_start`'ta hata vermez, yalnızca çağırana
+  `needs_grant_receiver_ids` içinde döner. Görünmez mod sunucuda zorlanır (paylaşımlar ve QR bağlantıları biter, ACL
+  mezar taşı, yeni paylaşım `invisible_mode`). Güncel Güvenlik Sözleşmesi / KVKK onayı olmadan veri işleyen callable
+  `consent_required` döner; koruyucu işlemler (durdur, geri al, engelle, sil, görünmez ol, onayı geri çek) her zaman
+  çalışır. Onay kaydı sürüm, metin özeti, platform ve uygulama sürümüyle `users/{uid}/consents/{version}`'da tutulur.
+  `permission_request` / `permission_granted` push'ları koordinat taşımaz.
 
 ## Yollar
 
@@ -206,6 +219,11 @@ widget "1 sa paylaş" (iOS AppIntent .requiresAuthentication / Android receiver,
 | `users/{uid}.favorite_ids` | Firestore | yalnızca sahibi | callable (`favorites_set`; arkadaşlık bitince / hesap silmede sunucu çıkarır) |
 | `widget_tokens/{sha256}` | Firestore | yok | sunucu (`widget_token_issue/revoke`, 30 gün TTL, saatlik çağrı sayacı) |
 | `avatars/{uid}/{sürüm}.jpg`, `{sürüm}_160.jpg` | Storage | sahibi (`get`), arkadaşlar indirme URL'siyle | sahibi (yalnızca JPEG, ≤ 400 / 60 KB); sunucu eski sürümü ve hesap silmede klasörü siler |
+| `permission_grants/{granter}_{grantee}` | Firestore | granter ve grantee (`where granter_id == ben` / `where grantee_id == ben`) | callable (`permission_*`, `share_start` + `grant_location_view`, `location_request_respond`, `emergency_contacts_set`); arkadaşlık bitince / engelde / hesap silmede iki yönde silinir |
+| `permission_declines/{granter}_{grantee}` | Firestore | yok | sunucu (ret soğuması, TTL `purge_at`) |
+| `users/{uid}.invisible`, `.consent` | Firestore | yalnızca sahibi | callable (`invisible_set`, `consent_accept/withdraw`; SOS görünmezliği kapatır) |
+| `users/{uid}/consents/{version}` | Firestore | yalnızca sahibi | callable (`consent_accept` yazar, `consent_withdraw` `withdrawn_at` ekler; hesap silmede silinir) |
+| `rate_limits/{uid}_permission_request` | Firestore | yok | sunucu (günde 30 izin isteği) |
 
 ## Bilinen açıklar
 
@@ -225,6 +243,11 @@ widget "1 sa paylaş" (iOS AppIntent .requiresAuthentication / Android receiver,
   Android'de widget başına favori seçici yok (sıralı ilk favoriler). iOS 16 cihazda widget yok. Uygulama kapalıyken
   widget'tan başlayan paylaşımın takibe dönmesi sessiz push'a bağlı. Yetim avatar dosyaları süpürülmez. Uygulama içi
   hesap silme ekranı ve çökme raporlama yok (`PHASE6.md` §10, `RELEASE_CHECKLIST.md`).
+- Faz 8: KVKK metni hukuk incelemesinden geçmedi (yer tutucular, 18 yaş kuralı, yurt dışı aktarım dili). Faz 8 öncesi
+  arkadaşlıklar için izin göçü (`via:'migration'`) yazılmadı: eski etkin paylaşımlar bitişine kadar sürer ama
+  uzatılamaz, herkes izinleri yeniden verir. Başarısız `permission_set(false)` otomatik yeniden denenmez (cihazdaki
+  yayın kesimi yine uygulanır). Bölge `suppressed:'invisible'` ve buluşma ETA süzgeci için ayrı emülatör testi yok.
+  iOS / Android cihazda denenmedi (`PHASE8.md` §10).
 
 ## Çekirdek iş listesi
 

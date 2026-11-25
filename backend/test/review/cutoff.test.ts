@@ -48,16 +48,19 @@ describe('süre dolumu: okuma kesilmesi', () => {
     await befriend(X, Y);
     const s = (await start(X, [Y], { kind: 'preset', preset: 'm15' })).shares[0] as OutgoingShareView;
     await assertSucceeds(writeLive(X, s));
-    // Benzetim: bitişe 1,5 sn kaldı (belge ve ACL aynı sürümde; görev bu sürüm için kuyrukta).
+    // Benzetim: bitişe 1,5 sn kaldı (belge ve ACL aynı sürümde; görev bu sürüm için kuyrukta). Emülatörün görev
+    // kuyruğu share_start görevini hemen (yük altında gecikmeli) gönderir; o görev bu kısaltılmış bitişi görüp
+    // doğrudan çağrıyla yarışmasın diye benzetim yeni bir sürüm kullanır (eski sürümün görevi dokunmaz).
     const expires_at = Date.now() + 1_500;
-    await rtdb().ref(`share_acl/${s.share_id}`).update({ expires_at });
-    await db().doc(`location_shares/${s.share_id}`).update({ expires_at });
+    const version = s.version + 1;
+    await rtdb().ref(`share_acl/${s.share_id}`).update({ expires_at, version });
+    await db().doc(`location_shares/${s.share_id}`).update({ expires_at, version });
     const recv = await clientDb(Y.uid);
     const path = `live_locations/${Y.uid}/${s.share_id}`;
     expect((await recv.ref(path).once('value')).exists()).toBe(true);
 
     // Görev erken gelirse (≤ 30 sn) bitişi bekler, sonra bitirir.
-    const outcome = await handleExpiryTask({ share_id: s.share_id, version: s.version });
+    const outcome = await handleExpiryTask({ share_id: s.share_id, version });
     expect(outcome).toBe('expired');
     expect(Date.now()).toBeLessThan(expires_at + 5_000);
     expect((await recv.ref(path).once('value')).exists()).toBe(false);

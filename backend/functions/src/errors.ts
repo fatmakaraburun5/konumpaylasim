@@ -40,6 +40,11 @@ const HTTPS_CODE: Record<ErrorCode, FunctionsErrorCode> = {
   token_expired: 'unauthenticated',
   not_favorite: 'failed-precondition',
   not_friend: 'failed-precondition',
+  // Faz 8
+  not_permitted: 'failed-precondition',
+  invisible_mode: 'failed-precondition',
+  consent_required: 'failed-precondition',
+  permission_cooldown: 'resource-exhausted',
 };
 
 export interface ErrorDetails {

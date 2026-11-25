@@ -20,6 +20,8 @@ import { useFriends } from '../../state/friendsStore';
 import { notesStore, useNotesStore } from '../../state/notesStore';
 import { Button, Chip, MIN_TOUCH, SheetHeader, Text, useTheme } from '../../ui';
 import { RecipientPicker } from '../share/RecipientPicker';
+import { pickerRowAccess } from '../access/accessModel';
+import { useCanFn } from '../access/useAccess';
 
 export type NoteSheetRequest = { mode: 'status' } | { mode: 'place'; position: NotePosition; note?: PlaceNote | null };
 
@@ -52,6 +54,8 @@ export function NoteSheet({ onPlaceSaved, onPlaceDeleted, ref }: NoteSheetProps)
   const router = useRouter();
   const sheet = useRef<BottomSheetModal>(null);
   const friends = useFriends();
+  // Faz 8: yer notunu yalnızca konum izni verdiğim kişiler görebilir.
+  const can = useCanFn();
   const myStatus = useNotesStore((s) => s.myStatus);
 
   const [req, setReq] = useState<NoteSheetRequest>({ mode: 'status' });
@@ -263,6 +267,7 @@ export function NoteSheet({ onPlaceSaved, onPlaceDeleted, ref }: NoteSheetProps)
               friends={friends}
               selected={audience}
               onToggle={toggle}
+              access={(uid) => pickerRowAccess('note_audience', uid, can)}
               onAddFriend={() => {
                 sheet.current?.dismiss();
                 router.push('/friends');

@@ -108,14 +108,16 @@ describe('sharingStore', () => {
       receiver_ids: ['a', 'b'],
       duration: { kind: 'preset', preset: 'h1' },
       time_zone: 'Europe/Istanbul',
+      // Faz 8: varsayılan izin vermez (izinsiz alıcı needs_grant_receiver_ids'te döner).
+      grant_location_view: false,
     });
 
     // Sunucu onayından önce: "başlatılıyor", yayın hedefi YOK.
     expect(t.sessions()).toMatchObject([{ session_id: localSessionId('00000000-0000-4000-8000-000000000001'), phase: 'starting', confirmed: false }]);
     expect(t.targets()).toEqual([]);
 
-    t.start.resolve({ session_id: 'srv1', shares: [share('a'), share('b')], skipped_receiver_ids: [], server_now: NOW });
-    await expect(p).resolves.toEqual({ ok: true, sessionId: 'srv1', skippedReceiverIds: [] });
+    t.start.resolve({ session_id: 'srv1', shares: [share('a'), share('b')], skipped_receiver_ids: [], needs_grant_receiver_ids: [], server_now: NOW });
+    await expect(p).resolves.toEqual({ ok: true, sessionId: 'srv1', skippedReceiverIds: [], needsGrantReceiverIds: [] });
 
     // Yerel taslak kalktı, sunucu oturumu aktif.
     expect(t.sessions()).toHaveLength(1);
@@ -153,7 +155,7 @@ describe('sharingStore', () => {
   it('durdurma başarısız + süreç yeniden başlar: sunucu hâlâ aktif gösterse de yayın geri gelmez, share_stop aynı op_id ile yeniden gider', async () => {
     const t1 = setup('1');
     const p = t1.store.getState().startShare(['a', 'b'], { kind: 'preset', preset: 'h1' });
-    t1.start.resolve({ session_id: 'srv1', shares: [share('a'), share('b')], skipped_receiver_ids: [], server_now: NOW });
+    t1.start.resolve({ session_id: 'srv1', shares: [share('a'), share('b')], skipped_receiver_ids: [], needs_grant_receiver_ids: [], server_now: NOW });
     await p;
     const sp = t1.store.getState().stop('srv1');
     await flush();
@@ -234,7 +236,7 @@ describe('sharingStore', () => {
 
     // Kullanıcı aynı kişiyle yeniden başlatır: sunucu belgeyi yeni oturumla (srv2) değiştirir.
     const p = t.store.getState().startShare(['a'], { kind: 'preset', preset: 'm15' });
-    t.start.resolve({ session_id: 'srv2', shares: [share('a', { session_id: 'srv2', version: 3, expires_at: NOW + 15 * MINUTE })], skipped_receiver_ids: [], server_now: NOW });
+    t.start.resolve({ session_id: 'srv2', shares: [share('a', { session_id: 'srv2', version: 3, expires_at: NOW + 15 * MINUTE })], skipped_receiver_ids: [], needs_grant_receiver_ids: [], server_now: NOW });
     await p;
     await flush();
     expect(isShareBlocked('me_a')).toBe(false);
@@ -245,7 +247,7 @@ describe('sharingStore', () => {
   it('geç gelen (eski) anlık görüntü callable ile onaylanan yeni oturumu silmez', async () => {
     const t = setup('5');
     const p = t.store.getState().startShare(['a'], { kind: 'preset', preset: 'h1' });
-    t.start.resolve({ session_id: 'srv1', shares: [share('a')], skipped_receiver_ids: [], server_now: NOW });
+    t.start.resolve({ session_id: 'srv1', shares: [share('a')], skipped_receiver_ids: [], needs_grant_receiver_ids: [], server_now: NOW });
     await p;
     // Dinleyici henüz yeni yazmayı görmemiş: boş liste.
     t.store.getState().applyServerShares([]);
@@ -278,7 +280,7 @@ describe('sharingStore', () => {
   it('uzatma sürerken ikinci uzatma gönderilmez; onay sonrası yeni bitiş', async () => {
     const t = setup();
     const p = t.store.getState().startShare(['a'], { kind: 'preset', preset: 'h1' });
-    t.start.resolve({ session_id: 'srv1', shares: [share('a')], skipped_receiver_ids: [], server_now: NOW });
+    t.start.resolve({ session_id: 'srv1', shares: [share('a')], skipped_receiver_ids: [], needs_grant_receiver_ids: [], server_now: NOW });
     await p;
     const e1 = t.store.getState().extend('srv1', 30);
     const e2 = t.store.getState().extend('srv1', 60);
@@ -302,7 +304,7 @@ describe('sharingStore', () => {
     jest.useFakeTimers();
     const t = setup();
     const p = t.store.getState().startShare(['a'], { kind: 'preset', preset: 'm15' });
-    t.start.resolve({ session_id: 'srv1', shares: [share('a', { expires_at: NOW + 15 * MINUTE })], skipped_receiver_ids: [], server_now: NOW });
+    t.start.resolve({ session_id: 'srv1', shares: [share('a', { expires_at: NOW + 15 * MINUTE })], skipped_receiver_ids: [], needs_grant_receiver_ids: [], server_now: NOW });
     await p;
     expect(t.targets()).toHaveLength(1);
     t.setClock(NOW + 15 * MINUTE);

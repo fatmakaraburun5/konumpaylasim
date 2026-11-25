@@ -25,6 +25,12 @@ export function blockId(blockerId: UserId, blockedId: UserId): string {
   return `${blockerId}_${blockedId}`;
 }
 
+/** Faz 8: izin belgesi kimliği YÖNLÜDÜR: granter_grantee (`permission_grants`). A_B ile B_A ayrı belgelerdir. */
+export function grantId(granterId: UserId, granteeId: UserId): string {
+  if (granterId === granteeId) throw new Error('Kişi kendisine izin veremez');
+  return `${granterId}_${granteeId}`;
+}
+
 /** RFC 4122 v4; `crypto.randomUUID` yoksa (eski Hermes) `getRandomValues` ile. */
 export function uuidV4(rand: (n: number) => Uint8Array = defaultRandomBytes): string {
   const b = rand(16);

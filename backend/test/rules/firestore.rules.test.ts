@@ -313,3 +313,69 @@ describe('Faz 5: zones / zone_events / meetups', () => {
     await assertFails(fa.doc('meetup_cache/x').get());
   });
 });
+
+// ---------------------------------------------------------------------------
+// Faz 8: yönlü izinler yalnızca iki tarafa; onay kayıtları yalnızca sahibine (kimse yazamaz)
+// ---------------------------------------------------------------------------
+
+describe('Faz 8: permission_grants / permission_declines / users/{uid}/consents', () => {
+  const grant = (granter: string, grantee: string) => ({
+    granter_id: granter,
+    grantee_id: grantee,
+    scopes: { location_view: { granted_at: now, via: 'manual' } },
+    pending: null,
+    declined_at: {},
+    updated_at: now,
+    version: 1,
+  });
+  beforeAll(async () => {
+    const batch = db().batch();
+    batch.set(db().doc(`permission_grants/${A}_${B}`), grant(A, B));
+    batch.set(db().doc(`permission_declines/${B}_${A}`), { granter_id: B, grantee_id: A, declined_at: { ping: now }, updated_at: now });
+    batch.set(db().doc(`users/${A}/consents/2026-11-25`), { user_id: A, version: '2026-11-25', text_sha256: '0'.repeat(64), scrolled_to_bottom: true, accepted_at: now, platform: 'ios', app_version: 'test', withdrawn_at: null });
+    await batch.commit();
+  });
+
+  it('izin belgesini granter ve grantee okur (sorgular dahil); üçüncü kişi okuyamaz; kimse yazamaz', async () => {
+    const [fa, fb, fc] = await Promise.all([clientFirestore(A), clientFirestore(B), clientFirestore(C)]);
+    await assertSucceeds(fa.doc(`permission_grants/${A}_${B}`).get());
+    await assertSucceeds(fb.doc(`permission_grants/${A}_${B}`).get());
+    const out = await assertSucceeds(fa.collection('permission_grants').where('granter_id', '==', A).get());
+    expect(out.docs.map((d) => d.id)).toContain(`${A}_${B}`);
+    const inc = await assertSucceeds(fb.collection('permission_grants').where('grantee_id', '==', B).get());
+    expect(inc.docs.map((d) => d.id)).toContain(`${A}_${B}`);
+    await assertFails(fc.doc(`permission_grants/${A}_${B}`).get());
+    await assertFails(fc.collection('permission_grants').where('granter_id', '==', A).get());
+    await assertFails(fa.collection('permission_grants').get());
+    // Ne granter ne grantee yazabilir (kendine izin vermek ya da istek uydurmak yok).
+    await assertFails(fa.doc(`permission_grants/${A}_${B}`).update({ scopes: {} }));
+    await assertFails(fb.doc(`permission_grants/${A}_${B}`).update({ 'scopes.ping': { granted_at: now, via: 'manual' } }));
+    await assertFails(fb.doc(`permission_grants/${B}_${A}`).set(grant(B, A)));
+    await assertFails(fa.doc(`permission_grants/${A}_${B}`).delete());
+  });
+
+  it('ret kayıtlarını yalnızca reddeden okur (isteyen reddedildiğini öğrenmez); kimse yazamaz', async () => {
+    const [fa, fb, fc] = await Promise.all([clientFirestore(A), clientFirestore(B), clientFirestore(C)]);
+    await assertFails(fa.doc(`permission_declines/${B}_${A}`).get());
+    await assertFails(fa.collection('permission_declines').where('grantee_id', '==', A).get());
+    await assertFails(fc.doc(`permission_declines/${B}_${A}`).get());
+    await assertSucceeds(fb.doc(`permission_declines/${B}_${A}`).get());
+    const own = await assertSucceeds(fb.collection('permission_declines').where('granter_id', '==', B).get());
+    expect(own.docs.map((d) => d.id)).toContain(`${B}_${A}`);
+    await assertFails(fb.doc(`permission_declines/${B}_${A}`).delete());
+    await assertFails(fb.doc(`permission_declines/${B}_${A}`).update({ declined_at: {} }));
+  });
+
+  it('onay kaydını yalnızca sahibi okur; kimse yazamaz', async () => {
+    const [fa, fb] = await Promise.all([clientFirestore(A), clientFirestore(B)]);
+    await assertSucceeds(fa.doc(`users/${A}/consents/2026-11-25`).get());
+    await assertSucceeds(fa.collection(`users/${A}/consents`).get());
+    await assertFails(fb.doc(`users/${A}/consents/2026-11-25`).get());
+    await assertFails(fb.collection(`users/${A}/consents`).get());
+    await assertFails(fa.doc(`users/${A}/consents/2026-11-25`).update({ withdrawn_at: null, accepted_at: 1 }));
+    await assertFails(fa.doc(`users/${A}/consents/2099-01-01`).set({ user_id: A, version: '2099-01-01' }));
+    // Profil üzerindeki onay / görünmez alanları da istemciden yazılamaz.
+    await assertFails(fa.doc(`users/${A}`).update({ consent: { version: '2026-11-25', accepted_at: now } }));
+    await assertFails(fa.doc(`users/${A}`).update({ invisible: null }));
+  });
+});

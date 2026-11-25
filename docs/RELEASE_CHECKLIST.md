@@ -115,6 +115,8 @@ kapatılmalıdır. Kutular yayın sorumlusu tarafından işaretlenir.
 - [ ] Sırlar: `PHONE_HMAC_PEPPER`, Maps sunucu anahtarı Secret Manager'da; depoda gerçek anahtar yok.
 - [ ] Functions hizmet hesabı: Storage nesne silme (avatar eski sürümü, hesap silme), Cloud Tasks kuyruğu
       (`shareexpirytask`) yetkileri.
+- [ ] **Cloud Storage bölgesi:** varsayılan bucket (profil fotoğrafları) Avrupa'da (`eur3`) oluşturuldu; KVKK metni §7
+      bunu söyler (Faz 8).
 
 ## 8. Gizlilik etiketleri ve veri formları
 

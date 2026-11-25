@@ -39,7 +39,7 @@ ilgilenildiği halde hepsi aynı anda açık duruyordu.
 | Görünüm | Ne zaman | Yükseklik (390×844) |
 |---|---|---|
 | **Deste** (varsayılan) | öndeki tek kart + en çok 2 arka katman | ~140 pt, kişi sayısından bağımsız |
-| **Liste** | "2/4 ⌃" ya da desteyi yukarı sürükle | ekranın en çok %28'i, içi kaydırılır |
+| **Liste** | "2/4 ⌃" ya da desteyi yukarı sürükle (tek paylaşımda da: "1/1 ⌃") | ekranın en çok %28'i, içi kaydırılır |
 | **İnce çubuk** | tutamaca dokun ya da aşağı sürükle | 44 pt ("4 paylaşım · ilk bitiş 18:09") |
 
 ### Kart içeriği
@@ -65,6 +65,9 @@ Kısa ekranda (yükseklik < 720 pt, ör. 375×667) kitapçık ince çubuk olarak
 %65'in altına indirir. Yeni paylaşım çubuğu açmaz; yalnızca "bitmek üzere"ye geçen paylaşım desteyi açar.
 
 Arkada bekleyen bir kart bitmek üzereyse sayfa düğmesi ("2/4 ⌃") ve o kartın katmanı turuncuya döner.
+
+Tek paylaşımda da sayfa düğmesi ("1/1 ⌃") görünür ve yukarı sürükleme listeyi açar: paylaşım sürerken haritadaki
+paylaş düğmesi gizli olduğundan "+ Yeni paylaşım"ın tek yeri listedir. Sola / sağa kaydırma tek kartta yapılmaz.
 
 ### Etkileşim
 | Hareket | Sonuç |

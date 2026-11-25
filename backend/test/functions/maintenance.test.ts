@@ -9,6 +9,7 @@ import { db } from '../../functions/src/admin';
 import { sweepInactive } from '../../functions/src/handlers/user';
 import { resolvePushTokens } from '../../functions/src/push';
 import { type TestUser, call, cleanupRulesEnv, newUser, opId } from '../helpers/emulator';
+import { grantAll } from '../review/helpers';
 
 afterAll(async () => {
   await cleanupRulesEnv();
@@ -17,6 +18,7 @@ afterAll(async () => {
 async function befriend(a: TestUser, b: TestUser): Promise<void> {
   await call('friend_request_send', { op_id: opId(), via: 'invite_code', invite_code: b.invite_code }, a);
   await call('friend_request_respond', { op_id: opId(), friendship_id: friendshipId(a.uid, b.uid), accept: true }, b);
+  await grantAll(a, b); // Faz 8: iki yönde tüm istenebilir izinler
 }
 
 const start = (sender: TestUser, receiver: TestUser) =>

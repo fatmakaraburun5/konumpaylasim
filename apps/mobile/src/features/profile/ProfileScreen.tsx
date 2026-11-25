@@ -7,6 +7,8 @@
  *  - Favoriler: widget sırası (yukarı / aşağı), çıkar; seçim Arkadaşlar ekranındaki yıldızla.
  *  - Widget: "Kilit ekranında ayrıntı göster" (varsayılan KAPALI: kilit ekranında yer ve pil gizli), durum
  *    (hızlı paylaşım hazır mı, arka plan konumu, son güncelleme, son hızlı paylaşım).
+ * Faz 8: en üstte "Görünmez ol" kartı (InvisibleCard); altta "Sözleşme ve KVKK" kartı (ConsentCard). Favori yalnızca
+ * konum izni verdiğim kişi olabilir (izin kalkınca sunucu favoriden çıkarır).
  */
 import { formatAgo, GENDER_TEXT, toQuickShareError, quickShareErrorText, type Gender } from '@konum/core';
 import { useRouter } from 'expo-router';
@@ -25,6 +27,8 @@ import { profileStore, useProfileStore } from '../../state/profileStore';
 import { useQuickShareStore } from '../../state/quickShareStore';
 import { useWidgetStore, widgetStore } from '../../state/widgetStore';
 import { Avatar, Button, cardShadow, IconButton, MIN_TOUCH, Text, useTheme } from '../../ui';
+import { ConsentCard } from '../consent/ConsentCard';
+import { InvisibleCard } from '../invisible/InvisibleCard';
 import { FriendAvatar } from './FriendAvatar';
 import { GenderPicker } from './GenderPicker';
 
@@ -99,10 +103,13 @@ export function ProfileScreen() {
       <View style={[styles.header, { paddingTop: insets.top + spacing.xs, paddingHorizontal: spacing.xs }]}>
         <IconButton icon="chevronLeft" accessibilityLabel="Geri" onPress={() => router.back()} />
         <Text variant="title" accessibilityRole="header">
-          Profil ve widget
+          Profili düzenle
         </Text>
       </View>
       <ScrollView contentContainerStyle={{ padding: spacing.md, gap: spacing.md, paddingBottom: insets.bottom + spacing.xl }} keyboardShouldPersistTaps="handled">
+        {/* --- Faz 8: Görünmez ol --- */}
+        <InvisibleCard />
+
         {/* --- Fotoğraf --- */}
         <View style={[card, styles.center]} testID="profile-photo-card">
           <View>
@@ -311,6 +318,9 @@ export function ProfileScreen() {
             </Text>
           ) : null}
         </View>
+
+        {/* --- Faz 8: Sözleşme ve KVKK --- */}
+        <ConsentCard />
 
         <Button title="Çıkış yap" variant="ghost" onPress={() => void signOut()} />
       </ScrollView>

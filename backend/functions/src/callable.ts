@@ -1,13 +1,15 @@
 /**
- * Callable sarmalayıcısı: kimlik kontrolü → zod doğrulaması → işleyici → hata eşleme.
+ * Callable sarmalayıcısı: kimlik kontrolü → zod doğrulaması → Faz 8 onay ön kapısı → işleyici → hata eşleme.
  * İşleyiciler (handlers/*) saf `(ctx, data)` fonksiyonlarıdır; testler onları doğrudan da çağırabilir.
  */
-import type { EpochMs, UserId } from '@konum/core';
+import { type EpochMs, type UserId, consentExemptCall } from '@konum/core';
 import { onCall, type CallableRequest } from 'firebase-functions/https';
 import type { SecretParam } from 'firebase-functions/params';
 import type { z } from 'zod';
 import { CALLABLE_SECRETS, ENFORCE_APP_CHECK, MAX_INSTANCES, REGION } from './config';
+import { type UserDoc, isUsableProfile, refs } from './docs';
 import { fail, toHttpsError } from './errors';
+import { assertConsent, needsProfile } from './graph';
 import { isServerUid } from './util';
 
 export interface CallCtx {
@@ -46,6 +48,19 @@ export function parseInput<S extends z.ZodType>(schema: S, raw: unknown): z.outp
   throw fail('invalid_argument', { extra: { issues } });
 }
 
+/**
+ * Faz 8 onay ön kapısı (KVKK): güncel `CONSENT_VERSION` onaylanmadan veri işleyen callable `consent_required` döner.
+ * Koruyucu işlemler (core `consentExemptCall`: durdurma / geri alma / engelleme / silme / görünmez olma / onay) ve
+ * `user_bootstrap` muaftır. Profil yoksa ya da hesap siliniyorsa `needsProfile` (failed-precondition).
+ * Transaction DIŞI tek okuma; paylaşım / izin açan işleyiciler aynı denetimi transaction içinde `readCaller` ile yineler.
+ */
+export async function consentGate(name: string, ctx: Pick<CallCtx, 'uid'>, data: unknown): Promise<void> {
+  if (consentExemptCall(name, data)) return;
+  const u = (await refs.user(ctx.uid).get()).data() as UserDoc | undefined;
+  if (!isUsableProfile(u)) throw needsProfile();
+  assertConsent(u);
+}
+
 export type Handler<I, R> = (ctx: CallCtx, data: I) => Promise<R>;
 
 export interface CallableOptions {
@@ -65,6 +80,7 @@ export function callable<S extends z.ZodType, R>(name: string, schema: S, handle
       try {
         const ctx = requireAuth(req);
         const data = parseInput(schema, req.data);
+        await consentGate(name, ctx, data);
         return await handler(ctx, data);
       } catch (err) {
         throw toHttpsError(err, name);

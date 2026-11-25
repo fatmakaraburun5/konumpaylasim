@@ -9,13 +9,20 @@
  *     servisi BAŞLATAMAZ (`ForegroundServiceStartNotAllowedException`) → hata yutulur; görünür "duraksadı"
  *     bildirimi (tracking_stalled) kullanıcıyı uygulamaya getirir. [Varsayım: cihazda doğrulanmalı]
  *  3. Tek seferlik ölçüm hattan geçer (kalp atışı) ve çevrimdışı kuyruk boşaltılır.
+ * Faz 8: yayın kesme anahtarı (görünmez mod / onay kapısı) açıksa takip AYAĞA KALDIRILMAZ; hat hedefleri boşaltır.
  */
 import { loadTargets } from '../../state/persist';
+import { hydratePublishHold, isPublishHeld } from '../../state/publishHold';
 import { ensureAdaptiveRuntime } from './adaptive/runtime';
 import { locationEngine } from './ExpoLocationEngine';
-import { applyTrackingNow, flushOutbox, handleSamples } from './pipeline';
+import { applyPublishHold, applyTrackingNow, flushOutbox, handleSamples } from './pipeline';
 
 export async function resumeTracking(reason: 'push' | 'foreground'): Promise<void> {
+  await hydratePublishHold();
+  if (isPublishHeld()) {
+    await applyPublishHold().catch(() => undefined);
+    return;
+  }
   const persisted = await loadTargets();
   if (!persisted.uid || (persisted.targets.length === 0 && persisted.linkTargets.length === 0)) return;
   ensureAdaptiveRuntime();

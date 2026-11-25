@@ -17,6 +17,7 @@ import { DEMO_ME, MAP_HOME, PEOPLE } from '../src/demo/server/world';
 import { createZoneMonitorCore, type ZoneMonitorDeps } from '../src/services/location/zoneMonitorCore';
 import { createMeetupStore } from '../src/state/meetupStore';
 import type { PendingZoneReport, PersistedZone } from '../src/state/persist';
+import { acceptConsent, grant } from './demoTestUtils';
 
 const T0 = 1_800_000_000_000;
 const C = { lat: 41.0, lng: 29.0 };
@@ -174,7 +175,11 @@ describe('demo sunucusu (Faz 5)', () => {
   it('zone_upsert yabancıyı sessizce düşürür; zone_event_report notify → push, tekrar → cooldown, start_share yanıtta', async () => {
     const s = new DemoServer();
     servers.push(s);
+    await acceptConsent(s); // Faz 8: onaysız hesap çağrı yapamaz
     const ayse = PEOPLE.ayse.uid;
+    // Faz 8: bildirim için Ayşe'nin izni (zone_notify), paylaşım için benim iznim (location_view).
+    await grant(s, ayse, DEMO_ME, 'zone_notify');
+    await grant(s, DEMO_ME, ayse, 'location_view');
     const rule = (trigger: 'arrive' | 'leave', action: 'notify' | 'start_share') => ({
       rule_id: uuidV4(),
       trigger,
@@ -208,6 +213,7 @@ describe('demo sunucusu (Faz 5)', () => {
   it('meetup_suggest: sahte Places + matris → sıralı öneriler; çok yakın → yalnızca orta nokta', async () => {
     const s = new DemoServer();
     servers.push(s);
+    await acceptConsent(s); // Faz 8: onaysız hesap çağrı yapamaz
     const ask = (b: { lat: number; lng: number }) =>
       s.call(
         'meetup_suggest',
@@ -230,6 +236,7 @@ describe('demo sunucusu (Faz 5)', () => {
   it('meetup önbelleği çağırana özel: aynı hücrelerde Ayşe\'nin önerisi benim kaydımı kullanmaz (ETA anahtarları karışmaz)', async () => {
     const s = new DemoServer();
     servers.push(s);
+    await acceptConsent(s); // Faz 8: onaysız hesap çağrı yapamaz
     const ayse = PEOPLE.ayse.uid;
     // Ayşe'nin botun kullanacağı konumu (aynı hücre → eski kodda aynı önbellek anahtarı).
     const p = (s as unknown as { botPosition: (u: string) => { lat: number; lng: number } }).botPosition(ayse);
@@ -242,9 +249,12 @@ describe('demo sunucusu (Faz 5)', () => {
     )) as MeetupSuggestResponse;
     expect(mine.cached).toBe(false);
     // Ayşe aynı iki hücreyle önerir: 'me' = Ayşe, DEMO_ME = ben → paylaşılan önerinin ETA'larında iki farklı kişi.
+    // Faz 8: Ayşe'nin bana davet atması benim iznimi (meetup_invite), ETA'mı görmesi location_view ister.
+    await grant(s, DEMO_ME, ayse, 'meetup_invite', 'location_view');
     const id = s.botMeetupSuggest(ayse, MAP_HOME);
     expect(id).not.toBeNull();
     const shared = (s as unknown as { db: { meetups: Record<string, { etas: { key: string }[] }> } }).db.meetups[id!];
-    expect(shared?.etas.map((e) => e.key).sort()).toEqual([ayse, DEMO_ME].sort());
+    // Faz 8: yalnızca önerenin ('me' → Ayşe) ETA'sı saklanır; benimki (başka katılımcı) hiç saklanmaz.
+    expect(shared?.etas.map((e) => e.key)).toEqual([ayse]);
   });
 });

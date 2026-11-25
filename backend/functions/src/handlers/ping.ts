@@ -14,8 +14,21 @@
  *    (idempotent; ilk yazma kaybolduysa onarır), push yalnızca ilk çalıştırmada gider. [Varsayım] Alıcı bu arada
  *    kaydı sildiyse tekrar (yalnızca istemci yeniden denemesinde) onu geri getirir; süre en çok 15 dk.
  *  - Push başarısızlığı callable'ı bozmaz.
+ *  - Faz 8 (core `canPing` / `pingLocationAllowed`): alıcının (Y) bana `ping` izni yoksa `not_permitted`. Konum
+ *    yalnızca benim alıcıya `location_view` iznim varsa ve görünür isem eklenir; yoksa SESSİZCE çıkarılır (ping yine
+ *    gider). Op tekrarında (karar bilinmiyorsa) konum her zaman çıkarılır.
  */
-import { CALLABLES, HOUR, PING_LIMITS, type Ping, type PingSendRequestSchema, type PingSendResponse, type EpochMs } from '@konum/core';
+import {
+  CALLABLES,
+  HOUR,
+  PING_LIMITS,
+  type Ping,
+  type PingSendRequestSchema,
+  type PingSendResponse,
+  type EpochMs,
+  canPing,
+  pingLocationAllowed,
+} from '@konum/core';
 import * as logger from 'firebase-functions/logger';
 import type { z } from 'zod';
 import { rtdb } from '../admin';
@@ -23,7 +36,7 @@ import type { CallCtx } from '../callable';
 import { LIMITS } from '../config';
 import { RTDB_F4, type PingExpiryEntry } from '../docs';
 import { fail } from '../errors';
-import { canShare, readCaller, readPairStates } from '../graph';
+import { callerAccess, isFriend, pairInput, readCaller, readPairStates } from '../graph';
 import { readRateLimit, runOp, writeRateLimit } from '../ops';
 import { type PushSender, buildPingPush, sendPushToUser } from '../push';
 import { assertUid, isServerUid, sha256Hex } from '../util';
@@ -63,24 +76,31 @@ export async function pingSend(ctx: CallCtx, data: PingInput, deps: PingDeps = {
   assertUid(data.to, 'to');
   const pingId = sha256Hex(`ping|${ctx.uid}|${data.op_id}`).slice(0, 24);
   let fresh: { name: string } | null = null;
+  // Konum eklenebilir mi (yalnızca ilk çalıştırmada bilinir; tekrarda false → konum çıkarılır).
+  let allowLocation = false;
 
   const response = await runOp(ctx, data.op_id, CALLABLES.pingSend, data, async (tx) => {
     fresh = null;
+    allowLocation = false;
     const me = await readCaller(tx, ctx.uid);
     if (data.to === ctx.uid) throw fail('not_friends');
     const [pair] = await readPairStates(tx, ctx.uid, [data.to]);
-    if (!pair || !canShare(pair)) throw fail('not_friends');
+    if (!pair || !isFriend(pair)) throw fail('not_friends');
+    const access = pairInput(pair, callerAccess(me));
+    if (!canPing(access)) throw fail('not_permitted');
     const pairRate = await readRateLimit(tx, ctx.uid, `ping_${data.to}`, 1, PING_LIMITS.perPairCooldownMs, ctx.now);
     const hourRate = await readRateLimit(tx, ctx.uid, 'ping', PING_LIMITS.perUserPerHour, HOUR, ctx.now);
     writeRateLimit(tx, pairRate, PING_LIMITS.perPairCooldownMs);
     writeRateLimit(tx, hourRate, HOUR);
     fresh = { name: me.display_name ?? '' };
+    allowLocation = pingLocationAllowed(access);
     const r: PingSendResponse = { ping_id: pingId, expires_at: ctx.now + PING_LIMITS.ttlMs, server_now: ctx.now };
     return { response: r };
   });
 
   // Commit sonrası (ilk çalıştırma ve tekrar): kayıt aynı yola yazılır. Süresi geçmişse yazılmaz.
-  const rec = pingRecord(ctx.uid, data, response.ping_id, response.server_now);
+  // Faz 8: "Yoldayım" ETA'sı gönderenin konumundan türer → konumla aynı koşulda (location_view ∧ görünür) kalır.
+  const rec = pingRecord(ctx.uid, allowLocation ? data : { ...data, location: null, eta_s: null }, response.ping_id, response.server_now);
   if (rec.expires_at > Date.now()) {
     try {
       await rtdb()

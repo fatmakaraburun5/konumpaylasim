@@ -31,13 +31,16 @@ import {
   DATABASE_RULES,
 } from '../helpers/emulator';
 import { DB_HOST, RTDB_NS } from '../helpers/env';
+import { grantAll } from '../review/helpers';
 
 const TZ = 'Europe/Istanbul';
 
+/** Faz 8: arkadaşlık + iki yönde tüm istenebilir izinler (bu dosyanın Faz 1 anlamı korunur). */
 async function befriend(a: TestUser, b: TestUser): Promise<void> {
   await call('friend_request_send', { op_id: opId(), via: 'invite_code', invite_code: b.invite_code }, a);
   const r = await call('friend_request_respond', { op_id: opId(), friendship_id: friendshipId(a.uid, b.uid), accept: true }, b);
   expect(r.status).toBe('accepted');
+  await grantAll(a, b);
 }
 
 async function start(sender: TestUser, receivers: TestUser[], duration: unknown = { kind: 'preset', preset: 'h1' }, op = opId()) {

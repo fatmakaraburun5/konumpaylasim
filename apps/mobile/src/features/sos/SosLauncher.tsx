@@ -45,6 +45,7 @@ export function SosLauncher({ route }: SosLauncherProps) {
   const outgoing = useSosStore((s) => s.outgoing);
   const storePhase = useSosStore((s) => s.phase);
   const storeError = useSosStore((s) => s.error);
+  const liveShareSkipped = useSosStore((s) => s.liveShareSkipped);
   const accuracy = useLocationStore((s) => s.myPosition?.accuracy ?? null);
   const sosActive = outgoing !== null && isSosActive(outgoing);
 
@@ -159,6 +160,7 @@ export function SosLauncher({ route }: SosLauncherProps) {
         resolving={storePhase === 'resolving'}
         error={sosActive ? storeError : null}
         names={names}
+        liveShareSkipped={liveShareSkipped}
         onResolve={() => void sosStore.getState().resolve()}
         onClose={() => setScreenOpen(false)}
       />

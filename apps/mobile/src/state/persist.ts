@@ -38,6 +38,16 @@ const STATUS_NOTE_KEY = 'konum.bg.statusNote.v1';
 const ZONES_KEY = 'konum.bg.zones.v1';
 const ZONE_FILTER_KEY = 'konum.bg.zoneFilter.v1';
 const ZONE_REPORTS_KEY = 'konum.bg.zoneReports.v1';
+/**
+ * Faz 8: "hiçbir şey yayınlama" kesme anahtarı (görünmez mod niyeti + onay kapısı). Başsız konum hattı, bölge görevi,
+ * widget benimseme ve takip yeniden başlatma bunu okur; bellek kopyası `state/publishHold.ts`. Konum İÇERMEZ.
+ */
+const PUBLISH_HOLD_KEY = 'konum.bg.invisible.v1';
+/**
+ * Faz 8: sunucuya ulaştığı doğrulanmamış görünmez olma niyeti, hesaba göre. Çıkışta SİLİNMEZ (stopIntents gibi):
+ * aynı hesapla yeniden girişte niyet geri gelir ve aynı op_id ile yeniden gönderilir.
+ */
+const PENDING_INVISIBLE_KEY = 'konum.f8.pendingInvisible.v1';
 
 /**
  * Yayın hedefi + sunucunun onayladığı oturum özeti. Özet, açılışta sunucu dinleyicisi henüz
@@ -65,6 +75,11 @@ export interface PersistedTargets {
   serverOffsetMs: number;
   /** Ön plan servisi bildirimi metni ("2 kişiyle · 17:45'e kadar"). */
   notificationBody: string;
+  /**
+   * Faz 8: liste onay kapısını bilen bir sürümün ön planı tarafından (`saveTargets`) yazıldı mı. Eski (Faz 8 öncesi)
+   * kayıtta yok: yayın anahtarı kaydı da yoksa başsız bağlam onay durumunu bilemez ve yayın yapmaz (`publishHold`).
+   */
+  consent_aware?: boolean;
 }
 
 export interface PersistedCursor {
@@ -109,6 +124,7 @@ const TargetsSchema = z.object({
   linkTargets: z.array(LinkTargetSchema).default([]),
   serverOffsetMs: z.number(),
   notificationBody: z.string().default(''),
+  consent_aware: z.boolean().optional(),
 });
 
 const CursorSchema = z.object({
@@ -157,15 +173,29 @@ export function withTargetsLock<T>(fn: () => Promise<T>): Promise<T> {
   return run;
 }
 
-const readTargets = () => read(TARGETS_KEY, TargetsSchema, EMPTY_TARGETS);
-const writeTargets = (v: PersistedTargets) => AsyncStorage.setItem(TARGETS_KEY, JSON.stringify(v));
+/** Son okunan / yazılan hedef listesi onay kapısını bilen sürümden mi (yayın anahtarı kaydı yokken bakılır). */
+let lastTargetsLegacy = false;
+const noteTargets = (v: PersistedTargets): PersistedTargets => {
+  lastTargetsLegacy = !!v.uid && (v.targets.length > 0 || v.linkTargets.length > 0) && v.consent_aware !== true;
+  return v;
+};
+const readTargets = () => read(TARGETS_KEY, TargetsSchema, EMPTY_TARGETS).then(noteTargets);
+const writeTargets = (v: PersistedTargets) => AsyncStorage.setItem(TARGETS_KEY, JSON.stringify(noteTargets(v)));
+
+/**
+ * Faz 8: son okunan hedef listesi Faz 8 öncesi bir sürümün yazdığı, boş olmayan bir liste mi? (`publishHold`: anahtar
+ * kaydı yoksa onay durumu bilinmiyor demektir → başsız bağlam yayın yapmaz.)
+ */
+export function lastTargetsAreLegacy(): boolean {
+  return lastTargetsLegacy;
+}
 
 /** Kilit dışında anlık okuma (karar vermek için değil, yalnızca bilgi için). */
 export const loadTargets = (): Promise<PersistedTargets> => readTargets();
 
 /** Ön planın yetkili tam listesi (sharingCoordinator). `linkTargets` verilmezse boş liste yazılır. */
 export const saveTargets = (v: Omit<PersistedTargets, 'linkTargets'> & { linkTargets?: PersistedLinkTarget[] }): Promise<void> =>
-  withTargetsLock(() => writeTargets({ ...v, linkTargets: v.linkTargets ?? [] }));
+  withTargetsLock(() => writeTargets({ ...v, linkTargets: v.linkTargets ?? [], consent_aware: true }));
 
 /**
  * Kilitli okuma-değiştirme-yazma. `fn` null dönerse hiçbir şey yazılmaz. Dönen değer: işlem sonrası liste.
@@ -321,12 +351,62 @@ export async function saveStatusNote(v: PersistedStatusNote | null): Promise<voi
   }
 }
 
+// --- Faz 8: yayın kesme anahtarı (görünmez mod / onay kapısı) ---------------------------------------
+
+/** Görünmez olma niyeti: sunucu onaylayana kadar AYNI op_id ile yeniden denenir. */
+export interface PersistedInvisibleIntent {
+  op_id: string;
+  /** Cihaz saati (yalnızca bilgi). */
+  at: EpochMs;
+  /** Sunucu profili `invisible.on === true` gösterdi mi (onaylanmış niyet, sunucu kapatınca silinir). */
+  confirmed: boolean;
+}
+
+export interface PersistedPublishHold {
+  uid: UserId;
+  invisible: PersistedInvisibleIntent | null;
+  /** Güncel sözleşme onayı yok: onaylanana kadar hiçbir şey yayınlanmaz. */
+  consent_hold: boolean;
+  /**
+   * Profilde görülen onaylı sözleşme sürümü (yoksa null). Başsız bağlam profili okuyamaz: bu sürüm uygulamanın
+   * `CONSENT_VERSION`'ından eskiyse (sürüm yükseltildi, kapı henüz gösterilmedi) yayın yapılmaz.
+   */
+  consent_version: string | null;
+}
+
+const IntentSchema = z.object({ op_id: z.string(), at: z.number(), confirmed: z.boolean() });
+
+const PublishHoldSchema = z.object({
+  uid: z.string().min(1),
+  invisible: IntentSchema.nullable().default(null),
+  consent_hold: z.boolean().default(false),
+  consent_version: z.string().nullable().default(null),
+});
+
+export const loadPublishHold = (): Promise<PersistedPublishHold | null> => read(PUBLISH_HOLD_KEY, PublishHoldSchema.nullable(), null);
+
+export async function savePublishHold(v: PersistedPublishHold | null): Promise<void> {
+  if (v && (v.invisible || v.consent_hold || v.consent_version)) await AsyncStorage.setItem(PUBLISH_HOLD_KEY, JSON.stringify(v));
+  else await AsyncStorage.removeItem(PUBLISH_HOLD_KEY);
+}
+
+/** Çıkışta saklanan, onaylanmamış görünmez niyetleri (hesap → niyet). */
+export type PendingInvisibleIntents = Record<UserId, PersistedInvisibleIntent>;
+
+export const loadPendingInvisible = (): Promise<PendingInvisibleIntents> =>
+  read(PENDING_INVISIBLE_KEY, z.record(z.string(), IntentSchema), {} as PendingInvisibleIntents);
+
+export async function savePendingInvisible(v: PendingInvisibleIntents): Promise<void> {
+  if (Object.keys(v).length) await AsyncStorage.setItem(PENDING_INVISIBLE_KEY, JSON.stringify(v));
+  else await AsyncStorage.removeItem(PENDING_INVISIBLE_KEY);
+}
+
 /**
  * Çıkışta: arka plan görevi bir sonraki örnekte hedef bulamaz ve takibi kapatır.
  * Durdurma niyetleri (stopIntents) SİLİNMEZ: aynı hesapla tekrar girişte sunucuya yeniden gönderilir.
  */
 export async function clearBackgroundState(): Promise<void> {
-  await withTargetsLock(() => AsyncStorage.multiRemove([TARGETS_KEY, CURSOR_KEY, PROFILE_KEY, STATUS_NOTE_KEY, ZONES_KEY, ZONE_FILTER_KEY, ZONE_REPORTS_KEY]));
+  await withTargetsLock(() => AsyncStorage.multiRemove([TARGETS_KEY, CURSOR_KEY, PROFILE_KEY, STATUS_NOTE_KEY, ZONES_KEY, ZONE_FILTER_KEY, ZONE_REPORTS_KEY, PUBLISH_HOLD_KEY]));
   statusNoteCache = null;
 }
 

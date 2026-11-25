@@ -5,8 +5,11 @@
  *    `runQuickShare` (core `quickShareExpiry`): yoksa başlar, 60 dk'dan azsa 60 dk'ya uzar, fazlaysa dokunulmaz.
  *  - Konum izni gerekiyorsa önce mevcut izin akışı (PermissionFlow) açılır; reddedilirse paylaşım başlamaz.
  *  - Hata (bağlantı yok, arkadaş değil) kısa bir uyarıyla gösterilir.
+ *  - Faz 8: konum izni (ben → o) yoksa düğme soluk "izin yok" olur; dokununca neden ve "Kişi izinleri" gösterilir
+ *    (paylaşım denenmez).
  */
-import { formatCountdown, QUICK_SHARE_DURATION, type UserId } from '@konum/core';
+import { ACCESS_TEXT, formatCountdown, QUICK_SHARE_DURATION, type UserId } from '@konum/core';
+import { useRouter } from 'expo-router';
 import { useState } from 'react';
 import { ActivityIndicator, Alert, Pressable, StyleSheet } from 'react-native';
 import { useNow } from '../../lib/useNow';
@@ -16,6 +19,8 @@ import { MIN_TOUCH, Text, useTheme } from '../../ui';
 import { needsPermissionFlow, PermissionFlow, type PermissionResult } from '../permissions/PermissionFlow';
 import { shareContextOf } from '../permissions/permissionPlanner';
 import { activeShareTo, QUICK_STATUS_TEXT, quickShareFailureView } from './quickShareModel';
+import { pickerRowAccess } from '../access/accessModel';
+import { useCanFn } from '../access/useAccess';
 
 export interface QuickShareButtonProps {
   uid: UserId;
@@ -29,8 +34,36 @@ export function QuickShareButton({ uid, name, compact = true }: QuickShareButton
   const running = useQuickShareStore((s) => !!s.running[uid]);
   const now = useNow(15_000);
   const [permVisible, setPermVisible] = useState(false);
+  const router = useRouter();
+  const noGrant = pickerRowAccess('favorite', uid, useCanFn());
   const active = activeShareTo(state, uid, now);
   const ctx = shareContextOf(QUICK_SHARE_DURATION, now);
+
+  if (noGrant && !active) {
+    const explain = () =>
+      Alert.alert(name, `${noGrant.disabledReason ?? ''} Hızlı paylaşım için önce Kişi izinlerinden konum izni ver.`.trim(), [
+        { text: 'Vazgeç', style: 'cancel' },
+        { text: 'Kişi izinleri', onPress: () => router.push(`/friend/${uid}`) },
+      ]);
+    return (
+      <Pressable
+        testID={`quick-share-${uid}`}
+        onPress={explain}
+        accessibilityRole="button"
+        accessibilityLabel={`${name} ile hızlı paylaşım: ${ACCESS_TEXT.noGrantBadge}`}
+        accessibilityHint={noGrant.disabledReason ?? undefined}
+        hitSlop={6}
+        style={({ pressed }) => [
+          styles.btn,
+          { minHeight: compact ? 36 : MIN_TOUCH, borderRadius: radius.pill, paddingHorizontal: spacing.sm, backgroundColor: pressed ? colors.surfaceAlt : 'transparent', borderColor: colors.border },
+        ]}
+      >
+        <Text variant="label" color="textSecondary" numberOfLines={1}>
+          {ACCESS_TEXT.noGrantBadge}
+        </Text>
+      </Pressable>
+    );
+  }
 
   const label = active ? (active.expires_at === null ? 'Paylaşılıyor' : `⏱ ${formatCountdown(active.expires_at - now)}`) : '⏱ 1 sa';
 

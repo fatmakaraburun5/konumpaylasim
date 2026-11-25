@@ -8,6 +8,8 @@
  *  - Kabul: hedef → isteyen paylaşımı (varsayılan 1 saat) ve istek AYNI transaction'da güncellenir.
  *    Hedef isteyene zaten EN AZ o kadar süren (ya da süresiz) aktif bir paylaşım yapıyorsa paylaşıma dokunulmaz;
  *    daha kısaysa aynı oturumda daha geç bitişe uzatılır (oturum ve başlangıç korunur). Kabul asla kısaltmaz.
+ *  - Faz 8: kabul, hedef → isteyen `location_view` iznini de AYNI transaction'da yazar (`via:'location_request'`);
+ *    ters yön (isteyen → hedef) ASLA yazılmaz. Hedef görünmezse kabul `invisible_mode` (ret her zaman çalışır).
  */
 import {
   CALLABLES,
@@ -16,8 +18,13 @@ import {
   type LocationRequestRespondSchema,
   type LocationRequestSendSchema,
   type ResolvedDuration,
+  canShareLocation,
+  emptyGrantDoc,
+  hasGrant,
+  isInvisible,
   requestId,
   shareId,
+  withGranted,
 } from '@konum/core';
 import type { z } from 'zod';
 import { readAclVersions } from '../acl';
@@ -25,7 +32,7 @@ import type { CallCtx } from '../callable';
 import { DEFAULT_REQUEST_DURATION, DEFAULT_TIME_ZONE, LIMITS } from '../config';
 import { type FriendshipDoc, type RequestDoc, type ShareDoc, purgeAt, refs, toView } from '../docs';
 import { fail } from '../errors';
-import { canShare, readCaller } from '../graph';
+import { callerAccess, isFriend, pairInput, readCaller } from '../graph';
 import { readRateLimit, runOp, writeRateLimit } from '../ops';
 import { buildLocationRequestPush, sendPushToUser } from '../push';
 import type { LocationRequestRespondResponse, LocationRequestSendResponse } from '../schemas';
@@ -49,7 +56,7 @@ export async function locationRequestSend(
       refs.request(ctx.uid, data.target_id),
     );
     const friendship = fSnap?.exists ? (fSnap.data() as FriendshipDoc) : null;
-    if (!canShare({ friendship, blocked: Boolean(b1?.exists || b2?.exists) })) throw fail('not_friends');
+    if (!isFriend({ friendship, blocked: Boolean(b1?.exists || b2?.exists) })) throw fail('not_friends');
 
     const existing = reqSnap?.exists ? (reqSnap.data() as RequestDoc) : null;
     if (existing && existing.status === 'pending' && existing.expires_at > ctx.now) {
@@ -151,11 +158,19 @@ export async function locationRequestRespond(
       return { response };
     }
 
-    await readCaller(tx, ctx.uid);
+    const me = await readCaller(tx, ctx.uid);
+    if (isInvisible(me)) throw fail('invisible_mode');
     const [cand] = await readStartCandidates(tx, ctx.uid, [requester]);
-    if (!cand || !canShare(cand.pair)) throw fail('not_friends');
+    if (!cand || !isFriend(cand.pair)) throw fail('not_friends');
 
-    // --- yazmalar: paylaşım + istek tek transaction'da ---
+    // --- yazmalar: izin + paylaşım + istek tek transaction'da ---
+    // Kabul = hedef (ben) → isteyen `location_view` izni. Ters yön yazılmaz.
+    if (!hasGrant(cand.pair.grantOut, 'location_view')) {
+      const grant = withGranted(cand.pair.grantOut ?? emptyGrantDoc(ctx.uid, requester, ctx.now), ['location_view'], 'location_request', ctx.now);
+      tx.set(refs.grant(ctx.uid, requester), { ...grant, declined_at: {} });
+      cand.pair.grantOut = grant;
+    }
+    if (!canShareLocation(pairInput(cand.pair, callerAccess(me)))) throw fail('not_permitted');
     const current = isLive(cand.existing, ctx.now) ? cand.existing : null;
     let share: ShareDoc;
     let changed = true;

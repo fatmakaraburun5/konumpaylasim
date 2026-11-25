@@ -2,6 +2,7 @@
  * Faz 4: acil durum kişileri seçimi (@gorhom/bottom-sheet). En çok `SOS_LIMITS.maxContacts` (5) kabul edilmiş
  * arkadaş. Kaydet → `sosStore.setEmergencyContacts` (emergency_contacts_set). SOS akışından açıldıysa kayıttan
  * sonra `onSaved` akışı sürdürür (doğrudan geri sayım). Arkadaşlar ekranından da açılır.
+ * Faz 8: seçilen her kişiye `sos_alert` izni yazılır, listeden çıkana silinir (sunucu); bu sayfada bir kez söylenir.
  */
 import { SOS_LIMITS, type UserId } from '@konum/core';
 import { BottomSheetBackdrop, BottomSheetModal, BottomSheetScrollView, type BottomSheetBackdropProps } from '@gorhom/bottom-sheet';
@@ -104,6 +105,9 @@ export function EmergencyContactsSheet({ onSaved, ref }: EmergencyContactsSheetP
         />
         <Text variant="heading" style={{ paddingHorizontal: spacing.md }}>
           {`Kişiler (${selected.size}/${SOS_LIMITS.maxContacts})`}
+        </Text>
+        <Text variant="caption" color="textSecondary" style={{ paddingHorizontal: spacing.md }}>
+          Seçtiğin kişiler SOS uyarılarını alma izni alır; listeden çıkardığında bu izin kalkar. Başka bir izin vermez.
         </Text>
         <RecipientPicker
           friends={friends}

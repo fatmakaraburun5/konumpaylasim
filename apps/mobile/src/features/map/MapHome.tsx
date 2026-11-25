@@ -27,6 +27,9 @@
  *       EtaCard "Buluşma noktası öner" (arkadaş hedefi; nokta hedefinde "Buradan buluşma öner") → MeetupSheet
  *       (karartmasız alt sayfa; haritada numaralı öneri pinleri, orta nokta, seçili öneriye kesikli çizgiler ve
  *       benim rotam) · paylaşılan öneri → MeetupCard (alıcı: Geliyorum / Uyamam; öneren: yanıtlar) + yer pini
+ *   └─ Faz 8:
+ *       görünmezken üst çubuğun altında InvisibleBanner (44 pt, "Görünür ol") · avatarda göz-kapalı rozeti ·
+ *       paylaş düğmesi / QR / "Yeni paylaşım" → "Görünmez moddasın" uyarısı + "Görünür ol"
  *
  * Seçim: arkadaş pinine / şeride dokun → o arkadaş; haritaya uzun bas → nokta. Arkadaşın paylaşımı biterse
  * seçim kalkar. Rota ve adres yalnızca EtaCard görünürken istenir (useEta → routesRepo/geocodeRepo).
@@ -81,6 +84,10 @@ import { sosPins, sosRouteFrom } from '../sos/sosModel';
 import { BackgroundPermissionHint } from '../permissions/BackgroundPermissionHint';
 import { activeShareContext } from '../permissions/permissionPlanner';
 import { ShareSheet, type ShareSheetHandle } from '../share/ShareSheet';
+import { explainInvisibleShare, openRestoreFlow } from '../invisible/invisibleFlow';
+import { invisibleStore, selectIsInvisible, useIsInvisible } from '../../state/invisibleStore';
+import type { ShareAudience } from '../share/AudienceSwitch';
+import { InvisibleBanner } from './InvisibleBanner';
 import { EtaCard } from './EtaCard';
 import { ExpiryBanner } from './ExpiryBanner';
 import { IncomingStrip } from './IncomingStrip';
@@ -145,6 +152,14 @@ export function MapHome() {
 
   const links = useLinkSessions();
   const linkNow = useLinkStore((s) => s.now);
+
+  // --- Faz 8: görünmez mod -------------------------------------------------------------------
+  const invisible = useIsInvisible();
+  /** Paylaşım sayfasını açar; görünmezken açmaz, "Görünmez moddasın" uyarısını gösterir. */
+  const openShare = useCallback((audience?: ShareAudience) => {
+    if (selectIsInvisible(invisibleStore.getState())) explainInvisibleShare();
+    else sheet.current?.present(audience);
+  }, []);
 
   // --- Faz 4: ping, notlar, SOS ----------------------------------------------------------
   const myUid = useAuthStore((s) => s.uid);
@@ -472,15 +487,16 @@ export function MapHome() {
           }
         }
       },
-      newShare: () => sheet.current?.present(),
+      newShare: () => openShare(),
     }),
-    [dismiss, extend, showQr, stop, stopLink],
+    [dismiss, extend, openShare, showQr, stop, stopLink],
   );
 
   // Buluşma sayfası açıkken alt dolgu sayfanın ilk durağı (%52) kadar: pinler sayfanın üstünde kalsın.
   const padding = useMemo(
-    () => ({ top: insets.top + 140, right: 0, bottom: meetupOpen ? Math.round(windowH * 0.52) + 8 : bottomH + 8, left: 0 }),
-    [insets.top, bottomH, meetupOpen, windowH],
+    // Faz 8: görünmezken şerit (44 pt + boşluk) üstteki alanı uzatır.
+    () => ({ top: insets.top + 140 + (invisible ? 52 : 0), right: 0, bottom: meetupOpen ? Math.round(windowH * 0.52) + 8 : bottomH + 8, left: 0 }),
+    [insets.top, bottomH, meetupOpen, windowH, invisible],
   );
   const onBottomLayout = (e: LayoutChangeEvent) => setBottomH(e.nativeEvent.layout.height);
 
@@ -516,8 +532,16 @@ export function MapHome() {
         }}
       />
 
-      <TopBar profile={profile} onFriends={() => router.push('/friends')} onZones={() => router.push('/zones')} onProfile={() => router.push('/profile')} onSignOut={signOut} />
+      <TopBar
+        profile={profile}
+        onFriends={() => router.push('/friends')}
+        onZones={() => router.push('/zones')}
+        onProfile={() => router.push('/profile')}
+        onSignOut={signOut}
+        invisible={invisible}
+      />
       <View style={[styles.strip, { top: insets.top + 72, gap: spacing.xs }]} pointerEvents="box-none">
+        {invisible ? <InvisibleBanner onVisible={openRestoreFlow} /> : null}
         <SosIncomingBanner alerts={incomingSos} now={incomingNow} />
         <IncomingStrip items={incoming} names={names} now={incomingNow} onFocus={focusFriend} />
         {syncFailing ? (
@@ -539,7 +563,7 @@ export function MapHome() {
               {!target && !selectedNote ? <StatusNotePill onPress={openStatusNote} /> : null}
             </View>
             {anyRunning && !target ? (
-              <IconButton icon="qr" variant="floating" size={48} accessibilityLabel="QR ile paylaş" onPress={() => sheet.current?.present('link')} />
+              <IconButton icon="qr" variant="floating" size={48} accessibilityLabel="QR ile paylaş" onPress={() => openShare('link')} />
             ) : null}
             <RecenterButton onPress={recenter} disabled={!myPosition} />
             <SosLauncher route={sosRoute} />
@@ -599,7 +623,7 @@ export function MapHome() {
                 trackingError={trackingError}
                 actions={deckActions}
               />
-              {!anyRunning ? <ShareButton onPress={() => sheet.current?.present()} /> : null}
+              {!anyRunning ? <ShareButton onPress={() => openShare()} /> : null}
             </>
           )}
         </View>

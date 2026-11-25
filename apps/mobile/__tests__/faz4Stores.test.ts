@@ -8,7 +8,10 @@ import { DEMO_ME, PEOPLE } from '../src/demo/server/world';
 import { KonumError } from '../src/lib/errors';
 import { createNotesStore, onStatusChange } from '../src/state/notesStore';
 import { createPingStore } from '../src/state/pingStore';
+import { createInvisibleStore } from '../src/state/invisibleStore';
+import { isPublishHeld, setInvisibleIntent } from '../src/state/publishHold';
 import { createSosStore } from '../src/state/sosStore';
+import { acceptConsent, grant } from './demoTestUtils';
 
 const NOW = 1_800_000_000_000;
 const LOC = { lat: 40.9862, lng: 29.0275, accuracy: 8, timestamp: NOW - 2_000 };
@@ -88,6 +91,29 @@ describe('sosStore.send', () => {
   });
 });
 
+describe('sosStore.send (Faz 8)', () => {
+  it('sunucu görünmezliği kapattı → yerel niyet otomatik paylaşımdan ÖNCE silinir; izinsiz acil kişi söylenir', async () => {
+    const inv = createInvisibleStore({ api: { invisibleSet: jest.fn() }, now: () => NOW, uid: () => 'me', patchProfile: jest.fn() });
+    await setInvisibleIntent('me', { op_id: uuidV4(), at: NOW, confirmed: true });
+    expect(isPublishHeld()).toBe(true);
+    const heldAtAutoShare: boolean[] = [];
+    const sosSend = jest.fn(async (req: SosSendRequest) => ({ sos: alertFrom(req), recipients: 1, server_now: NOW }));
+    const store = createSosStore({
+      ...sosDeps(sosSend),
+      onServerVisible: () => inv.getState().clearAfterServerVisible(),
+      autoShare: async () => {
+        heldAtAutoShare.push(isPublishHeld());
+        return { needsGrant: ['ayse'] };
+      },
+    });
+    store.getState().setContactsFromProfile(['ayse']);
+    expect(await store.getState().send()).toEqual({ ok: true, sos_id: 'sos1' });
+    for (let i = 0; i < 5; i++) await new Promise<void>((r) => setImmediate(r));
+    expect(heldAtAutoShare).toEqual([false]);
+    expect(store.getState().liveShareSkipped).toEqual(['ayse']);
+  });
+});
+
 describe('pingStore.send', () => {
   it('soğuma süresinde ikinci ping ağa çıkmaz (rate_limited)', async () => {
     let t = NOW;
@@ -138,6 +164,7 @@ describe('demo sunucusu (Faz 4)', () => {
   it('SOS: kişi yok → no_emergency_contacts; kişi seçilince alıcıya push + ack', async () => {
     const s = new DemoServer();
     servers.push(s);
+    await acceptConsent(s); // Faz 8: onaysız hesap çağrı yapamaz
     const req = { op_id: uuidV4(), location: { lat: 40.9862, lng: 29.0275, accuracy: 7, timestamp: Date.now() }, battery_pct: 40 };
     await expect(s.call('sos_send', req, DEMO_ME)).rejects.toMatchObject({ details: { code: 'no_emergency_contacts' } });
     const set = (await s.call('emergency_contacts_set', { op_id: uuidV4(), contact_ids: [PEOPLE.ayse.uid, 'yabanci'] }, DEMO_ME)) as { contact_ids: string[] };
@@ -160,6 +187,8 @@ describe('demo sunucusu (Faz 4)', () => {
   it('canlı pakette durum notu note + note_exp birlikte kabul edilir, tek başına reddedilir', async () => {
     const s = new DemoServer();
     servers.push(s);
+    await acceptConsent(s); // Faz 8: onaysız hesap çağrı yapamaz
+    await grant(s, DEMO_ME, PEOPLE.ayse.uid, 'location_view'); // izin varsayılan kapalı
     const start = (await s.call(
       'share_start',
       { op_id: uuidV4(), receiver_ids: [PEOPLE.ayse.uid], duration: { kind: 'preset', preset: 'h1' }, time_zone: 'Europe/Istanbul' },

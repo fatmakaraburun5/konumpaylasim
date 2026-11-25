@@ -321,7 +321,8 @@ function Deck({ items, idx, names, nowOf, trackingError, actions, onFocus, onCol
           live.current.onCollapse();
           return;
         }
-        if (axis === 'y' && many && (g.dy < -40 || g.vy < -0.7)) {
+        // Tek kartta da: liste "+ Yeni paylaşım"ın tek yeri (harita paylaş düğmesi paylaşım sürerken gizli).
+        if (axis === 'y' && (g.dy < -40 || g.vy < -0.7)) {
           dragY.setValue(0);
           live.current.onOpenList();
           return;
@@ -411,7 +412,7 @@ function Deck({ items, idx, names, nowOf, trackingError, actions, onFocus, onCol
         <DeckCard
           key={front.key}
           item={front}
-          position={n > 1 ? { index: idx, count: n, running, behindExpiring } : null}
+          position={n > 0 ? { index: idx, count: n, running, behindExpiring } : null}
           names={names}
           now={nowOf(front)}
           trackingError={trackingError}

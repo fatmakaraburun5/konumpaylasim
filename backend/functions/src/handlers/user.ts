@@ -50,7 +50,7 @@ import { applyLinkEffects, deleteLinkAclNode, reconcileLink } from '../linkAcl';
 import { activeLinkIdsOf, endLinksById } from './links';
 import { deletePlaceNotesOf } from './notes';
 import { deletePingsOf } from './ping';
-import { closeSosForDeletedAccount, removeFromEmergencyContacts } from './sos';
+import { closeSosForDeletedAccount, pruneSosForGraphReset, removeFromEmergencyContacts } from './sos';
 import { deleteMeetupsOf } from './meetup';
 import { deleteZonesOf } from './zones';
 import { removeFromFavorites } from './favorites';
@@ -296,6 +296,9 @@ function toProfile(u: UserDoc): UserProfile {
     avatar_thumb_url: u.avatar_url ? (u.avatar_thumb_url ?? null) : null,
     avatar_version: u.avatar_url ? (u.avatar_version ?? null) : null,
     favorite_ids: favoriteIdsOf(u),
+    // Faz 8: onay kapısı ve görünmez mod (istemci kapıyı buradan da açabilir).
+    invisible: u.invisible ?? null,
+    consent: u.consent ?? null,
   };
 }
 
@@ -363,12 +366,26 @@ export async function cutIncomingShares(uid: string, now: EpochMs): Promise<numb
   return ended.length;
 }
 
+/** Faz 8: kullanıcının iki yöndeki tüm izin belgeleri ve sunucuya özel ret kayıtları (tek alanlı sorgular). */
+async function deleteGrantsOf(uid: string): Promise<void> {
+  await Promise.all([
+    deleteQuery(db().collection(COL.permissionGrants).where('granter_id', '==', uid)),
+    deleteQuery(db().collection(COL.permissionGrants).where('grantee_id', '==', uid)),
+    deleteQuery(db().collection(COL.permissionDeclines).where('granter_id', '==', uid)),
+    deleteQuery(db().collection(COL.permissionDeclines).where('grantee_id', '==', uid)),
+  ]);
+}
+
 /**
  * Sosyal grafiği sıfırlar: arkadaşlıklar ve giden istekler silinir, iki yöndeki paylaşımlar
- * `friendship_removed` ile biter, bekleyen konum istekleri iptal olur. İdempotent.
+ * `friendship_removed` ile biter, bekleyen konum istekleri iptal olur. Faz 8: iki yöndeki izin belgeleri silinir ve
+ * izne bağlı kitleler (yer notu `visible_to`, aktif SOS `recipient_ids`, acil kişi listeleri) temizlenir.
+ * İdempotent.
  */
 export async function resetSocialGraph(uid: string, now: EpochMs): Promise<void> {
   await deleteQuery(db().collection(COL.friendships).where('member_ids', 'array-contains', uid));
+  // İzinler arkadaşlıkla birlikte gider (paylaşımlar bitmeden: eşzamanlı başlatma izin bulamaz).
+  await deleteGrantsOf(uid);
   await Promise.all([
     deleteQuery(db().collection(COL.outgoingLinks).where('requester_id', '==', uid)),
     db().recursiveDelete(refs.outgoingRequests(uid)),
@@ -386,7 +403,9 @@ export async function resetSocialGraph(uid: string, now: EpochMs): Promise<void>
   }
   await writer.close();
   // Faz 6: favoriler arkadaşlıkla birlikte gider (iki yönde).
-  await Promise.all([removeFromFavorites(uid), clearOwnFavorites(uid)]);
+  // Faz 8: konum izni kalmadı → yer notu kitleleri (iki yönde; kendi notları silinir) ve aktif SOS alıcıları
+  // temizlenir, acil kişi listeleri boşalır (izinle eşzamanlı).
+  await Promise.all([removeFromFavorites(uid), clearOwnFavorites(uid), deletePlaceNotesOf(uid), pruneSosForGraphReset(uid, now)]);
   await setInactivityState(uid, 'graph_reset');
 }
 
@@ -515,6 +534,8 @@ export async function inviteCodeRegenerate(
  * işaretleri silinir (karşı taraf yok, geçmiş tutulmaz); `maps_quota` sayaçları ve kullanıcıya özel `route_cache`
  * kayıtları da silinir. Ortak `geocode_cache` hücre kayıtları kimseye bağlı değildir ve kalır.
  *
+ * Faz 8: 2. adımda iki yöndeki `permission_grants` belgeleri, 4. adımda `users/{uid}/consents/*` onay kayıtları silinir.
+ *
  * Faz 6: 1. adımdaki çitle (`deleting`) widget hızlı paylaşımı hemen `token_invalid` olur; 4. adımda widget
  * token'ları silinir, hesap başkalarının `favorite_ids` listesinden çıkarılır ve Storage `avatars/{uid}/` klasörü
  * silinir (en iyi çaba).
@@ -540,11 +561,12 @@ export async function accountDelete(ctx: CallCtx, _data: z.output<typeof Account
     if ((err as { code?: string }).code !== 'auth/user-not-found') throw err;
   }
 
-  // 2. Arkadaşlıklar (bekleyenler dahil) ve giden istekler
+  // 2. Arkadaşlıklar (bekleyenler dahil), giden istekler ve Faz 8: iki yöndeki izin belgeleri
   await Promise.all([
     deleteQuery(db().collection(COL.friendships).where('member_ids', 'array-contains', uid)),
     deleteQuery(db().collection(COL.outgoingLinks).where('requester_id', '==', uid)),
     db().recursiveDelete(refs.outgoingRequests(uid)),
+    deleteGrantsOf(uid),
   ]);
 
   // 3. Paylaşımlar (iki geçiş: geç kalan eşzamanlı başlatmalar için)
@@ -594,6 +616,8 @@ export async function accountDelete(ctx: CallCtx, _data: z.output<typeof Account
     deleteWidgetTokensOf(uid),
     removeFromFavorites(uid),
     deleteAllAvatarsOf(uid),
+    // Faz 8: onay kayıtları (users/{uid}/consents/*; profil silinince alt koleksiyon kendiliğinden gitmez).
+    db().recursiveDelete(refs.consents(uid)),
   ]);
 
   // 5. ACL düğümleri (mezar taşları dahil): uid çifti RTDB'de kalmaz.
@@ -633,7 +657,7 @@ export async function accountDelete(ctx: CallCtx, _data: z.output<typeof Account
     if (phoneSnap?.exists && (phoneSnap.data() as IndexDoc).user_id === uid) tx.delete(phoneSnap.ref);
     tx.delete(refs.user(uid));
     tx.delete(refs.userPrivate(uid));
-    for (const key of ['friend_request', 'location_request', 'invite_regenerate', 'link_create', 'battery_low', 'ping', 'sos_send', 'zone_event', 'meetup_share', 'meetup_respond', 'widget_token']) tx.delete(refs.rateLimit(uid, key));
+    for (const key of ['friend_request', 'location_request', 'invite_regenerate', 'link_create', 'battery_low', 'ping', 'sos_send', 'zone_event', 'meetup_share', 'meetup_respond', 'widget_token', 'permission_request']) tx.delete(refs.rateLimit(uid, key));
   });
 
   try {

@@ -16,6 +16,9 @@
  *  - friendship_remove / user_block: iki yöndeki paylaşımlar biter (`friendship_removed`), bekleyen konum
  *    istekleri iptal olur; Faz 6: karşı taraf iki yönde de `favorite_ids` listesinden çıkar. Engel ayrıca engellenen telefonun HMAC'ini tutar: engellenen hesabını silip aynı
  *    numarayla yeniden kayıt olsa da engelleyene istek gönderemez.
+ *  - Faz 8: arkadaşlık İZİN DEĞİLDİR. Kabul (ve karşılıklı isteğin otomatik kabulü) hiçbir izin ve hiçbir paylaşım
+ *    yazmaz (core `grantsOnFriendAccept() === []`). Kaldırma / engelleme iki yöndeki `permission_grants` belgesini siler
+ *    (`writePairCascade`). Engelleme ve kaldırma onaysız da çalışır (koruyucu işlem).
  */
 import {
   CALLABLES,
@@ -51,7 +54,7 @@ import {
   refs,
 } from '../docs';
 import { fail } from '../errors';
-import { needsProfile, readCaller, readPairCascade, readPairF4Cleanup, writePairCascade, writePairF4Cleanup } from '../graph';
+import { assertConsent, needsProfile, readCaller, readPairCascade, readPairF4Cleanup, writePairCascade, writePairF4Cleanup } from '../graph';
 import { readPairZoneCleanup, writePairZoneCleanup } from './zones';
 import { readRateLimit, runOp, writeRateLimit } from '../ops';
 import { buildFriendRequestPush, sendPushToUser } from '../push';
@@ -115,6 +118,7 @@ export async function friendRequestSend(
     const [meSnap, mePrivSnap] = await tx.getAll(refs.user(ctx.uid), refs.userPrivate(ctx.uid));
     const me = meSnap?.data() as UserDoc | undefined;
     if (!isUsableProfile(me)) throw needsProfile();
+    assertConsent(me); // Faz 8: hedeften bağımsız (hedef hakkında bilgi taşımaz)
     const rl = await readRateLimit(tx, ctx.uid, 'friend_request', LIMITS.friendRequestPerHour, HOUR, ctx.now);
     const response: FriendRequestSendResponse = { status: 'sent', server_now: ctx.now };
 
@@ -264,10 +268,12 @@ export async function friendRequestRespond(
     );
     const me = meSnap?.data() as UserDoc | undefined;
     const them = otherSnap?.data() as UserDoc | undefined;
+    if (me) assertConsent(me); // Faz 8 (callable ön kapısının transaction içi tekrarı)
     const blocked = Boolean(b1?.exists || b2?.exists);
     const links = await readLinksFor(tx, f.id);
 
     if (data.accept && !blocked && isUsableProfile(me) && isUsableProfile(them)) {
+      // Faz 8: yalnızca arkadaşlık; izin ve paylaşım YAZILMAZ (varsayılan kapalı).
       tx.update(ref, {
         status: 'accepted',
         // İsteyenin güncel profili (avatar dahil) ve benim profilim kabulde yazılır.
@@ -372,7 +378,7 @@ export async function userBlock(ctx: CallCtx, data: z.output<typeof UserBlockSch
   if (data.user_id === ctx.uid) throw fail('invalid_argument');
   const other: UserId = data.user_id;
   return runOp(ctx, data.op_id, CALLABLES.userBlock, data, async (tx) => {
-    await readCaller(tx, ctx.uid);
+    await readCaller(tx, ctx.uid, { consent: false }); // koruyucu işlem: onaysız da çalışır
     const [blockSnap, fSnap, otherPrivSnap] = await tx.getAll(
       refs.block(ctx.uid, other),
       refs.friendship(ctx.uid, other),

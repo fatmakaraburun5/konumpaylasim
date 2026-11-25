@@ -5,8 +5,11 @@
  *     Bağlantı:   DurationPicker (core `LINK_DURATION_OPTIONS`) → "QR oluştur" → `link_share_create` → LinkQrSheet
  * CTA, geçerli seçim yapılana kadar pasiftir. Başlatmadan önce gerekiyorsa PermissionFlow açılır
  * (bağlantı da konum yayını gerektirir).
+ * Faz 8: konum izni (ben → o) vermediğim arkadaşlar "izin yok" etiketiyle görünür; başlatırken bir kez "X'e konumunu
+ * görme izni de verilecek" onayı alınır ve `grant_location_view: true` ile başlatılır. Yerel izin listesi eskiyse
+ * sunucunun `needs_grant_receiver_ids` yanıtı aynı onayı açar.
  */
-import { LINK_DURATION_OPTIONS, type LinkId, type UserId } from '@konum/core';
+import { ACCESS_TEXT, LINK_DURATION_OPTIONS, type DurationChoice, type LinkId, type UserId } from '@konum/core';
 import {
   BottomSheetBackdrop,
   BottomSheetFooter,
@@ -20,15 +23,17 @@ import { useCallback, useImperativeHandle, useRef, useState, type Ref } from 're
 import { Alert, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNow } from '../../lib/useNow';
-import { useFriends } from '../../state/friendsStore';
+import { useFriendNames, useFriends } from '../../state/friendsStore';
 import { linkStore } from '../../state/linkStore';
-import { sharingStore } from '../../state/sharingStore';
+import { sharingStore, type StartResult } from '../../state/sharingStore';
 import { Button, SheetHeader, Text, useTheme } from '../../ui';
 import { needsPermissionFlow, PermissionFlow, type PermissionResult } from '../permissions/PermissionFlow';
 import { shareContextOf, type ShareContext } from '../permissions/permissionPlanner';
 import { AudienceSwitch, type ShareAudience } from './AudienceSwitch';
 import { DurationPicker, EMPTY_DURATION, type DurationSelection } from './DurationPicker';
 import { RecipientPicker } from './RecipientPicker';
+import { grantOnShareConfirmText, needsLocationGrant, pickerRowAccess } from '../access/accessModel';
+import { canNow, useCanFn } from '../access/useAccess';
 
 export interface ShareSheetHandle {
   /** `audience` verilirse sayfa o sekmede açılır. */
@@ -40,6 +45,16 @@ export interface ShareSheetProps {
   /** Bağlantı oluşturuldu: QR sayfasını aç. */
   onLinkCreated?: (linkId: LinkId) => void;
   ref?: Ref<ShareSheetHandle>;
+}
+
+/** "X'e konumunu görme izni de verilecek…" onayı (web demoda AlertHost). */
+function askGrant(names: string[]): Promise<boolean> {
+  return new Promise((resolve) => {
+    Alert.alert(ACCESS_TEXT.grantOnShareConfirm, grantOnShareConfirmText(names), [
+      { text: 'Vazgeç', style: 'cancel', onPress: () => resolve(false) },
+      { text: 'İzin ver ve paylaş', onPress: () => resolve(true) },
+    ], { cancelable: true, onDismiss: () => resolve(false) });
+  });
 }
 
 const LINK_FOREVER_TEXT =
@@ -56,6 +71,8 @@ export function ShareSheet({ onLinkCreated, ref }: ShareSheetProps) {
   const router = useRouter();
   const sheet = useRef<BottomSheetModal>(null);
   const friends = useFriends();
+  const names = useFriendNames();
+  const can = useCanFn();
   const now = useNow(15_000);
 
   const [audience, setAudience] = useState<ShareAudience>('friends');
@@ -138,17 +155,55 @@ export function ShareSheet({ onLinkCreated, ref }: ShareSheetProps) {
         if (run !== runId.current) return;
       }
     }
-    const res = await sharingStore.getState().startShare([...selected], duration.choice);
+    const ids = [...selected];
+    const choice = duration.choice;
+    // Faz 8: izin vermediğim alıcılar varsa önce bir kez sorulur.
+    const needs = needsLocationGrant(ids, canNow());
+    if (needs.length > 0) {
+      const ok = await askGrant(needs.map((id) => names[id] ?? 'Arkadaşın'));
+      if (!ok) {
+        setStarting(false);
+        return;
+      }
+    }
+    await startFriends(ids, choice, needs);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [duration.choice, isLink, names, onLinkCreated, selected]);
+
+  /**
+   * Konum izni YALNIZCA onay penceresinde adı geçen kişilere verilir (`confirmed`): onlar `grantLocationView: true`,
+   * diğerleri `false` ile ayrı başlatılır. Yerel izin listesi eskiyse sunucunun döndürdüğü kişiler için yeniden sorulur.
+   */
+  const startFriends = async (ids: UserId[], choice: DurationChoice, confirmed: readonly UserId[]) => {
+    const start = (list: readonly UserId[], grant: boolean) => sharingStore.getState().startShare(list, choice, { grantLocationView: grant });
+    const grantIds = ids.filter((id) => confirmed.includes(id));
+    const others = ids.filter((id) => !confirmed.includes(id));
+    const granted = grantIds.length > 0 ? await start(grantIds, true) : null;
+    const plain = others.length > 0 ? await start(others, false) : null;
+    // Sunucu izin istedi (yerel liste eskiydi): yalnızca o kişiler için aynı onay, sonra izinle.
+    const late = plain ? (plain.ok ? plain.needsGrantReceiverIds : (plain.needsGrantReceiverIds ?? [])) : [];
+    let lateRun: StartResult | null = null;
+    let lateDeclined = false;
+    if (late.length > 0) {
+      if (await askGrant(late.map((id) => names[id] ?? 'Arkadaşın'))) lateRun = await start(late, true);
+      else lateDeclined = true;
+    }
+    const results = [granted, plain, lateRun].filter((r): r is StartResult => r !== null);
+    const started = results.filter((r): r is Extract<StartResult, { ok: true }> => r.ok);
+    // `plain` yalnızca izin istediği için başlamadıysa hata o değil, izin sorusudur.
+    const failures = results.filter((r): r is Extract<StartResult, { ok: false }> => !r.ok && !(r === plain && late.length > 0));
     setStarting(false);
-    if (!res.ok) {
-      setError(res.error.message);
+    if (started.length === 0) {
+      setError(failures[0]?.error.message ?? (lateDeclined ? 'Paylaşım başlamadı: konum izni verilmedi.' : 'Paylaşım başlamadı.'));
       return;
     }
     sheet.current?.dismiss();
-    if (res.skippedReceiverIds.length > 0) {
+    const firstFailure = failures[0];
+    if (firstFailure) Alert.alert('Bazı kişilerle paylaşılamadı', firstFailure.error.message);
+    else if (started.some((r) => r.skippedReceiverIds.length > 0)) {
       Alert.alert('Bazı kişilerle paylaşılamadı', 'Seçtiğin kişilerden bazıları artık arkadaş listende değil.');
     }
-  }, [duration.choice, isLink, onLinkCreated, selected]);
+  };
 
   const onStartPress = useCallback(async () => {
     if (!canStart) return;
@@ -218,6 +273,7 @@ export function ShareSheet({ onLinkCreated, ref }: ShareSheetProps) {
                 friends={friends}
                 selected={selected}
                 onToggle={toggle}
+                access={(uid) => pickerRowAccess('share', uid, can)}
                 onAddFriend={() => {
                   sheet.current?.dismiss();
                   router.push('/friends');

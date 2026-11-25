@@ -9,8 +9,11 @@
  * Faz 6: profil kartı (fotoğraf + ad → Profil ve widget ekranı), "Favoriler" kartı (widget sırası, her birinde
  * tek dokunuşla "⏱ 1 sa" paylaşım) ve her arkadaş satırında yıldız (en çok 4; sınırda kısa uyarı). Satırlarda
  * fotoğraf + cinsiyet çerçevesi.
+ * Faz 8: en üstte "İzin istekleri" kartı (PermissionRequestsCard); her arkadaş satırında yön durumu ("Karşılıklı
+ * kapalı", "O seni görebilir", …) ve satıra dokununca Kişi izinleri (`/friend/[id]`). Arkadaş kabulünden sonra
+ * "Arkadaş olmanız konumunuzu açmaz." Favori yalnızca konum izni verdiğim kişi olabilir.
  */
-import { FAVORITES_LIMIT, formatInviteCode, SOS_LIMITS, type UserId } from '@konum/core';
+import { ACCESS_TEXT, FAVORITES_LIMIT, formatInviteCode, PAIR_ACCESS_TEXT, SOS_LIMITS, type UserId } from '@konum/core';
 import { useRouter } from 'expo-router';
 import { useRef, useState } from 'react';
 import { Alert, Pressable, ScrollView, Share, StyleSheet, TextInput, View } from 'react-native';
@@ -27,12 +30,16 @@ import {
   useOutgoingRequests,
   type FriendOpResult,
 } from '../../state/friendsStore';
+import { selectAccessSummary, useGrantsStore } from '../../state/grantsStore';
 import { useSosStore } from '../../state/sosStore';
 import { Avatar, Button, cardShadow, Icon, IconButton, MIN_TOUCH, Text, useTheme } from '../../ui';
 import { PingButtons } from '../ping/PingButtons';
 import { FriendAvatar } from '../profile/FriendAvatar';
 import { QuickShareButton } from '../quickShare/QuickShareButton';
 import { EmergencyContactsSheet, type EmergencyContactsSheetHandle } from '../sos/EmergencyContactsSheet';
+import { pickerRowAccess } from '../access/accessModel';
+import { PermissionRequestsCard } from '../access/PermissionRequestsCard';
+import { useCanFn } from '../access/useAccess';
 
 export function FriendsScreen() {
   const { colors, radius, spacing, typography } = useTheme();
@@ -54,6 +61,10 @@ export function FriendsScreen() {
   /** Satır bazında süren işlem ve hata metni (friendshipId → …). */
   const [pending, setPending] = useState<Record<string, true>>({});
   const [rowError, setRowError] = useState<Record<string, string>>({});
+  /** Faz 8: az önce kabul edilen arkadaş (kısa not: arkadaşlık konumu açmaz). */
+  const [acceptedName, setAcceptedName] = useState<string | null>(null);
+  const given = useGrantsStore((s) => s.given);
+  const received = useGrantsStore((s) => s.received);
 
   const runRow = async (id: string, op: () => Promise<FriendOpResult>) => {
     setPending((p) => ({ ...p, [id]: true }));
@@ -91,6 +102,9 @@ export function FriendsScreen() {
         </Text>
       </View>
       <ScrollView contentContainerStyle={{ padding: spacing.md, gap: spacing.md, paddingBottom: insets.bottom + spacing.xl }} keyboardShouldPersistTaps="handled">
+        {/* --- Faz 8: İzin istekleri --- */}
+        <PermissionRequestsCard />
+
         {profile ? (
           <Pressable
             onPress={() => router.push('/profile')}
@@ -218,7 +232,13 @@ export function FriendsScreen() {
                     title="Kabul et"
                     block={false}
                     loading={!!pending[r.friendshipId]}
-                    onPress={() => void runRow(r.friendshipId, () => friendsStore.getState().respond(r.friendshipId, true))}
+                    onPress={() =>
+                      void runRow(r.friendshipId, async () => {
+                        const res = await friendsStore.getState().respond(r.friendshipId, true);
+                        if (res.ok) setAcceptedName(r.displayName);
+                        return res;
+                      })
+                    }
                   />
                 </View>
                 {rowError[r.friendshipId] ? (
@@ -263,26 +283,46 @@ export function FriendsScreen() {
 
         <View style={card}>
           <Text variant="heading">{`Arkadaşların (${friends.length})`}</Text>
+          {acceptedName ? (
+            <View style={[styles.row, { gap: spacing.xs, backgroundColor: colors.primarySoft, borderRadius: radius.md, padding: spacing.sm }]} testID="friend-accepted-hint">
+              <Text variant="label" style={styles.flex} accessibilityLiveRegion="polite">
+                {`${acceptedName} ile artık arkadaşsınız. ${ACCESS_TEXT.friendAcceptedHint}`}
+              </Text>
+              <IconButton icon="close" size={32} accessibilityLabel="Notu kapat" onPress={() => setAcceptedName(null)} />
+            </View>
+          ) : null}
           {friends.length === 0 ? (
             <Text variant="body" color="textSecondary">
               Henüz arkadaşın yok. Davet kodunu paylaşarak başla.
             </Text>
           ) : (
-            friends.map((f) => (
+            friends.map((f) => {
+              const access = PAIR_ACCESS_TEXT[selectAccessSummary({ given, received }, f.uid)];
+              return (
               <View key={f.uid} style={{ gap: spacing.xs }}>
-                <View
-                  style={[styles.row, { gap: spacing.sm, minHeight: MIN_TOUCH }]}
-                  accessible
-                  accessibilityLabel={f.displayName}
-                  accessibilityActions={[{ name: 'remove', label: 'Arkadaşlıktan çıkar' }]}
-                  onAccessibilityAction={(e) => {
-                    if (e.nativeEvent.actionName === 'remove') confirmRemove(f.friendshipId, f.displayName);
-                  }}
-                >
-                  <Avatar {...friendAvatarProps(f)} size={36} />
-                  <Text variant="body" style={styles.flex} numberOfLines={1}>
-                    {f.displayName}
-                  </Text>
+                <View style={[styles.row, { gap: spacing.sm, minHeight: MIN_TOUCH }]}>
+                  <Pressable
+                    testID={`friend-row-${f.uid}`}
+                    onPress={() => router.push(`/friend/${f.uid}`)}
+                    accessibilityRole="button"
+                    accessibilityLabel={`${f.displayName}, ${access}`}
+                    accessibilityHint="Kişi izinlerini açar"
+                    accessibilityActions={[{ name: 'remove', label: 'Arkadaşlıktan çıkar' }]}
+                    onAccessibilityAction={(e) => {
+                      if (e.nativeEvent.actionName === 'remove') confirmRemove(f.friendshipId, f.displayName);
+                    }}
+                    style={({ pressed }) => [styles.row, styles.flex, { gap: spacing.sm, minHeight: MIN_TOUCH, opacity: pressed ? 0.7 : 1 }]}
+                  >
+                    <Avatar {...friendAvatarProps(f)} size={36} />
+                    <View style={styles.flex}>
+                      <Text variant="body" numberOfLines={1}>
+                        {f.displayName}
+                      </Text>
+                      <Text variant="caption" color="textSecondary" numberOfLines={1} testID={`friend-access-${f.uid}`}>
+                        {`${access} · İzinler ›`}
+                      </Text>
+                    </View>
+                  </Pressable>
                   <FavoriteStar uid={f.uid} name={f.displayName} on={favoriteIds.includes(f.uid)} />
                   <Button
                     title="Çıkar"
@@ -302,7 +342,8 @@ export function FriendsScreen() {
                   </Text>
                 ) : null}
               </View>
-            ))
+              );
+            })
           )}
         </View>
       </ScrollView>
@@ -314,15 +355,29 @@ export function FriendsScreen() {
 /** Favori yıldızı: dokunuş iyimser; sınır doluysa favoriler kartında kısa uyarı (favoritesStore.error). */
 function FavoriteStar({ uid, name, on }: { uid: UserId; name: string; on: boolean }) {
   const { colors } = useTheme();
+  const router = useRouter();
+  // Faz 8: favori (widget hızlı paylaşımı) yalnızca konum izni verdiğim kişi olabilir; çıkarmak her zaman serbest.
+  const noGrant = pickerRowAccess('favorite', uid, useCanFn());
+  const press = () => {
+    if (!on && noGrant) {
+      Alert.alert(name, `${noGrant.disabledReason ?? ''} Favori yapmak için önce Kişi izinlerinden konum izni ver.`.trim(), [
+        { text: 'Vazgeç', style: 'cancel' },
+        { text: 'Kişi izinleri', onPress: () => router.push(`/friend/${uid}`) },
+      ]);
+      return;
+    }
+    void favoritesStore.getState().toggle(uid);
+  };
   return (
     <Pressable
       testID={`favorite-toggle-${uid}`}
-      onPress={() => void favoritesStore.getState().toggle(uid)}
+      onPress={press}
       accessibilityRole="button"
       accessibilityState={{ selected: on }}
       accessibilityLabel={on ? `${name} favorilerden çıkar` : `${name} favorilere ekle`}
+      accessibilityHint={!on && noGrant ? (noGrant.disabledReason ?? undefined) : undefined}
       hitSlop={6}
-      style={({ pressed }) => [styles.star, { backgroundColor: pressed ? colors.surfaceAlt : 'transparent' }]}
+      style={({ pressed }) => [styles.star, { backgroundColor: pressed ? colors.surfaceAlt : 'transparent', opacity: !on && noGrant ? 0.45 : 1 }]}
     >
       <Icon name={on ? 'starFilled' : 'star'} color={on ? colors.warning : colors.textSecondary} />
     </Pressable>

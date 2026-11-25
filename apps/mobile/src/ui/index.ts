@@ -9,3 +9,4 @@ export * from './Icon';
 export * from './SheetHeader';
 export * from './Overlay';
 export * from './PulseRing';
+export * from './Checkbox';

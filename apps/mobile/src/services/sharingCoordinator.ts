@@ -28,6 +28,10 @@
  *   Faz 6 (f6Services.ts): depolar → ana ekran / kilit ekranı widget snapshot'ı (kısıtlı yazma / yenileme), favori
  *   fotoğrafları paylaşılan alana, widget token'ı, widget olayları, fotoğraf ön belleği.
  *
+ *   Faz 8 (f8Services.ts): yönlü izinler (permission_grants) → grantsStore; izin push'ları. Kesme anahtarı
+ *   (`publishHold`: görünmez niyeti ya da onay kapısı) açıkken yayın hedefleri BOŞ sayılır (kalıcı hedefler boş
+ *   yazılır → takip durur, ön plan yayını / nabız yok); bu cihazda konum izni geri alınan kişiye yayın hemen kesilir.
+ *
  * Açılış sırası (yayın asla kullanıcının durdurduğu paylaşıma geri dönmez):
  *   1. Kalıcı durdurma niyetleri bu hesaba bağlanır ve reducer'a geri yüklenir (STOP_REQUESTED).
  *   2. Sunucu anlık görüntüsü henüz yoksa, kalıcı hedeflerdeki oturum özeti GEÇİCİ olarak gösterilir:
@@ -105,6 +109,9 @@ import { resilientListener, type ListenerHandlers, type ResilientListener } from
 import { resetF4Stores, startF4Services } from './f4Services';
 import { onF5Connected, resetF5State, startF5Services } from './f5Services';
 import { resetF6State, startF6Services } from './f6Services';
+import { installF8Guards, onF8Connected, resetF8State, startF8Services } from './f8Services';
+import { grantsStore, isLocationRevoked } from '../state/grantsStore';
+import { isPublishHeld, onPublishHoldChange } from '../state/publishHold';
 import { linkTokenVault } from './security/linkTokenVault';
 
 /**
@@ -201,6 +208,40 @@ export function provisionalViews(persisted: PersistedTargets): OutgoingShareView
 }
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+// Faz 8: profil → kesme anahtarı (oturum servisleri onay kapısında başlamasa da yayın kesilir).
+installF8Guards();
+
+/**
+ * Faz 8: onay kapısı açıkken (oturum servisleri BAŞLAMAZ) yalnızca koruyucu, onaydan muaf istekler sürer: bekleyen
+ * paylaşım / bağlantı durdurmaları, onaylanmamış görünmez olma isteği ve ağ hatasında kalan konum izni geri almaları
+ * (aynı op_id) açılışta, bağlantı gelince ve ön plana dönünce yeniden gönderilir. Konum yayını yok (publishHold).
+ */
+export function startGateServices(uid: UserId): () => void {
+  let disposed = false;
+  const retry = () => {
+    if (disposed) return;
+    void sharingStore.getState().retryPendingStops();
+    void linkStore.getState().retryPendingStops();
+    onF8Connected();
+  };
+  void (async () => {
+    await bindStopIntentsOwner(uid).catch(() => []);
+    await bindLinkStopsOwner(uid).catch(() => []);
+    retry();
+  })();
+  const unsubConnected = listenConnected((c) => {
+    if (c) retry();
+  });
+  const appState = AppState.addEventListener('change', (st) => {
+    if (st === 'active') retry();
+  });
+  return () => {
+    disposed = true;
+    unsubConnected();
+    appState.remove();
+  };
+}
 
 export function startSessionServices(uid: UserId): () => void {
   let disposed = false;
@@ -358,6 +399,8 @@ export function startSessionServices(uid: UserId): () => void {
   unsubs.push(startF5Services(uid));
   // Faz 6: widget eşitleme, favori fotoğrafları, widget token'ı.
   unsubs.push(startF6Services(uid));
+  // Faz 8: yönlü izinler, izin push'ları, bekleyen görünmez olma isteği.
+  unsubs.push(startF8Services(uid));
 
   unsubs.push(
     listenConnected((c) => {
@@ -369,6 +412,8 @@ export function startSessionServices(uid: UserId): () => void {
       void flushOutbox(true);
       // Faz 5: bekleyen bölge olayları (aynı op_id).
       onF5Connected();
+      // Faz 8: onaylanmamış görünmez olma isteği (aynı op_id).
+      onF8Connected();
     }),
   );
 
@@ -396,7 +441,8 @@ export function startSessionServices(uid: UserId): () => void {
   let appliedKey: string | null = null;
   let applying: Promise<void> = Promise.resolve();
   /** Ön plan yayını için: bu açılışta sunucunun doğruladığı en az bir hedef var mı. */
-  const hasLiveTargets = () => (snapshotReceived && currentTargets.length > 0) || (linkSnapshotReceived && currentLinkTargets.length > 0);
+  const hasLiveTargets = () =>
+    !isPublishHeld() && ((snapshotReceived && currentTargets.length > 0) || (linkSnapshotReceived && currentLinkTargets.length > 0));
 
   const applyTargets = (force = false) => {
     // Kalıcı hedefler yalnızca GERÇEK sunucu anlık görüntüsünden ve niyet geri yüklemesinden sonra yazılır.
@@ -464,19 +510,37 @@ export function startSessionServices(uid: UserId): () => void {
     void syncExpiryNotifications(sessions, st.now, getServerOffsetMs(), links).catch(() => undefined);
   };
   const onSharingState = (st: SharingStoreState) => {
-    currentTargets = selectPublishTargets(st.state);
+    // Faz 8: görünmez / onaysızken hedef yok; konum izni bu cihazda geri alınan kişi hemen düşer.
+    const grants = grantsStore.getState();
+    currentTargets = isPublishHeld() ? [] : selectPublishTargets(st.state).filter((t) => !isLocationRevoked(grants, t.receiver_id));
     applyTargets();
     syncNotifications();
     syncForeground();
   };
   const onLinkState = (st: LinkStoreState) => {
-    currentLinkTargets = selectLinkTargets(st, currentSenderName());
+    currentLinkTargets = isPublishHeld() ? [] : selectLinkTargets(st, currentSenderName());
     applyTargets();
     syncNotifications();
     syncForeground();
   };
   unsubs.push(sharingStore.subscribe(onSharingState));
   unsubs.push(linkStore.subscribe(onLinkState));
+  // Faz 8: kesme anahtarı değişti → hedefler yeniden hesaplanır (görünmez olunca bu satırda yayın kesilir).
+  unsubs.push(
+    onPublishHoldChange(() => {
+      if (disposed) return;
+      onSharingState(sharingStore.getState());
+      onLinkState(linkStore.getState());
+    }),
+  );
+  let lastRevoked = grantsStore.getState().locationRevoked;
+  unsubs.push(
+    grantsStore.subscribe((g) => {
+      if (g.locationRevoked === lastRevoked || disposed) return;
+      lastRevoked = g.locationRevoked;
+      onSharingState(sharingStore.getState());
+    }),
+  );
   // Konum izni paylaşım dışında (ör. arkadaşa dokunup rota isterken) verilirse kendi konumum hemen izlenmeye başlasın.
   let lastForeground = permissionsStore.getState().foreground;
   unsubs.push(
@@ -687,4 +751,6 @@ onSignedOut(async () => {
   await resetF5State();
   // Faz 6: widget "Giriş yap" çizer; yerel widget kimlik bilgisi, avatar dosyaları ve bellek durumu silinir.
   await resetF6State();
+  // Faz 8: kesme anahtarı (görünmez niyeti / onay kapısı) ve izin / görünmez / onay bellek durumu.
+  await resetF8State();
 });

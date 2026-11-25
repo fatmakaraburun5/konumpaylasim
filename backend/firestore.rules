@@ -1,6 +1,6 @@
 rules_version = '2';
 
-// Konum Firestore kuralları (Faz 1 + Faz 2 + Faz 4 + Faz 5 + Faz 6).
+// Konum Firestore kuralları (Faz 1 + Faz 2 + Faz 4 + Faz 5 + Faz 6 + Faz 8).
 //  - Varsayılan: her şey kapalı.
 //  - İstemci sosyal grafiğe ve paylaşımlara YAZMAZ; tüm geçişler Cloud Functions callable'larıyla.
 //  - Okuma yalnızca ilgili taraflara. Kurallar filtre değildir: istemci sorgusu kısıtı taşımalıdır
@@ -13,6 +13,11 @@ rules_version = '2';
 //  - Faz 6: widget_tokens istemciye tamamen kapalı (yalnızca Functions; düz token yok, sha256 özeti kimliktir).
 //    users/{uid} içindeki gender / favorite_ids / avatar_* yalnızca sahibine görünür; arkadaşlar cinsiyeti ve
 //    fotoğrafı friendships.member_profiles kopyasından görür.
+//  - Faz 8: permission_grants/{granter}_{grantee} yönlü izinler: YALNIZCA iki taraf okur (sorgu: granter_id == ben
+//    ya da grantee_id == ben), yalnızca callable yazar. Belgede ret anı tutulmaz (declined_at her zaman boş);
+//    permission_declines (ret anları) YALNIZCA reddeden granter'a açıktır (isteyen okuyamaz; yazma kapalı).
+//    users/{uid}/consents/{version} onay kayıtları ve
+//    users/{uid}.invisible / .consent yalnızca sahibine görünür, yalnızca callable yazar.
 service cloud.firestore {
   match /databases/{database}/documents {
 
@@ -45,6 +50,13 @@ service cloud.firestore {
 
       // Faz 5: bölge olay kaydı (koordinatsız; 30 gün TTL). Yalnızca sahibi okur; yalnızca zone_event_report yazar.
       match /zone_events/{eventId} {
+        allow read: if isSelf(uid);
+        allow write: if false;
+      }
+
+      // Faz 8: Güvenlik Sözleşmesi / KVKK onay kayıtları (sürüm, metin özeti, onay / geri çekme anı). Yalnızca sahibi
+      // okur; yalnızca consent_accept / consent_withdraw yazar (istemci kendi onayını uyduramaz).
+      match /consents/{version} {
         allow read: if isSelf(uid);
         allow write: if false;
       }
@@ -132,6 +144,22 @@ service cloud.firestore {
     match /meetups/{meetupId} {
       allow read: if signedIn()
         && (resource.data.from == request.auth.uid || request.auth.uid in resource.data.to);
+      allow write: if false;
+    }
+
+    // Faz 8: yönlü izinler. Yalnızca izni veren (granter_id) ve alan (grantee_id) okur; üçüncü kişi iki uid
+    // arasındaki izni göremez. Yazma yalnızca permission_* / share_start / location_request_respond /
+    // emergency_contacts_set callable'larıyla.
+    match /permission_grants/{grantId} {
+      allow read: if signedIn()
+        && (resource.data.granter_id == request.auth.uid || resource.data.grantee_id == request.auth.uid);
+      allow write: if false;
+    }
+
+    // Faz 8: ret anları. Yalnızca reddeden (granter_id) okur (sorgu: granter_id == ben): "İzin istekleri" kartı
+    // reddettiği kapsamları gizler. İsteyen (grantee_id) OKUYAMAZ: reddedildiğini öğrenmez. Yazma yalnızca callable.
+    match /permission_declines/{grantId} {
+      allow read: if signedIn() && resource.data.granter_id == request.auth.uid;
       allow write: if false;
     }
 

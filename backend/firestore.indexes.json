@@ -245,6 +245,12 @@
   ],
   "fieldOverrides": [
     {
+      "collectionGroup": "permission_declines",
+      "fieldPath": "purge_at",
+      "ttl": true,
+      "indexes": []
+    },
+    {
       "collectionGroup": "ops",
       "fieldPath": "purge_at",
       "ttl": true,

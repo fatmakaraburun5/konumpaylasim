@@ -8,11 +8,14 @@
  *   needsProfile  → profil yok (Faz 6: sunucu `gender_required` döndü) ya da görünen ad boş (ad + cinsiyet ekranı)
  *   ready         → ana uygulama (Faz 6: `profile.gender == null` ise (main) yerleşimi engelleyici GenderGate gösterir)
  *
+ * Faz 8: `profile.consent` güncel sürüm değilse (`selectNeedsConsent`) (main) yerleşimi onay kapısını gösterir ve
+ * oturum servislerini başlatmaz; `patchProfileLocal` callable yanıtını dinleyici yetişmeden profile işler.
+ *
  * Faz 6: profil OLUŞTURMA artık cinsiyet ister. Girişte ad/cinsiyet olmadan yapılan `user_bootstrap` yeni hesapta
  * `gender_required` ile reddedilir → `needsProfile`; ad ekranı ad + cinsiyetle profili oluşturur. Mevcut hesapta
  * çağrı her zamanki gibi idempotent kalp atışıdır.
  */
-import { type Gender, type UserId, type UserProfile } from '@konum/core';
+import { clientConsentRequired, type Gender, type UserId, type UserProfile } from '@konum/core';
 import { useStore } from 'zustand';
 import { createStore } from 'zustand/vanilla';
 import { toKonumError } from '../lib/errors';
@@ -25,7 +28,7 @@ import { unregisterPushToken } from '../services/notifications/push';
 
 export type AuthStatus = 'initializing' | 'signedOut' | 'bootstrapping' | 'needsProfile' | 'ready';
 
-interface AuthState {
+export interface AuthState {
   status: AuthStatus;
   uid: UserId | null;
   phoneE164: string | null;
@@ -44,6 +47,8 @@ interface AuthState {
   updateProfile: (patch: ProfilePatch) => Promise<{ ok: true } | { ok: false; message: string; code: string }>;
   retryBootstrap: () => Promise<void>;
   signOut: () => Promise<void>;
+  /** Faz 8: callable yanıtını (görünmez / onay) dinleyici yetişmeden profile işler; sonraki anlık görüntü doğrudur. */
+  patchProfileLocal: (patch: Partial<Pick<UserProfile, 'invisible' | 'consent'>>) => void;
 }
 
 export interface ProfilePatch {
@@ -222,8 +227,23 @@ export const authStore = createStore<AuthState>()((set, get) => {
       }
       await signOutAuth();
     },
+
+    patchProfileLocal: (patch) => {
+      const p = get().profile;
+      if (!p || !get().uid) return;
+      set({ profile: { ...p, ...patch } });
+    },
   };
 });
+
+/** Faz 8: güncel Güvenlik Sözleşmesi / KVKK onayı yok → onay kapısı (oturum servisleri başlamaz). */
+export function selectNeedsConsent(s: Pick<AuthState, 'status' | 'profile'>): boolean {
+  return s.status === 'ready' && !!s.profile && clientConsentRequired(s.profile.consent);
+}
+
+export function useNeedsConsent(): boolean {
+  return useStore(authStore, selectNeedsConsent);
+}
 
 export function useAuthStore<T>(selector: (s: AuthState) => T): T {
   return useStore(authStore, selector);

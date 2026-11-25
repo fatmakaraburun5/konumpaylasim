@@ -17,11 +17,14 @@
  *
  * `widget_refresh`: oturum canlıysa kısıtlamayı aşan bir eşitleme; başsızsa yalnızca widget yeniden çizilir
  * (depolar boşken snapshot YAZILMAZ: favoriler silinmiş gibi görünmesin).
+ *
+ * Faz 8: yayın kesme anahtarı (görünmez mod / onay kapısı) açıksa hiçbir paylaşım benimsenmez.
  */
 import { isExpired, type SessionId, type ShareId, type UserId } from '@konum/core';
 import type { ShareDoc } from '../../lib/schemas';
 import { authStore } from '../../state/authStore';
 import { loadTargets, updateTargets, type PersistedTarget } from '../../state/persist';
+import { hydratePublishHold, isPublishHeld } from '../../state/publishHold';
 import { hydrateStopIntents, isShareBlocked } from '../../state/stopIntents';
 import { fetchOutgoingShares } from '../firebase/sharesRepo';
 import { probeFirebaseAuth } from '../location/pipeline';
@@ -81,6 +84,8 @@ const sessionLive = (): boolean => authStore.getState().status === 'ready' && wi
 export async function adoptSharesFromPush(wanted: AdoptWanted): Promise<'none' | 'live' | 'adopted'> {
   if (wanted.sessionIds.length === 0 && wanted.shareIds.length === 0) return 'none';
   if (sessionLive()) return 'live';
+  await hydratePublishHold();
+  if (isPublishHeld()) return 'none';
   const persisted = await loadTargets();
   const haveShares = new Set(persisted.targets.map((t) => t.share_id));
   const haveSessions = new Set(persisted.targets.map((t) => t.session_id).filter((s): s is string => !!s));
@@ -97,6 +102,7 @@ export async function adoptSharesFromPush(wanted: AdoptWanted): Promise<'none' |
   let added = false;
   await updateTargets((latest) => {
     if (latest.uid !== null && latest.uid !== uid) return null;
+    if (isPublishHeld()) return null;
     const have = new Set(latest.targets.map((t) => t.share_id));
     const fresh = add.filter((t) => !have.has(t.share_id) && !isShareBlocked(t.share_id));
     if (fresh.length === 0) return null;

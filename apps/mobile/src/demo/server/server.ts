@@ -73,6 +73,20 @@
  *  - `widget_refresh` (yalnızca veri): bir paylaşımın aktifliği değişince, alıcı göndereni favorilerinde tutuyorsa.
  *  - Demo paneli: token'ın sunucuda süresi dolsun, hız sınırı dolsun, favorileri boşalt / geri yükle.
  *
+ * Faz 8 (backend `handlers/access.ts` ve daraltılan Faz 1–6 işleyicileriyle aynı anlam; docs/PHASE8.md §3–§4, §6):
+ *  - Arkadaşlık izin DEĞİLDİR: her etkileşim yönlü `permission_grants/{granter}_{grantee}` kaydına dayanır (core
+ *    `access.ts`; `areFriends` tek başına hiçbir yetki vermez). Belge geçişleri core'un saf fonksiyonlarıyla
+ *    (`withGranted`, `withRevoked`, `withPendingRequest`, `withResponse`, `planPermissionRequest`). Ret anları
+ *    belgede BOŞ, sunucuya özel tabloda (`perm_declines`) tutulur; soğumadaki istek sessizce `sent` döner.
+ *  - Onay kapısı: güncel `CONSENT_VERSION` onaylanmadan koruyucu olmayan her callable `consent_required` (op tekrarından
+ *    ÖNCE; core `consentExemptCall`). `consent_accept` sürüm + özet uyuşmazsa `consent_required`.
+ *  - Görünmez mod: `invisible_set(true)` giden paylaşımların anlık görüntüsünü alıp hepsini `stopped_by_sender` ile
+ *    bitirir, QR bağlantılarını kapatır; görünmezken RTDB yazıları reddedilir, paylaşım / uzatma / bağlantı / hızlı
+ *    paylaşım `invisible_mode`, bölge olayı `suppressed:'invisible'`. Görünür olunca yalnızca seçilenler geri gelir.
+ *  - Tohum (`withPhase8`): Ayşe / Mehmet / Zeynep bana `location_view` vermiş (`migration`), Can vermemiş; benim
+ *    kimseye iznim yok; acil kişi listeleri `sos_alert`; benim onayım YOK (kapı görünür). Botlar bana yalnızca
+ *    `location_view` izni varken paylaşır; isteğime 6 sn sonra yanıt verir (Can izin verir ve 1 saat paylaşır).
+ *
  * Durum tarayıcıda `localStorage`'a yazılır (erişilemezse yalnızca bellekte kalır). Sunucu saati = cihaz saati.
  */
 import {
@@ -257,6 +271,61 @@ import {
   type WidgetTokenIssueResponse,
   type WidgetTokenRevokeResponse,
 } from '@konum/core';
+import {
+  canInvite,
+  canPing,
+  canRequestPermission,
+  canSendSos,
+  canShareLocation,
+  canZoneNotify,
+  CONSENT_VERSION,
+  ConsentAcceptRequestSchema,
+  consentExemptCall,
+  withConsentHistory,
+  consentRequired,
+  ConsentWithdrawSchema,
+  emptyGrantDoc,
+  grantedScopes,
+  grantId,
+  hasGrant,
+  INVISIBLE_SNAPSHOT_MAX,
+  InvisibleSetRequestSchema,
+  isCurrentConsent,
+  isInvisible,
+  meetupEtaAllowed,
+  noteAudienceAllowed,
+  pendingScopes,
+  liveRequestScopes,
+  PERMISSION_REQUESTS_PER_DAY,
+  permissionGrantedText,
+  permissionRequestText,
+  PermissionRequestRespondSchema,
+  PermissionRequestSendSchema,
+  PermissionSetSchema,
+  pingLocationAllowed,
+  planInvisibleOn,
+  planInvisibleRestore,
+  planPermissionRequest,
+  REVOKE_EFFECTS,
+  withGranted,
+  withPendingRequest,
+  withResponse,
+  withRevoked,
+  type AccessScope,
+  type ConsentAcceptResponse,
+  type ConsentRecord,
+  type ConsentWithdrawResponse,
+  type GrantVia,
+  type InvisibleSetResponse,
+  type InvisibleState,
+  type PairAccessInput,
+  type PermissionGrantDoc,
+  type PermissionRequestRespondResponse,
+  type PermissionRequestSendResponse,
+  type PermissionSetResponse,
+  type ProfileConsent,
+  type RequestableScope,
+} from '@konum/core';
 import { z } from 'zod';
 import { botAvatarUrls, DEMO_STORAGE_BUCKET, DEMO_STORAGE_HOST, DemoAvatarStore, DemoStorageError, uriToDataUrl } from './avatars';
 import { fakeComputeRoutes, fakeReverseGeocode } from './fakeGoogle';
@@ -299,6 +368,11 @@ interface UserRec {
   avatar_version: number | null;
   /** Sıralı favoriler (yalnızca sahibi okur). */
   favorite_ids: UserId[];
+  // --- Faz 8 (eski kayıtlarda yok: `withPhase8` tamamlar) ---
+  invisible: InvisibleState | null;
+  consent: ProfileConsent | null;
+  /** Görünmez moddan son çıkış anı (backend `users.visible_since`; bu andan önceki bölge olayı düşer). */
+  visible_since?: EpochMs | null;
 }
 
 /** Firestore `widget_tokens/{sha256(token)}` (istemciye tamamen kapalı; düz token SAKLANMAZ). */
@@ -535,6 +609,18 @@ interface Db {
   widget_issue: Record<string, number>;
   /** `widget_quick_share` op kaydı `{token_hash}:{op_id}` (token başına tekilleştirme). */
   widget_ops: Record<string, { at: EpochMs; response: WidgetQuickShareResponse }>;
+  // --- Faz 8 (eski kayıtlarda yok: `withPhase8` tamamlar) ---
+  phase8: boolean;
+  /** Firestore `permission_grants/{granter}_{grantee}` (`declined_at` her zaman boş yazılır). */
+  grants: Record<string, PermissionGrantDoc>;
+  /** Sunucuya özel ret anları (`permission_declines/{granter}_{grantee}`): isteyene sızmaz. */
+  perm_declines: Record<string, PermissionGrantDoc['declined_at']>;
+  /** Günlük izin isteği sayacı `{uid}_{gün}`. */
+  perm_day: Record<string, number>;
+  /** Demo: bot granter'ın isteğime otomatik yanıt anı (`{granter}_{grantee}` → an). */
+  perm_auto: Record<string, EpochMs>;
+  /** `users/{uid}/consents/{version}`. */
+  consents: Record<UserId, Record<string, ConsentRecord>>;
 }
 
 /** Faz 1'de kaydedilmiş demo durumuna Faz 2 alanlarını ekler (demo verisi silinmeden). */
@@ -643,6 +729,50 @@ function withPhase3(db: Db): Db {
   return db;
 }
 
+/** Botlara / sanal kişilere güncel onay (benim onayım YOK: kapı görünür). */
+function demoConsentOf(uid: UserId, at: EpochMs): ProfileConsent | null {
+  return uid === DEMO_ME ? null : { version: CONSENT_VERSION, accepted_at: at };
+}
+
+/** İzin yazar (sunucu adına, tohum / göç). Kendisine izin yazılmaz. */
+function seedGrant(db: Db, granter: UserId, grantee: UserId, scope: AccessScope, via: GrantVia, now: EpochMs): void {
+  if (granter === grantee) return;
+  const id = grantId(granter, grantee);
+  const cur = db.grants[id] ?? emptyGrantDoc(granter, grantee, now);
+  if (hasGrant(cur, scope)) return;
+  db.grants[id] = withGranted(cur, [scope], via, now);
+}
+
+/**
+ * Faz 6 kaydına Faz 8 alanlarını ekler (demo verisi silinmeden; DB_VERSION değişmez). Göç: YALNIZCA botların etkin
+ * paylaşımları için gönderen → alıcı `location_view` (`migration`; benim başlattığım eski paylaşıma benim adıma izin
+ * yazılmaz, gerçek backend'deki gibi uzatılamaz ve geri yüklenmez), Ayşe / Mehmet / Zeynep → ben `location_view`, acil
+ * kişi listeleri → `sos_alert` (`emergency_contact`). Benim onayım boş kalır (kapı görünür), botlarınki günceldir.
+ */
+function withPhase8(db: Db): Db {
+  db.grants ??= {};
+  db.perm_declines ??= {};
+  db.perm_day ??= {};
+  db.perm_auto ??= {};
+  db.consents ??= {};
+  for (const u of Object.values(db.users)) {
+    u.invisible ??= null;
+    if (u.consent === undefined) u.consent = demoConsentOf(u.uid, u.created_at);
+  }
+  if (!db.phase8) {
+    db.phase8 = true;
+    const now = Date.now();
+    for (const sh of Object.values(db.shares)) {
+      if (sh.sender_id !== DEMO_ME && sh.status === 'active' && (sh.expires_at === null || sh.expires_at > now)) seedGrant(db, sh.sender_id, sh.receiver_id, 'location_view', 'migration', now);
+    }
+    for (const id of [PEOPLE.ayse.uid, PEOPLE.mehmet.uid, PEOPLE.zeynep.uid]) {
+      if (db.friendships[friendshipId(id, DEMO_ME)]?.status === 'accepted') seedGrant(db, id, DEMO_ME, 'location_view', 'migration', now);
+    }
+    for (const [owner, list] of Object.entries(db.emergency ?? {})) for (const c of list) seedGrant(db, owner, c, 'sos_alert', 'emergency_contact', now);
+  }
+  return db;
+}
+
 // --- hata modeli -----------------------------------------------------------------------------
 
 /** Firebase `HttpsError` benzeri: istemci `details.code` → core ERROR_CODES eşlemesini kullanır. */
@@ -688,6 +818,11 @@ const TRANSPORT: Record<ErrorCode, string> = {
   token_expired: 'unauthenticated',
   not_favorite: 'failed-precondition',
   not_friend: 'failed-precondition',
+  // Faz 8
+  not_permitted: 'failed-precondition',
+  invisible_mode: 'failed-precondition',
+  consent_required: 'failed-precondition',
+  permission_cooldown: 'resource-exhausted',
 };
 
 /** RTDB kural reddi (RNFB `database/permission-denied` ile aynı biçim). */
@@ -757,6 +892,8 @@ const MEHMET_OFFLINE_AGE_MS = 63 * MINUTE;
 const TRAIL_TTL_MS = DAY;
 /** Dünyanın tazelendiği yaş: bot paylaşımları yeniden başlatılır (uzun aradan sonra açılınca boş harita olmasın). */
 const WORLD_REFRESH_MS = 6 * HOUR;
+/** Faz 8 demo: "Sözleşme güncellendi" düğmesi onayımı bu eski sürüme çeker (kapı "Metin güncellendi" ile açılır). */
+export const DEMO_OLD_CONSENT_VERSION = '2026-06-01';
 
 export interface QueryHandle {
   unsubscribe: () => void;
@@ -816,6 +953,24 @@ export interface DemoSnapshot {
     activeWidgetTokens: number;
     quickSharesThisHour: number;
   };
+  /**
+   * Faz 8: görünmez miyim, konumumun şu an teslim edildiği kişiler ("Arkadaşlarım beni görüyor mu?"; görünmezken 0),
+   * izin özetleri (adlar), bekleyen istekler ve onay durumum.
+   */
+  f8: {
+    myInvisible: boolean;
+    myDeliveriesCount: number;
+    seesMe: string[];
+    /** Benim konum izni verdiklerim / bana konum izni verenler. */
+    givenLocation: string[];
+    receivedLocation: string[];
+    grants: { given: number; received: number };
+    pendingIncoming: number;
+    pendingOutgoing: number;
+    ayseGrantsMe: boolean;
+    mehmetGrantsPing: boolean;
+    consent: { version: string; current: boolean } | null;
+  };
 }
 
 /** Faz 6: widget önizlemesinin ham kaynağı (`widgetSource`). Avatar adresi yerel (gösterilebilir) adrestir. */
@@ -870,7 +1025,7 @@ export class DemoServer {
       if (!db || db.v !== DB_VERSION || !db.users || !db.users[DEMO_ME]) return null;
       const cutoff = Date.now() - DAY;
       for (const [k, op] of Object.entries(db.ops)) if (op.at < cutoff) delete db.ops[k];
-      return withPhase6(withPhase5(withPhase4(withPhase3(withPhase2(db)))));
+      return withPhase8(withPhase6(withPhase5(withPhase4(withPhase3(withPhase2(db))))));
     } catch {
       return null;
     }
@@ -969,6 +1124,12 @@ export class DemoServer {
       widget_tokens: {},
       widget_issue: {},
       widget_ops: {},
+      phase8: false,
+      grants: {},
+      perm_declines: {},
+      perm_day: {},
+      perm_auto: {},
+      consents: {},
     };
     this.db = db;
     withPhase4(db);
@@ -992,6 +1153,8 @@ export class DemoServer {
     db.bots[PEOPLE.mehmet.uid] = { uid: PEOPLE.mehmet.uid, kind: 'heartbeat', battery: MEHMET_BATTERY, charging: false, walk_origin: now, next_at: now + 8 * MINUTE, spot: MEHMET_SPOT };
     db.bots[PEOPLE.zeynep.uid] = { uid: PEOPLE.zeynep.uid, kind: 'stale', battery: 41, charging: false, walk_origin: now, next_at: Number.MAX_SAFE_INTEGER, spot: ZEYNEP_SPOT };
     db.bots[PEOPLE.can.uid] = { uid: PEOPLE.can.uid, kind: 'idle', battery: 88, charging: true, walk_origin: now, next_at: Number.MAX_SAFE_INTEGER, spot: EXTRA_SPOTS[0] as LatLng };
+    // Faz 8: Ayşe / Mehmet / Zeynep bana konum izni vermiş, Can vermemiş; benim kimseye iznim yok, onayım yok.
+    withPhase8(db);
     this.seedBotShares(now);
     return db;
   }
@@ -1033,6 +1196,8 @@ export class DemoServer {
       avatar_thumb_url: null,
       avatar_version: null,
       favorite_ids: [],
+      invisible: null,
+      consent: demoConsentOf(uid, createdAt),
     };
     this.db.users[uid] = u;
     this.db.invites[invite] = uid;
@@ -1111,6 +1276,100 @@ export class DemoServer {
   private areFriends(a: UserId, b: UserId): boolean {
     if (a === b) return false;
     return this.db.friendships[friendshipId(a, b)]?.status === 'accepted';
+  }
+
+  // --- Faz 8: yönlü izinler -------------------------------------------------------------------------
+
+  /** `granter`ın `grantee`ye verdiği izin belgesi (yoksa null). */
+  private grantOf(granter: UserId, grantee: UserId): PermissionGrantDoc | null {
+    if (granter === grantee) return null;
+    return this.db.grants[grantId(granter, grantee)] ?? null;
+  }
+
+  /** Çiftin sunucu durumu (X = eylemi yapan). Core `access.ts` koşulları bununla değerlendirilir. */
+  private pair(x: UserId, y: UserId): PairAccessInput {
+    const ux = this.db.users[x];
+    return {
+      friend: this.areFriends(x, y),
+      grantXtoY: this.grantOf(x, y),
+      grantYtoX: this.grantOf(y, x),
+      invisibleX: isInvisible(ux),
+      consentX: !consentRequired(ux?.consent),
+    };
+  }
+
+  private grantScope(granter: UserId, grantee: UserId, scope: AccessScope, via: GrantVia, now: EpochMs): void {
+    seedGrant(this.db, granter, grantee, scope, via, now);
+  }
+
+  /** Çiftin iki yöndeki izin belgeleri silinir (arkadaşlık bitti). */
+  private dropPairGrants(a: UserId, b: UserId): void {
+    for (const id of [grantId(a, b), grantId(b, a)]) {
+      delete this.db.grants[id];
+      delete this.db.perm_declines[id];
+      delete this.db.perm_auto[id];
+    }
+  }
+
+  /** `owner`ın `action` kurallarından `other` çıkar; alıcısı kalmayan kural silinir. */
+  private stripZoneRecipient(owner: UserId, other: UserId, action: ZoneRule['action'], now: EpochMs): void {
+    for (const z of Object.values(this.db.zones[owner] ?? {})) {
+      if (!z.rules.some((r) => r.action === action && r.recipient_ids.includes(other))) continue;
+      z.rules = z.rules
+        .map((r) => (r.action === action ? { ...r, recipient_ids: r.recipient_ids.filter((u) => u !== other) } : r))
+        .filter((r) => r.recipient_ids.length > 0);
+      z.updated_at = now;
+    }
+  }
+
+  /** Geri alma zinciri (core `REVOKE_EFFECTS`; granter = G, grantee = E). Alıcıya neden söylenmez. */
+  private applyRevokeEffects(g: UserId, e: UserId, scope: AccessScope, now: EpochMs): void {
+    for (const effect of REVOKE_EFFECTS[scope]) {
+      switch (effect) {
+        case 'end_shares': {
+          const sh = this.db.shares[shareId(g, e)];
+          if (sh) this.endShare(sh, sh.expires_at !== null && sh.expires_at <= now ? 'expired' : 'stopped_by_sender', now);
+          break;
+        }
+        case 'remove_from_note_audience':
+          for (const n of Object.values(this.db.place_notes)) {
+            if (n.owner_id === g && n.visible_to.includes(e)) n.visible_to = n.visible_to.filter((u) => u !== e);
+          }
+          break;
+        case 'remove_from_zone_start_share':
+          this.stripZoneRecipient(g, e, 'start_share', now);
+          break;
+        case 'remove_from_favorites': {
+          const u = this.db.users[g];
+          if (u) u.favorite_ids = (u.favorite_ids ?? []).filter((x) => x !== e);
+          break;
+        }
+        case 'remove_from_zone_notify':
+          this.stripZoneRecipient(e, g, 'notify', now);
+          break;
+      }
+    }
+  }
+
+  /** İzni kaldırır + zincir. Dönen: kaldırıldı mı. */
+  private revokeScope(granter: UserId, grantee: UserId, scope: AccessScope, now: EpochMs): boolean {
+    const cur = this.grantOf(granter, grantee);
+    if (!cur || !hasGrant(cur, scope)) return false;
+    this.db.grants[grantId(granter, grantee)] = withRevoked(cur, [scope], now);
+    this.applyRevokeEffects(granter, grantee, scope, now);
+    return true;
+  }
+
+  /**
+   * Firestore `permission_grants where granter_id == uid` ∪ `where grantee_id == uid` (ret anları boş), granter olduğum
+   * belgelere `permission_declines where granter_id == uid` birleşir (mobil `grantsRepo` ile aynı): kartım reddettiğim
+   * kapsamları göstermez; isteyen tarafın belgesinde ret anı yoktur.
+   */
+  grantsOf(uid: UserId): PermissionGrantDoc[] {
+    return Object.values(this.db.grants)
+      .filter((d) => d.granter_id === uid || d.grantee_id === uid)
+      .sort((a, b) => `${a.granter_id}_${a.grantee_id}`.localeCompare(`${b.granter_id}_${b.grantee_id}`))
+      .map((d) => ({ ...d, declined_at: d.granter_id === uid ? { ...(this.db.perm_declines[grantId(d.granter_id, d.grantee_id)] ?? {}) } : {} }));
   }
 
   private nextVirtualName(): string {
@@ -1246,7 +1505,8 @@ export class DemoServer {
   }
 
   private startBotShare(bot: UserId, duration: DurationChoice, startedAt: EpochMs): ShareRec | null {
-    if (!this.areFriends(bot, DEMO_ME)) return null;
+    // Faz 8: bot bana yalnızca `location_view` izni varken (ve görünür + onaylıyken) paylaşır.
+    if (!canShareLocation(this.pair(bot, DEMO_ME))) return null;
     const r = resolveDuration(duration, startedAt, offsetFnForTimeZone(DEFAULT_TZ));
     return this.startShare(bot, DEMO_ME, uuidV4(), r.share_mode, r.expires_at, startedAt);
   }
@@ -1316,7 +1576,7 @@ export class DemoServer {
       return false;
     }
     const s = this.db.shares[shareId(botId, DEMO_ME)];
-    if (!s || s.status !== 'active') {
+    if (!s || s.status !== 'active' || !hasGrant(this.grantOf(botId, DEMO_ME), 'location_view')) {
       bot.next_at = now + this.botIntervalMs(bot);
       return false;
     }
@@ -1398,6 +1658,7 @@ export class DemoServer {
     }
     if (this.sweepPhase4(now)) changed = true;
     if (this.sweepPhase5(now)) changed = true;
+    if (this.sweepPhase8(now)) changed = true;
     if (now - this.lastPrune > MINUTE) {
       this.lastPrune = now;
       if (this.prunePhase2(now)) changed = true;
@@ -1469,6 +1730,10 @@ export class DemoServer {
 
   private applyFanoutNow(map: Record<string, unknown>, authUid: UserId | null, now: EpochMs): void {
     if (!authUid) throw new DemoPermissionDenied('auth == null');
+    // Faz 8: görünmez kullanıcının konum yazısı kurallarca reddedilir (silme serbest).
+    if (isInvisible(this.db.users[authUid]) && Object.values(map).some((v) => v !== null && v !== undefined)) {
+      throw new DemoPermissionDenied('görünmez mod: konum yazılamaz');
+    }
     const writes: { receiver: UserId; id: string; value: Record<string, unknown> | null }[] = [];
     const linkWrites: { hash: string; value: Record<string, unknown> | null }[] = [];
     const trailWrites: { receiver: UserId; id: string; point: string; value: Record<string, unknown> | null }[] = [];
@@ -1727,6 +1992,8 @@ export class DemoServer {
       avatar_thumb_url: main ? (this.avatars.resolve(u.avatar_thumb_url) ?? main) : null,
       avatar_version: main ? (u.avatar_version ?? null) : null,
       favorite_ids: [...(u.favorite_ids ?? [])],
+      invisible: u.invisible ?? null,
+      consent: u.consent ?? null,
     };
   }
 
@@ -1839,6 +2106,8 @@ export class DemoServer {
     }
     if (!authUid) fail('unauthenticated');
     const uid = authUid as UserId;
+    // Faz 8 onay ön kapısı (backend `consentGate`): koruyucu işlemler ve user_bootstrap muaf; op tekrarından ÖNCE.
+    if (!consentExemptCall(name, payload) && consentRequired(this.db.users[uid]?.consent)) fail('consent_required');
     const opId = (payload as { op_id?: unknown } | null)?.op_id;
     const opKey = typeof opId === 'string' ? `${uid}:${name}:${opId}` : null;
     const now = Date.now();
@@ -1935,6 +2204,19 @@ export class DemoServer {
         return this.favoritesSetCall(payload, uid, now);
       case 'widget_token_revoke':
         return this.widgetTokenRevokeCall(payload, uid, now);
+      // Faz 8
+      case 'permission_request_send':
+        return this.permissionRequestSendCall(payload, uid, now);
+      case 'permission_request_respond':
+        return this.permissionRequestRespondCall(payload, uid, now);
+      case 'permission_set':
+        return this.permissionSetCall(payload, uid, now);
+      case 'invisible_set':
+        return this.invisibleSetCall(payload, uid, now);
+      case 'consent_accept':
+        return this.consentAcceptCall(payload, uid, now);
+      case 'consent_withdraw':
+        return this.consentWithdrawCall(payload, uid, now);
       default:
         return fail('invalid_argument', `Demo sunucusunda yok: ${name}`);
     }
@@ -2021,6 +2303,7 @@ export class DemoServer {
 
   private shareStartCall(payload: unknown, uid: UserId, now: EpochMs) {
     const data = this.parse(ShareStartRequestSchema, payload);
+    if (isInvisible(this.db.users[uid])) fail('invisible_mode');
     let resolved: { share_mode: ShareMode; expires_at: EpochMs | null };
     try {
       resolved = resolveDuration(data.duration, now, offsetFnForTimeZone(data.time_zone));
@@ -2031,23 +2314,36 @@ export class DemoServer {
     const sessionId = uuidV4();
     const started: ShareRec[] = [];
     const skipped: UserId[] = [];
+    const needsGrant: UserId[] = [];
     for (const r of [...new Set(data.receiver_ids)]) {
       if (!this.areFriends(uid, r)) {
         skipped.push(r);
         continue;
       }
+      // Faz 8: alıcıda `location_view` yoksa bayrakla aynı işlemde yazılır (`share`), değilse yalnızca çağırana döner.
+      if (!hasGrant(this.grantOf(uid, r), 'location_view')) {
+        if (!data.grant_location_view) {
+          needsGrant.push(r);
+          continue;
+        }
+        this.grantScope(uid, r, 'location_view', 'share', now);
+      }
       started.push(this.startShare(uid, r, sessionId, resolved.share_mode, resolved.expires_at, now));
     }
-    return { session_id: sessionId, shares: started.map((s) => this.toView(s)), skipped_receiver_ids: skipped, server_now: now };
+    return { session_id: sessionId, shares: started.map((s) => this.toView(s)), skipped_receiver_ids: skipped, needs_grant_receiver_ids: needsGrant, server_now: now };
   }
 
   private shareExtendCall(payload: unknown, uid: UserId, now: EpochMs) {
     const data = this.parse(ShareExtendRequestSchema, payload);
+    if (isInvisible(this.db.users[uid])) fail('invisible_mode');
     const active = Object.values(this.db.shares).filter((s) => s.sender_id === uid && s.session_id === data.session_id && s.status === 'active');
     if (active.length === 0) fail('share_not_active');
-    const extendable = active.filter((s) => canExtend(s, now));
+    // Faz 8: uzatma da paylaşımdır; alıcı başına izin yeniden doğrulanır.
+    const allowed = active.filter((s) => canShareLocation(this.pair(uid, s.receiver_id)));
+    if (allowed.length === 0) fail('not_permitted');
+    const extendable = allowed.filter((s) => canExtend(s, now));
     if (extendable.length === 0) {
-      if (active.some((s) => s.expires_at !== null && s.expires_at <= now)) fail('already_expired');
+      if (allowed.some((s) => s.expires_at !== null && s.expires_at <= now)) fail('already_expired');
       fail('invalid_duration', 'Süresiz paylaşım uzatılamaz');
     }
     for (const s of extendable) {
@@ -2184,11 +2480,15 @@ export class DemoServer {
       if (ua) ua.favorite_ids = (ua.favorite_ids ?? []).filter((x) => x !== b);
       // Faz 5: iki tarafın bölge kurallarından karşı taraf çıkarılır (alıcısız kural silinir).
       this.dropZoneRecipient(a, b, now);
+      // Faz 8: karşı taraf aktif SOS'un alıcılarından çıkar.
+      this.pruneSosRecipients(a, (r) => r !== b, now);
     }
     for (const id of [shareId(uid, other), shareId(other, uid)]) {
       const s = this.db.shares[id];
       if (s) this.endShare(s, 'friendship_removed', now);
     }
+    // Faz 8: iki yöndeki izin belgeleri silinir.
+    this.dropPairGrants(uid, other);
     return response;
   }
 
@@ -2308,24 +2608,30 @@ export class DemoServer {
     now: EpochMs,
   ): PingSendResponse {
     if (req.to === from || !this.areFriends(from, req.to)) fail('not_friends');
+    // Faz 8: alıcının bana `ping` izni şart; konum yalnızca `location_view` (ben → o) varken ve görünürken.
+    const access = this.pair(from, req.to);
+    if (!canPing(access)) fail('not_permitted');
     const pairKey = `${from}_${req.to}`;
     const last = this.db.ping_pair[pairKey];
     if (last !== undefined && now - last < PING_LIMITS.perPairCooldownMs) fail('rate_limited');
     const hourKey = `${from}_${pingHourBucket(now)}`;
     const count = this.db.ping_hour[hourKey] ?? 0;
     if (count >= PING_LIMITS.perUserPerHour) fail('rate_limited');
-    const location = req.location && req.location.timestamp >= now - PING_LIMITS.maxLocationAgeMs ? req.location : null;
+    // "Yoldayım" ETA'sı da konumdan türer: konumla aynı koşulda (location_view ∧ görünür) kalır.
+    const locationAllowed = pingLocationAllowed(access);
+    const location = req.location && req.location.timestamp >= now - PING_LIMITS.maxLocationAgeMs && locationAllowed ? req.location : null;
+    const etaS = locationAllowed && req.kind === 'on_way' ? req.eta_s : null;
     const ping_id = `p${randomHex32().slice(0, 19)}`;
     const expires_at = now + PING_LIMITS.ttlMs;
     // RTDB null saklamaz: boş alanlar yazılmaz (okuma tarafı null yapar).
     const rec: Record<string, unknown> = { ping_id, from, kind: req.kind, sent_at: now, expires_at };
     if (location) rec.location = location;
-    if (req.eta_s !== null) rec.eta_s = req.eta_s;
+    if (etaS !== null) rec.eta_s = etaS;
     (this.db.ping_inbox[req.to] ??= {})[ping_id] = rec;
     this.db.ping_pair[pairKey] = now;
     this.db.ping_hour[hourKey] = count + 1;
     const data: Extract<PushData, { type: 'ping' }> = { type: 'ping', ping_id, from, kind: req.kind };
-    this.push(req.to, { notification: pingPushText(this.nameOf(from), req.kind, req.eta_s), data });
+    this.push(req.to, { notification: pingPushText(this.nameOf(from), req.kind, etaS), data });
     return { ping_id, expires_at, server_now: now };
   }
 
@@ -2356,7 +2662,10 @@ export class DemoServer {
     const text = sanitizeNoteText(req.text);
     if (!text) return fail('invalid_argument');
     const emoji = req.emoji ? sanitizeNoteText(req.emoji, NOTE_LIMITS.maxEmojiChars) : null;
-    const visible_to = [...new Set(req.visible_to)].filter((u) => u !== owner && this.areFriends(owner, u)).slice(0, NOTE_LIMITS.maxAudience);
+    // Faz 8: yalnızca sahibin `location_view` izni verdiği arkadaşlar (diğerleri sessizce düşer).
+    const visible_to = [...new Set(req.visible_to)]
+      .filter((u) => u !== owner && this.areFriends(owner, u) && noteAudienceAllowed(this.pair(owner, u)))
+      .slice(0, NOTE_LIMITS.maxAudience);
     const position = { lat: req.position.lat, lng: req.position.lng, accuracy: req.position.accuracy };
     if (req.note_id) {
       const cur = this.db.place_notes[req.note_id];
@@ -2401,8 +2710,38 @@ export class DemoServer {
   private emergencyContactsSetCall(payload: unknown, uid: UserId, now: EpochMs) {
     const req = this.parse(EmergencyContactsSetRequestSchema, payload);
     const contact_ids = [...new Set(req.contact_ids)].filter((c) => c !== uid && this.areFriends(uid, c)).slice(0, SOS_LIMITS.maxContacts);
+    // Faz 8: seçilen her kişiye `sos_alert` (`emergency_contact`), listeden çıkanlardan silinir.
+    for (const old of this.db.emergency[uid] ?? []) if (!contact_ids.includes(old)) this.revokeScope(uid, old, 'sos_alert', now);
+    for (const c of contact_ids) this.grantScope(uid, c, 'sos_alert', 'emergency_contact', now);
     this.db.emergency[uid] = contact_ids;
+    // Aktif SOS: listeden çıkan kişi tam konumu okumayı hemen bırakır (yeni kişi sessizce eklenmez).
+    this.pruneSosRecipients(uid, (r) => contact_ids.includes(r), now);
     return { contact_ids, server_now: now };
+  }
+
+  /** Backend `writeSosRecipientPrune`: gönderenin aktif SOS'larının alıcıları `keep` ile süzülür. */
+  private pruneSosRecipients(sender: UserId, keep: (uid: UserId) => boolean, now: EpochMs): void {
+    for (const a of Object.values(this.db.sos)) {
+      if (a.sender_id !== sender || a.status !== 'active') continue;
+      const next = a.recipient_ids.filter(keep);
+      if (next.length !== a.recipient_ids.length) this.db.sos[a.sos_id] = { ...a, recipient_ids: next, updated_at: now };
+    }
+  }
+
+  /**
+   * Backend `sosAudience`: listedeki ve hâlâ arkadaş olan kişiler; Faz 8 öncesi listeden kalan (arkadaş ama
+   * `sos_alert` izni yok) kişiye ilk kullanımda `via:'migration'` yazılır.
+   */
+  private sosAudience(uid: UserId, now: EpochMs, migrate: boolean): UserId[] {
+    const out: UserId[] = [];
+    for (const c of this.db.emergency[uid] ?? []) {
+      if (c === uid || !this.areFriends(uid, c)) continue;
+      const migratable = !hasGrant(this.grantOf(uid, c), 'sos_alert');
+      // Göç izni yalnızca yazma adımında (`migrate`); okuma adımında göçe uygun kişi de alıcı sayılır.
+      if (migratable && migrate) this.grantScope(uid, c, 'sos_alert', 'migration', now);
+      if ((migratable && !migrate) || canSendSos(this.pair(uid, c))) out.push(c);
+    }
+    return out;
   }
 
   emergencyContactsOf(uid: UserId): UserId[] {
@@ -2440,12 +2779,15 @@ export class DemoServer {
     now: EpochMs,
     demoBypassLimit: boolean,
   ): SosSendResponse {
-    const recipients = (this.db.emergency[uid] ?? []).filter((c) => c !== uid && this.areFriends(uid, c));
+    // Faz 8: yalnızca `sos_alert` izni olan arkadaşlar (core `canSendSos`; eski liste için göç); görünmez mod SOS'u
+    // engellemez.
+    const recipients = this.sosAudience(uid, now, false);
     if (recipients.length === 0) fail('no_emergency_contacts');
     const hourKey = `${uid}_${sosHourBucket(now)}`;
     const count = this.db.sos_hour[hourKey] ?? 0;
     if (!demoBypassLimit && count >= SOS_LIMITS.maxSendsPerHour) fail('rate_limited');
     this.db.sos_hour[hourKey] = count + 1;
+    this.sosAudience(uid, now, true);
     const address = req.address ?? this.sosAddress(req.location, now);
     const existing = Object.values(this.db.sos).find((a) => a.sender_id === uid && a.status === 'active');
     let alert: SosAlert;
@@ -2485,6 +2827,12 @@ export class DemoServer {
       };
     }
     this.db.sos[alert.sos_id] = alert;
+    // Faz 8: görünmezken SOS gider ve görünmez mod GERİ YÜKLEMESİZ kapanır.
+    const sender = this.db.users[uid];
+    if (sender && isInvisible(sender)) {
+      sender.invisible = null;
+      sender.visible_since = now;
+    }
     const text = sosPushText(alert);
     const data: Extract<PushData, { type: 'sos' }> = { type: 'sos', sos_id: alert.sos_id, sender_id: uid };
     for (const r of recipients) {
@@ -2504,7 +2852,12 @@ export class DemoServer {
 
   private sosUpdateCall(payload: unknown, uid: UserId, now: EpochMs): SosAlertResponse {
     const req = this.parse(SosUpdateRequestSchema, payload);
-    const a = this.ownActiveSos(uid, req.sos_id);
+    const cur = this.ownActiveSos(uid, req.sos_id);
+    // Faz 8: alıcılar geçerli kişilerle KESİŞİR (çıkan / engellenen / arkadaşlığı biten yeni konumu almaz).
+    const valid = new Set(this.sosAudience(uid, now, false));
+    const recipient_ids = cur.recipient_ids.filter((r) => valid.has(r));
+    const a: SosAlert = recipient_ids.length === cur.recipient_ids.length ? cur : { ...cur, recipient_ids };
+    this.db.sos[a.sos_id] = a;
     // Çok sık güncelleme: hata değil, mevcut belge döner.
     if (now - a.updated_at < SOS_LIMITS.updateMinIntervalMs) return { sos: clone(a), server_now: now };
     const next: SosAlert = {
@@ -2648,8 +3001,11 @@ export class DemoServer {
     const dropped = new Set<UserId>();
     const rules: ZoneRule[] = [];
     for (const r of req.rules) {
+      // Faz 8: bildirim alıcısı bana `zone_notify` vermiş olmalı; paylaşım alıcısına benim `location_view` iznim
+      // olmalı (kayıtta görünmezlik denetlenmez: kural ileride çalışır).
       const kept = [...new Set(r.recipient_ids)].filter((u) => {
-        const ok = u !== uid && this.areFriends(uid, u);
+        const access = { ...this.pair(uid, u), invisibleX: false };
+        const ok = u !== uid && (r.action === 'notify' ? canZoneNotify(access) : canShareLocation(access));
         if (!ok) dropped.add(u);
         return ok;
       });
@@ -2699,6 +3055,11 @@ export class DemoServer {
       if (list.length > 200) list.length = 200;
       return { ...r, server_now: now };
     };
+    // Faz 8: görünmezken (ya da görünmezken olmuş) hiçbir olay bildirilmez / paylaşım açmaz.
+    const visibleSince = this.db.users[uid]?.visible_since;
+    if (isInvisible(this.db.users[uid]) || (typeof visibleSince === 'number' && occurred < visibleSince)) {
+      return respond({ notified: 0, start_share: [], suppressed: 'invisible' });
+    }
     if (now - occurred > ZONE_LIMITS.maxEventAgeMs) return respond({ notified: 0, start_share: [], suppressed: 'stale' });
     if (!zone.enabled) return respond({ notified: 0, start_share: [], suppressed: 'disabled' });
     const offsetMin = offsetFnForTimeZone(zone.time_zone)(occurred);
@@ -2706,9 +3067,13 @@ export class DemoServer {
     if (rules.length === 0) return respond({ notified: 0, start_share: [], suppressed: 'outside_window' });
     const start_share = rules
       .filter((r) => r.action === 'start_share' && r.share_duration)
-      .map((r) => ({ rule_id: r.rule_id, recipient_ids: r.recipient_ids.filter((u) => this.areFriends(uid, u)), duration: r.share_duration as DurationChoice }))
+      .map((r) => ({
+        rule_id: r.rule_id,
+        recipient_ids: r.recipient_ids.filter((u) => canShareLocation(this.pair(uid, u))),
+        duration: r.share_duration as DurationChoice,
+      }))
       .filter((r) => r.recipient_ids.length > 0);
-    const notifyTo = [...new Set(rules.filter((r) => r.action === 'notify').flatMap((r) => r.recipient_ids))].filter((u) => this.areFriends(uid, u));
+    const notifyTo = [...new Set(rules.filter((r) => r.action === 'notify').flatMap((r) => r.recipient_ids))].filter((u) => canZoneNotify(this.pair(uid, u)));
     if (notifyTo.length === 0) return respond({ notified: 0, start_share, suppressed: null });
     const cdKey = `${uid}_${zoneId}_${transition}`;
     const last = this.db.zone_cooldowns[cdKey];
@@ -2803,15 +3168,22 @@ export class DemoServer {
 
   /** Backend `meetup_share`: alıcılar kabul edilmiş arkadaş (değilse sessizce düşer), 'me' → gönderenin uid'i. */
   private shareMeetup(uid: UserId, req: z.output<typeof MeetupShareRequestSchema>, now: EpochMs): Meetup {
-    const to = [...new Set(req.to)].filter((u) => u !== uid && this.areFriends(uid, u));
-    if (to.length === 0) return fail('not_friends');
+    const candidates = [...new Set(req.to)].filter((u) => u !== uid && this.areFriends(uid, u));
+    // Faz 8: alıcı bana `meetup_invite` vermiş olmalı (arkadaş ama izinsizse `not_permitted`).
+    const to = candidates.filter((u) => canInvite(this.pair(uid, u)));
+    if (to.length === 0) return fail(candidates.length > 0 ? 'not_permitted' : 'not_friends');
+    // ETA konumdan türer: yalnızca BENİM ETA'm kalır ve o da yalnızca TÜM alıcılara `location_view` iznim varsa ve
+    // görünürsem. Başka katılımcının ETA'sı hiç saklanmaz (backend ile aynı): kalıp kalmaması onun görünmezliğini ya da
+    // izinlerini öneren kişiye sızdırırdı.
+    const myEtaOk = to.every((y) => meetupEtaAllowed(this.pair(uid, y)));
+    const etaKept = (key: UserId): boolean => key === uid && myEtaOk;
     const m: Meetup = {
       meetup_id: `m${randomHex32().slice(0, 19)}`,
       from: uid,
       from_name: this.nameOf(uid),
       to,
       place: req.place,
-      etas: req.etas.map((e) => ({ ...e, key: e.key === 'me' ? uid : e.key })),
+      etas: req.etas.map((e) => ({ ...e, key: e.key === 'me' ? uid : e.key })).filter((e) => etaKept(e.key)),
       meet_at: req.meet_at,
       note: req.note ? sanitizeNoteText(req.note, 120) : null,
       responses: {},
@@ -2850,9 +3222,14 @@ export class DemoServer {
 
   // --- Faz 6: favoriler, widget token'ları, tek tuşla paylaşım, avatar Storage ------------------------
 
+  /** Faz 8: favori = tek tuşla paylaşım hedefi → yalnızca `location_view` izni verdiğim kabul edilmiş arkadaşlar. */
   private acceptedFriendIds(uid: UserId): Set<UserId> {
     const out = new Set<UserId>();
-    for (const f of Object.values(this.db.friendships)) if (f.status === 'accepted' && f.member_ids.includes(uid)) out.add(otherMember(f, uid));
+    for (const f of Object.values(this.db.friendships)) {
+      if (f.status !== 'accepted' || !f.member_ids.includes(uid)) continue;
+      const other = otherMember(f, uid);
+      if (hasGrant(this.grantOf(uid, other), 'location_view')) out.add(other);
+    }
     return out;
   }
 
@@ -2936,9 +3313,13 @@ export class DemoServer {
     const owner = tok.uid;
     const user = this.db.users[owner];
     if (!user) return fail('token_invalid');
+    // Faz 8 (backend sırası): onay → görünmez değil → favori → arkadaş → `location_view` izni.
+    if (consentRequired(user.consent)) fail('consent_required');
+    if (isInvisible(user)) fail('invisible_mode');
     const to = req.to_uid;
     if (to === owner || !(user.favorite_ids ?? []).includes(to)) fail('not_favorite');
     if (!this.areFriends(owner, to)) fail('not_friend');
+    if (!canShareLocation(this.pair(owner, to))) fail('not_permitted');
     const uses = now - tok.uses.window_start < HOUR ? { ...tok.uses } : { window_start: now, count: 0 };
     if (uses.count >= QUICK_SHARE_LIMITS.perTokenPerHour) {
       fail('rate_limited', `Tekrar denemek için ${Math.ceil((uses.window_start + HOUR - now) / MINUTE)} dk`);
@@ -3243,6 +3624,7 @@ export class DemoServer {
       throw e;
     }
     if (!this.db.users[uid]) fail('unauthenticated');
+    if (isInvisible(this.db.users[uid])) fail('invisible_mode');
     const mine = Object.values(this.db.links).filter((l) => l.sender_id === uid);
     if (mine.filter((l) => this.isLinkLive(l, now)).length >= LINK_LIMITS.maxActivePerUser) fail('link_limit_reached');
     if (mine.filter((l) => l.started_at > now - HOUR).length >= LINK_CREATE_PER_HOUR) fail('rate_limited');
@@ -3292,6 +3674,7 @@ export class DemoServer {
 
   private linkShareExtend(payload: unknown, uid: UserId, now: EpochMs): LinkShareUpdateResponse {
     const data = this.parse(LinkShareExtendRequestSchema, payload);
+    if (isInvisible(this.db.users[uid])) fail('invisible_mode');
     const l = this.ownLink(uid, data.link_id);
     if (l.status !== 'active') fail('share_not_active');
     if (!canExtend(l, now)) {
@@ -3453,15 +3836,10 @@ export class DemoServer {
 
   /** Bot bana yeni bir paylaşım başlatır (1 saat) ve hemen taze bir paket gönderir. */
   botStartSharing(bot: UserId): boolean {
-    const now = Date.now();
-    const s = this.startBotShare(bot, { kind: 'preset', preset: 'h1' }, now);
-    if (!s) return false;
-    const b = this.db.bots[bot];
-    if (b && b.kind === 'walker') b.walk_origin = now - 3 * MINUTE;
-    if (b) b.offline = false;
-    this.botPublish(bot, now, true);
-    this.commit();
-    return true;
+    // Faz 8: bot bana yalnızca `location_view` izni varken paylaşır.
+    const ok = this.botShareNow(bot, Date.now());
+    if (ok) this.commit();
+    return ok;
   }
 
   /** "Arkadaşlık isteği gelsin": önce Elif (değilse yeni bir sanal kişi) bana istek gönderir. */
@@ -3602,6 +3980,8 @@ export class DemoServer {
     if (!this.areFriends(bot, DEMO_ME)) return null;
     const list = this.db.emergency[bot] ?? [];
     if (!list.includes(DEMO_ME)) this.db.emergency[bot] = [DEMO_ME, ...list].slice(0, SOS_LIMITS.maxContacts);
+    // Faz 8: acil kişi seçimi `sos_alert` izni demektir (emergency_contacts_set ile aynı).
+    this.grantScope(bot, DEMO_ME, 'sos_alert', 'emergency_contact', now);
     const b = this.db.bots[bot];
     if (b) {
       b.battery = 23;
@@ -3699,26 +4079,25 @@ export class DemoServer {
   botZoneArrive(bot: UserId): ZoneEventReportResponse | null {
     const now = Date.now();
     if (!this.areFriends(bot, DEMO_ME)) return null;
-    let home = Object.values(this.db.zones[bot] ?? {}).find((z) => z.kind === 'home');
-    if (!home) {
-      const at = this.db.bots[bot]?.spot ?? (AYSE_PATH[0] as LatLng);
-      home = this.upsertZone(
-        bot,
-        {
-          op_id: uuidV4(),
-          zone_id: null,
-          kind: 'home',
-          name: 'Ev',
-          emoji: '🏠',
-          center: { lat: at.lat, lng: at.lng },
-          radius_m: ZONE_LIMITS.defaultRadiusM,
-          rules: [{ rule_id: uuidV4(), trigger: 'arrive', action: 'notify', recipient_ids: [DEMO_ME], share_duration: null, days_mask: 127, window: null, enabled: true }],
-          enabled: true,
-          time_zone: DEFAULT_TZ,
-        },
-        now,
-      ).zone;
-    }
+    const existing = Object.values(this.db.zones[bot] ?? {}).find((z) => z.kind === 'home');
+    // Faz 8: kural her seferinde yeniden yazılır (alıcı izni sonradan verildiyse kural geri gelsin; izinsizse düşer).
+    const at = existing?.center ?? this.db.bots[bot]?.spot ?? (AYSE_PATH[0] as LatLng);
+    const home = this.upsertZone(
+      bot,
+      {
+        op_id: uuidV4(),
+        zone_id: existing?.zone_id ?? null,
+        kind: 'home',
+        name: 'Ev',
+        emoji: '🏠',
+        center: { lat: at.lat, lng: at.lng },
+        radius_m: ZONE_LIMITS.defaultRadiusM,
+        rules: [{ rule_id: uuidV4(), trigger: 'arrive', action: 'notify', recipient_ids: [DEMO_ME], share_duration: null, days_mask: 127, window: null, enabled: true }],
+        enabled: true,
+        time_zone: DEFAULT_TZ,
+      },
+      now,
+    ).zone;
     // Demo: tekrar denenebilsin diye sunucu soğuması atlanır (filtre ve kurallar aynı).
     delete this.db.zone_cooldowns[`${bot}_${home.zone_id}_arrive`];
     try {
@@ -3773,6 +4152,337 @@ export class DemoServer {
     };
   }
 
+  // --- Faz 8: izin istekleri, kişi izinleri, görünmez mod, onay ------------------------------------
+
+  /** Backend `permission_request_send`. Yanıt her zaman `sent` | `already_granted` (ret soğuması sızmaz). */
+  private permissionRequestSendCall(payload: unknown, uid: UserId, now: EpochMs): PermissionRequestSendResponse {
+    const req = this.parse(PermissionRequestSendSchema, payload);
+    return this.permissionRequestNow(uid, req.target_id, req.scopes, now);
+  }
+
+  private permissionRequestNow(uid: UserId, target: UserId, scopes: readonly RequestableScope[], now: EpochMs): PermissionRequestSendResponse {
+    if (target === uid) fail('invalid_argument');
+    if (!canRequestPermission(this.pair(uid, target))) fail('not_friends');
+    // Hedefin bana verdiği belge (granter = hedef); soğuma için sunucuya özel ret anları birleştirilir.
+    const id = grantId(target, uid);
+    const current = this.db.grants[id] ?? null;
+    const plan = planPermissionRequest(current ? { ...current, declined_at: this.db.perm_declines[id] ?? {} } : null, scopes, now);
+    const answer = (status: PermissionRequestSendResponse['status']): PermissionRequestSendResponse => ({ status, server_now: now });
+    if (plan.kind === 'already_granted') return answer('already_granted');
+    // Hepsi zaten (isteyenin gördüğü) bekleyen istekte: yazma / push yok, yanıt yine `sent`.
+    if (plan.kind === 'noop') return answer('sent');
+    if (plan.kind === 'cooldown') return fail('permission_cooldown');
+    const dayKey = `${uid}_${quotaDay(now)}`;
+    const count = this.db.perm_day[dayKey] ?? 0;
+    if (count >= PERMISSION_REQUESTS_PER_DAY) fail('rate_limited');
+    this.db.perm_day[dayKey] = count + 1;
+    this.db.grants[id] = withPendingRequest(current ?? emptyGrantDoc(target, uid, now), plan.scopes, now);
+    // Reddedilmiş / ret soğumasındaki kapsamlar granter'a gizli kalır (ret anı yeni istek anına taşınır), push yok.
+    if (plan.hidden.length > 0) {
+      const declined = { ...(this.db.perm_declines[id] ?? {}) };
+      for (const sc of plan.hidden) declined[sc] = now;
+      this.db.perm_declines[id] = declined;
+    }
+    if (plan.added.length === 0) return answer('sent');
+    const data: Extract<PushData, { type: 'permission_request' }> = { type: 'permission_request', from: uid, scopes: plan.live.join(',') };
+    this.push(target, { notification: { title: 'İzin isteği', body: permissionRequestText(this.db.users[uid]?.display_name || 'Bir arkadaşın', plan.live) }, data });
+    // Demo: bot granter 6 sn sonra yanıt verir (sweepPhase8).
+    if (target !== DEMO_ME && this.db.bots[target]) this.db.perm_auto[id] = now + AUTO_ACCEPT_MS;
+    return answer('sent');
+  }
+
+  private grantedPush(to: UserId, by: UserId, scopes: readonly AccessScope[]): void {
+    const data: Extract<PushData, { type: 'permission_granted' }> = { type: 'permission_granted', by, scopes: scopes.join(',') };
+    this.push(to, { notification: { title: 'İzin verildi', body: permissionGrantedText(this.db.users[by]?.display_name || 'Arkadaşın', scopes) }, data });
+  }
+
+  /** Backend `permission_request_respond` (çağıran = granter). Retde push yok. */
+  private permissionRequestRespondCall(payload: unknown, uid: UserId, now: EpochMs): PermissionRequestRespondResponse {
+    const req = this.parse(PermissionRequestRespondSchema, payload);
+    const requester = req.requester_id;
+    if (requester === uid) fail('invalid_argument');
+    if (!this.areFriends(uid, requester)) fail('not_friends');
+    let resolved: { share_mode: ShareMode; expires_at: EpochMs | null } | null = null;
+    if (req.share) {
+      try {
+        resolved = resolveDuration(req.share.duration, now, offsetFnForTimeZone(req.share.time_zone));
+      } catch (e) {
+        if (e instanceof DurationError) fail('invalid_duration', e.message);
+        throw e;
+      }
+    }
+    const id = grantId(uid, requester);
+    const base = this.db.grants[id] ?? emptyGrantDoc(uid, requester, now);
+    const r = withResponse({ ...base, declined_at: this.db.perm_declines[id] ?? {} }, req.grant_scopes, now, 'request');
+    // Salt ret istemci belgesine dokunmaz (isteyen "bekliyor" görmeye devam eder); ret anları ayrı kayıtta.
+    if (r.granted.length > 0) this.db.grants[id] = { ...r.doc, declined_at: {} };
+    if (r.declined.length > 0) this.db.perm_declines[id] = r.doc.declined_at;
+    let share: PermissionRequestRespondResponse['share'] = null;
+    let share_skipped: PermissionRequestRespondResponse['share_skipped'] = null;
+    if (resolved) {
+      if (!hasGrant(this.grantOf(uid, requester), 'location_view')) share_skipped = 'no_location_view';
+      else if (isInvisible(this.db.users[uid])) share_skipped = 'invisible';
+      else {
+        const sessionId = uuidV4();
+        const sh = this.startShare(uid, requester, sessionId, resolved.share_mode, resolved.expires_at, now);
+        share = { session_id: sessionId, shares: [this.toView(sh)] };
+      }
+    }
+    if (r.granted.length > 0) this.grantedPush(requester, uid, r.granted);
+    return { granted_scopes: r.granted, declined_scopes: r.declined, share, share_skipped, server_now: now };
+  }
+
+  /** Backend `permission_set`: açmak arkadaşlık + onay ister; kapatmak her zaman çalışır ve zinciri uygular. */
+  private permissionSetCall(payload: unknown, uid: UserId, now: EpochMs): PermissionSetResponse {
+    const req = this.parse(PermissionSetSchema, payload);
+    const grantee = req.grantee_id;
+    if (grantee === uid) fail('invalid_argument');
+    if (req.granted) {
+      if (!this.areFriends(uid, grantee)) fail('not_friends');
+      this.grantScope(uid, grantee, req.scope, 'manual', now);
+    } else {
+      this.revokeScope(uid, grantee, req.scope, now);
+    }
+    return { grantee_id: grantee, scopes: grantedScopes(this.grantOf(uid, grantee)), server_now: now };
+  }
+
+  /** Giden etkin paylaşımlar ve bağlantılar `stopped_by_sender` ile biter (görünmez ol, onayı geri çek). */
+  private endOutgoing(uid: UserId, now: EpochMs): { shares: ShareRec[]; links: number } {
+    const shares = Object.values(this.db.shares).filter((sh) => sh.sender_id === uid && sh.status === 'active');
+    for (const sh of shares) this.endShare(sh, sh.expires_at !== null && sh.expires_at <= now ? 'expired' : 'stopped_by_sender', now);
+    let links = 0;
+    for (const l of Object.values(this.db.links)) {
+      if (l.sender_id === uid && this.isLinkLive(l, now) && this.endLink(l, 'stopped_by_sender', now)) links++;
+    }
+    return { shares, links };
+  }
+
+  /** Backend `invisible_set`. Arkadaşa "görünmez oldu" denmez; görünür olunca yalnızca seçilenler geri gelir. */
+  private invisibleSetCall(payload: unknown, uid: UserId, now: EpochMs): InvisibleSetResponse {
+    const req = this.parse(InvisibleSetRequestSchema, payload);
+    const me = this.db.users[uid];
+    if (!me) return fail('unauthenticated');
+    const prev = me.invisible?.on ? me.invisible : null;
+    if (req.invisible) {
+      const active = Object.values(this.db.shares).filter((sh) => sh.sender_id === uid && sh.status === 'active');
+      const fresh = planInvisibleOn(active, now);
+      // Zaten görünmezse eski anlık görüntü korunur (yalnızca yeni kişiler eklenir).
+      const kept = prev?.snapshot ?? [];
+      const snapshot = [...kept, ...fresh.filter((f) => !kept.some((k) => k.receiver_id === f.receiver_id))].slice(0, INVISIBLE_SNAPSHOT_MAX);
+      const ended = this.endOutgoing(uid, now);
+      me.invisible = { on: true, since: prev?.since ?? now, snapshot, links_ended: (prev?.links_ended ?? 0) + ended.links };
+      return { invisible: true, restored_receiver_ids: [], skipped_receiver_ids: [], server_now: now };
+    }
+    const restoreIds = [...new Set(req.restore_receiver_ids ?? [])].filter((id) => id !== uid);
+    const snapshot = prev?.snapshot ?? [];
+    if (me.invisible) me.visible_since = now;
+    me.invisible = null;
+    const plan = planInvisibleRestore(snapshot, restoreIds, now, (id) => canShareLocation(this.pair(uid, id)));
+    const skipped = new Set<UserId>(plan.skipped_receiver_ids);
+    const restored: UserId[] = [];
+    // Aynı bitiş = aynı oturum.
+    const sessions = new Map<string, string>();
+    for (const { entry, duration } of plan.restore) {
+      let resolved: { share_mode: ShareMode; expires_at: EpochMs | null };
+      try {
+        resolved = resolveDuration(duration, now, offsetFnForTimeZone(DEFAULT_TZ));
+      } catch {
+        skipped.add(entry.receiver_id);
+        continue;
+      }
+      const key = `${resolved.share_mode}:${resolved.expires_at ?? 'none'}`;
+      const sid = sessions.get(key) ?? uuidV4();
+      sessions.set(key, sid);
+      this.startShare(uid, entry.receiver_id, sid, resolved.share_mode, resolved.expires_at, now);
+      restored.push(entry.receiver_id);
+    }
+    return { invisible: false, restored_receiver_ids: restored, skipped_receiver_ids: [...skipped].filter((id) => !restored.includes(id)), server_now: now };
+  }
+
+  /** Backend `consent_accept`: gösterilen metin = onaylanan metin (sürüm + özet), değilse `consent_required`. */
+  private consentAcceptCall(payload: unknown, uid: UserId, now: EpochMs): ConsentAcceptResponse {
+    const req = this.parse(ConsentAcceptRequestSchema, payload);
+    if (!isCurrentConsent(req)) fail('consent_required');
+    const me = this.db.users[uid];
+    if (!me) return fail('unauthenticated');
+    if (me.consent?.version === req.version) return { consent: { ...me.consent }, server_now: now };
+    const consent: ProfileConsent = { version: req.version, accepted_at: now };
+    const recs = (this.db.consents[uid] ??= {});
+    // Ekleme amaçlı (backend ile aynı): önceki onay + geri çekme anı geçmişe taşınır.
+    const history = withConsentHistory(recs[req.version]);
+    recs[req.version] = {
+      user_id: uid,
+      version: req.version,
+      text_sha256: req.text_sha256,
+      scrolled_to_bottom: true,
+      accepted_at: now,
+      platform: req.platform,
+      app_version: req.app_version,
+      withdrawn_at: null,
+      ...(history.length ? { history } : {}),
+    };
+    me.consent = consent;
+    return { consent, server_now: now };
+  }
+
+  /**
+   * Backend `consent_withdraw`: giden paylaşımlar ve bağlantılar biter, aktif SOS kapanır, yer notları silinir,
+   * önerilen buluşmalar iptal olur; kayda `withdrawn_at`, profil onayı boşalır.
+   */
+  private consentWithdrawCall(payload: unknown, uid: UserId, now: EpochMs): ConsentWithdrawResponse {
+    this.parse(ConsentWithdrawSchema, payload);
+    const me = this.db.users[uid];
+    if (!me) return fail('unauthenticated');
+    const ended = this.endOutgoing(uid, now);
+    // Aktif SOS kapanır ("güvende" push'u), yer notları silinir, önerdiğim etkin buluşmalar iptal olur.
+    for (const a of Object.values(this.db.sos)) if (a.sender_id === uid && a.status === 'active') this.resolveSos(a, 'safe', now, true);
+    for (const n of Object.values(this.db.place_notes)) if (n.owner_id === uid) delete this.db.place_notes[n.note_id];
+    for (const m of Object.values(this.db.meetups)) if (m.from === uid && isMeetupActive(m, now)) m.status = 'cancelled';
+    const rec = me.consent ? this.db.consents[uid]?.[me.consent.version] : undefined;
+    if (rec) rec.withdrawn_at = now;
+    me.consent = null;
+    return { consent: null, shares_ended: ended.shares.length, links_ended: ended.links, server_now: now };
+  }
+
+  /** Demo: botlar isteğime 6 sn sonra yanıt verir (hepsini verir); Can konum izni verince 1 saat paylaşır. */
+  private sweepPhase8(now: EpochMs): boolean {
+    let changed = false;
+    for (const [id, at] of Object.entries(this.db.perm_auto)) {
+      if (at > now) continue;
+      delete this.db.perm_auto[id];
+      changed = true;
+      const doc = this.db.grants[id];
+      if (!doc || !this.areFriends(doc.granter_id, doc.grantee_id)) continue;
+      const full = { ...doc, declined_at: this.db.perm_declines[id] ?? {} };
+      const pending = liveRequestScopes(full, now);
+      if (pending.length === 0) continue;
+      const r = withResponse(full, pending, now, 'request');
+      if (r.granted.length === 0) continue;
+      this.db.grants[id] = { ...r.doc, declined_at: {} };
+      this.grantedPush(doc.grantee_id, doc.granter_id, r.granted);
+      if (doc.granter_id === PEOPLE.can.uid && doc.grantee_id === DEMO_ME && r.granted.includes('location_view')) this.botShareNow(doc.granter_id, now);
+    }
+    const today = quotaDay(now);
+    for (const k of Object.keys(this.db.perm_day)) {
+      if (k.endsWith(`_${today}`)) continue;
+      delete this.db.perm_day[k];
+      changed = true;
+    }
+    return changed;
+  }
+
+  /** Bot bana 1 saatlik paylaşım başlatır (izin şart) ve hemen bir paket gönderir. Dönen: başladı mı. */
+  private botShareNow(bot: UserId, now: EpochMs): boolean {
+    const s = this.startBotShare(bot, { kind: 'preset', preset: 'h1' }, now);
+    if (!s) return false;
+    const b = this.db.bots[bot];
+    if (b && b.kind === 'walker') b.walk_origin = now - 3 * MINUTE;
+    // Hareketsiz bot (Can) paylaşırken seyrek nabız gönderir.
+    if (b && b.kind === 'idle') b.kind = 'heartbeat';
+    if (b) b.offline = false;
+    this.botPublish(bot, now, true);
+    return true;
+  }
+
+  // --- Faz 8 demo paneli ------------------------------------------------------------------------
+
+  /** "Can konumunu görmek istiyor": Can bana `location_view` isteği gönderir (push + "İzin istekleri" kartı). */
+  canRequestsMyLocation(): boolean {
+    const now = Date.now();
+    const can = PEOPLE.can.uid;
+    if (!this.areFriends(can, DEMO_ME)) return false;
+    const id = grantId(DEMO_ME, can);
+    if (hasGrant(this.db.grants[id], 'location_view')) return false;
+    // Demo: tekrar denenebilsin diye soğuma ve eski ret anı atlanır.
+    delete this.db.perm_declines[id];
+    const cur = this.db.grants[id];
+    if (cur?.pending) this.db.grants[id] = { ...cur, pending: null };
+    try {
+      this.permissionRequestNow(can, DEMO_ME, ['location_view'], now);
+    } catch {
+      return false;
+    }
+    this.commit();
+    return true;
+  }
+
+  ayseGrantsMe(): boolean {
+    return hasGrant(this.grantOf(PEOPLE.ayse.uid, DEMO_ME), 'location_view');
+  }
+
+  /**
+   * "Ayşe iznini geri alsın": Ayşe bana verdiği konum iznini kaldırır → paylaşımı sıradan bir durdurma gibi biter
+   * (bana neden söylenmez). İzin yokken basılırsa Ayşe izni yeniden verir ve paylaşır. Dönen: yeni durum.
+   */
+  ayseRevokes(): 'revoked' | 'granted' | null {
+    const now = Date.now();
+    const ayse = PEOPLE.ayse.uid;
+    if (!this.areFriends(ayse, DEMO_ME)) return null;
+    if (this.ayseGrantsMe()) {
+      this.revokeScope(ayse, DEMO_ME, 'location_view', now);
+      this.commit();
+      return 'revoked';
+    }
+    this.grantScope(ayse, DEMO_ME, 'location_view', 'manual', now);
+    this.botShareNow(ayse, now);
+    this.commit();
+    return 'granted';
+  }
+
+  /** "Mehmet sana ping izni versin": Mehmet bana `ping` izni verir (bana "Mehmet sana izin verdi: …" push'u). */
+  mehmetGrantsPing(): boolean {
+    const now = Date.now();
+    const mehmet = PEOPLE.mehmet.uid;
+    if (!this.areFriends(mehmet, DEMO_ME) || hasGrant(this.grantOf(mehmet, DEMO_ME), 'ping')) return false;
+    this.grantScope(mehmet, DEMO_ME, 'ping', 'manual', now);
+    this.grantedPush(DEMO_ME, mehmet, ['ping']);
+    this.commit();
+    return true;
+  }
+
+  /** "Sözleşme güncellendi (yeniden onay)": onayım eski sürüme çekilir → uygulama "Metin güncellendi" kapısını açar. */
+  bumpConsent(): void {
+    const me = this.db.users[DEMO_ME];
+    if (!me) return;
+    me.consent = { version: DEMO_OLD_CONSENT_VERSION, accepted_at: me.consent?.accepted_at ?? Date.now() - 30 * DAY };
+    this.commit();
+  }
+
+  /** Onayımı tamamen siler (ilk açılış kapısı). */
+  resetConsent(): void {
+    const me = this.db.users[DEMO_ME];
+    if (!me) return;
+    me.consent = null;
+    this.commit();
+  }
+
+  private f8View(): DemoSnapshot['f8'] {
+    const now = Date.now();
+    const me = this.db.users[DEMO_ME];
+    const seesMe = Object.entries(this.db.live)
+      .filter(([r, inbox]) => r !== DEMO_ME && !!inbox[shareId(DEMO_ME, r)])
+      .map(([r]) => this.nameOf(r))
+      .sort((a, b) => a.localeCompare(b, 'tr'));
+    const docs = Object.values(this.db.grants);
+    const names = (list: PermissionGrantDoc[], pick: (d: PermissionGrantDoc) => UserId) => list.map((d) => this.nameOf(pick(d))).sort((a, b) => a.localeCompare(b, 'tr'));
+    return {
+      myInvisible: isInvisible(me),
+      myDeliveriesCount: seesMe.length,
+      seesMe,
+      givenLocation: names(docs.filter((d) => d.granter_id === DEMO_ME && hasGrant(d, 'location_view')), (d) => d.grantee_id),
+      receivedLocation: names(docs.filter((d) => d.grantee_id === DEMO_ME && hasGrant(d, 'location_view')), (d) => d.granter_id),
+      grants: {
+        given: docs.filter((d) => d.granter_id === DEMO_ME && grantedScopes(d).length > 0).length,
+        received: docs.filter((d) => d.grantee_id === DEMO_ME && grantedScopes(d).length > 0).length,
+      },
+      pendingIncoming: docs.filter((d) => d.granter_id === DEMO_ME && liveRequestScopes({ ...d, declined_at: this.db.perm_declines[grantId(d.granter_id, d.grantee_id)] ?? {} }, now).length > 0).length,
+      pendingOutgoing: docs.filter((d) => d.grantee_id === DEMO_ME && pendingScopes(d, now).length > 0).length,
+      ayseGrantsMe: this.ayseGrantsMe(),
+      mehmetGrantsPing: hasGrant(this.grantOf(PEOPLE.mehmet.uid, DEMO_ME), 'ping'),
+      consent: me?.consent ? { version: me.consent.version, current: !consentRequired(me.consent) } : null,
+    };
+  }
+
   private receiverView(): DemoSnapshot['receiverView'] {
     const candidates = [PEOPLE.ayse.uid, ...Object.keys(this.db.live).filter((r) => r !== DEMO_ME && r !== PEOPLE.ayse.uid).sort()];
     for (const r of candidates) {
@@ -3821,6 +4531,7 @@ export class DemoServer {
       f4: this.f4View(),
       f5: this.f5View(),
       f6: this.f6View(),
+      f8: this.f8View(),
       mapsDown: this.db.maps_down,
       maps: {
         route: q?.route ?? 0,

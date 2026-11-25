@@ -89,6 +89,13 @@ export function quickShareFailureView(code: ErrorCode | 'permission_denied' | (s
     case 'not_friends':
     case 'not_friend':
       return { text: 'Bu kişiyle artık arkadaş değilsiniz.', retry: false };
+    // Faz 8
+    case 'not_permitted':
+      return { text: 'Bu kişiye konum izni vermedin. Arkadaşlar > kişi > İzinler’den açabilirsin.', retry: false };
+    case 'invisible_mode':
+      return { text: 'Görünmez moddasın. Paylaşmak için önce görünür ol.', retry: false };
+    case 'consent_required':
+      return { text: 'Devam etmek için güncel sözleşmeyi onaylaman gerekiyor.', retry: false };
     default:
       return { text: 'Paylaşım başlatılamadı. Tekrar dene.', retry: true };
   }

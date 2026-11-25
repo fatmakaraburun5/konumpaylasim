@@ -149,6 +149,11 @@ async function doConfigure(): Promise<void> {
       description: 'Arkadaşının pili azaldığında ya da kendi paylaşımın duraksadığında',
       importance: Notifications.AndroidImportance.DEFAULT,
     });
+    await Notifications.setNotificationChannelAsync(CHANNELS.friendRequests, {
+      name: 'Arkadaşlık ve izin istekleri',
+      description: 'Bir arkadaşın izin istediğinde ya da sana izin verdiğinde',
+      importance: Notifications.AndroidImportance.DEFAULT,
+    });
     await configureF4Channels();
   }
 

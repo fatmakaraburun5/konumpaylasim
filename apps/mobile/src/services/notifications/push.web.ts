@@ -5,6 +5,7 @@
  *  - Simüle bağlantı yokken push gelmez; bağlantı gelince bekleyenler iletilir.
  *  - `resume_tracking` / arka plan mesaj işleyicisi demoda yok (gönderen bekçisi demo sunucusunda çalışmaz).
  * Koordinat taşımaz (core `PushData`).
+ * Faz 8: izin isteği / izin verildi bildirim kartı; dokunuş (`respondToDemoNotification`) → f8Services → Arkadaşlar.
  */
 import { lowBatteryPushText, type PushData, type UserId } from '@konum/core';
 import { demoServer } from '../../demo/server';
@@ -15,6 +16,8 @@ import * as Notifications from './expoNotifications';
 import { f4ForegroundContent } from './f4Push';
 import { f5ForegroundContent, isF5PushType, routeF5Received } from './f5Push';
 import { f6ForegroundContent, isF6PushType, routeF6Received } from './f6Push';
+import { f8ForegroundContent, isF8PushType, routeF8Received } from './f8Push';
+import { friendsStore, selectFriends } from '../../state/friendsStore';
 
 /** Testlerde de kurulabilen asgari mesaj biçimi (native ile aynı). */
 export interface PushLike {
@@ -67,6 +70,16 @@ async function handleForegroundMessage(m: PushLike): Promise<void> {
     await Notifications.scheduleNotificationAsync({
       content: { title: f6.title, body: f6.body, data: f6.data, interruptionLevel: f6.interruptionLevel },
       trigger: { channelId: f6.channelId },
+    });
+    return;
+  }
+  if (isF8PushType(m.data?.type)) {
+    routeF8Received(m.data);
+    const f8 = f8ForegroundContent(m, (id) => selectFriends(friendsStore.getState()).find((f) => f.uid === id)?.displayName || null);
+    if (!f8) return;
+    await Notifications.scheduleNotificationAsync({
+      content: { title: f8.title, body: f8.body, data: f8.data, interruptionLevel: f8.interruptionLevel },
+      trigger: { channelId: f8.channelId },
     });
     return;
   }

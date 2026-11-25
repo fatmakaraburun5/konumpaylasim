@@ -6,6 +6,8 @@ import { readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { type RulesTestEnvironment, initializeTestEnvironment } from '@firebase/rules-unit-testing';
 import {
+  CONSENT_TEXT_SHA256,
+  CONSENT_VERSION,
   type CallableName,
   type DeviceStatus,
   type EpochMs,
@@ -142,12 +144,30 @@ export async function signInWithPhone(phone: string): Promise<{ uid: string; idT
   return { uid: r.localId, idToken: r.idToken };
 }
 
-/** Telefonla giriş + user_bootstrap. Faz 6: profil oluşturulurken cinsiyet zorunlu (varsayılan 'female'). */
-export async function newUser(displayName = 'Test', gender: 'female' | 'male' = 'female'): Promise<TestUser> {
+/**
+ * Telefonla giriş + user_bootstrap. Faz 6: profil oluşturulurken cinsiyet zorunlu (varsayılan 'female').
+ * Faz 8: varsayılan olarak güncel Güvenlik Sözleşmesi / KVKK sürümü de onaylanır (`consent_accept`); onay kapısını
+ * sınayan testler `{ consent: false }` verir.
+ */
+export async function newUser(
+  displayName = 'Test',
+  gender: 'female' | 'male' = 'female',
+  opts: { consent?: boolean } = {},
+): Promise<TestUser> {
   const phone = randomPhone();
   const auth = await signInWithPhone(phone);
   const boot = await call<{ user: { invite_code: string } }>('user_bootstrap', { display_name: displayName, gender }, auth);
+  if (opts.consent !== false) await acceptConsent(auth);
   return { ...auth, phone, invite_code: boot.user.invite_code, display_name: displayName };
+}
+
+/** Faz 8: güncel sürümü core özetiyle onaylar (metin sonuna kadar kaydırılmış). */
+export async function acceptConsent(user: { idToken: string }, over: Record<string, unknown> = {}) {
+  return call(
+    'consent_accept',
+    { op_id: opId(), version: CONSENT_VERSION, text_sha256: CONSENT_TEXT_SHA256, scrolled_to_bottom: true, platform: 'ios', app_version: 'test', ...over },
+    user,
+  );
 }
 
 // ---------------------------------------------------------------------------

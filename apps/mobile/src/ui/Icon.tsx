@@ -25,7 +25,10 @@ export type IconName =
   | 'chevronDown'
   | 'camera'
   | 'image'
-  | 'user';
+  | 'user'
+  // Faz 8
+  | 'eye'
+  | 'eyeOff';
 
 export interface IconProps {
   name: IconName;
@@ -120,6 +123,18 @@ export function Icon({ name, size = 22, color, strokeWidth = 2 }: IconProps) {
         <>
           <Circle cx={12} cy={8.5} r={4} {...common} />
           <Path d="M4 20.5c1-4 4.2-6 8-6s7 2 8 6" {...common} />
+        </>
+      )}
+      {name === 'eye' && (
+        <>
+          <Path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z" {...common} />
+          <Circle cx={12} cy={12} r={3} {...common} />
+        </>
+      )}
+      {name === 'eyeOff' && (
+        <>
+          <Path d="M9.9 5.8A9.6 9.6 0 0112 5.5c6 0 9.5 6.5 9.5 6.5a17 17 0 01-2.6 3.4M6.4 7.1C3.9 8.8 2.5 12 2.5 12S6 18.5 12 18.5c1.7 0 3.2-.5 4.5-1.2" {...common} />
+          <Path d="M9.9 9.9a3 3 0 004.2 4.2M3 3l18 18" {...common} />
         </>
       )}
       {name === 'battery' && (

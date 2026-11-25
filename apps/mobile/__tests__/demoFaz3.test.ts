@@ -14,13 +14,15 @@ import {
 } from '@konum/core';
 import { AYSE_LOW_BATTERY, DemoServer, type DemoPushMessage } from '../src/demo/server/server';
 import { DEMO_ME, PEOPLE } from '../src/demo/server/world';
+import { acceptConsent, grant } from './demoTestUtils';
 
 jest.setTimeout(30_000);
 
 const servers: DemoServer[] = [];
-function server(): DemoServer {
+async function server(): Promise<DemoServer> {
   const s = new DemoServer();
   servers.push(s);
+  await acceptConsent(s); // Faz 8: onaysız hesap çağrı yapamaz
   return s;
 }
 let clock: jest.SpyInstance | null = null;
@@ -42,6 +44,7 @@ function fakeClock(start: number): { advance: (ms: number) => void; now: () => n
 }
 
 async function startShareToAyse(s: DemoServer): Promise<{ shareId: string; sessionId: string; expiresAt: number }> {
+  await grant(s, DEMO_ME, AYSE, 'location_view'); // Faz 8: izin varsayılan kapalı
   const r = (await s.call(
     'share_start',
     { op_id: uuidV4(), receiver_ids: [AYSE], duration: { kind: 'preset', preset: 'h1' }, time_zone: 'Europe/Istanbul' },
@@ -77,7 +80,7 @@ function trailPoint(ts: number, extra: Record<string, unknown> = {}): Record<str
 describe('demo sunucusu Faz 3: kuyruk paketi ve çevrimdışı iz', () => {
   it('q:1 + hb kabul; 2 dk’dan eski nokta yalnızca q:1 ile, paylaşımdan sonra ve canlı noktadan yeniyse', async () => {
     const c = fakeClock(Date.now());
-    const s = server();
+    const s = await server();
     const { shareId, expiresAt } = await startShareToAyse(s);
     const t0 = c.now();
     c.advance(10 * MINUTE);
@@ -105,7 +108,7 @@ describe('demo sunucusu Faz 3: kuyruk paketi ve çevrimdışı iz', () => {
 
   it('live_trail: yalnızca gönderen yazar, yalnızca TRAIL_FIELDS; alıcı okur; paylaşım bitince iz silinir', async () => {
     const c = fakeClock(Date.now());
-    const s = server();
+    const s = await server();
     const { shareId, sessionId } = await startShareToAyse(s);
     const t0 = c.now();
     c.advance(5 * MINUTE);
@@ -144,7 +147,7 @@ describe('demo sunucusu Faz 3: kuyruk paketi ve çevrimdışı iz', () => {
 
 describe('demo sunucusu Faz 3: düşük pil', () => {
   it('battery_low_notify: %14 → notified + alıcıya push; tekrar noop; %20 → yeniden kurulur', async () => {
-    const s = server();
+    const s = await server();
     const { sessionId, shareId } = await startShareToAyse(s);
     const pushes: DemoPushMessage[] = [];
     s.subscribePush(AYSE, (m) => pushes.push(m));
@@ -167,7 +170,7 @@ describe('demo sunucusu Faz 3: düşük pil', () => {
   });
 
   it('demo paneli: Ayşe’nin pili %14 → bana push ve canlı pakette pil %14', async () => {
-    const s = server();
+    const s = await server();
     const pushes: DemoPushMessage[] = [];
     s.subscribePush(DEMO_ME, (m) => pushes.push(m));
     expect(s.setAyseBattery(AYSE_LOW_BATTERY)).toBe('notified');
@@ -180,8 +183,8 @@ describe('demo sunucusu Faz 3: düşük pil', () => {
 });
 
 describe('demo sunucusu Faz 3: arkadaşın bağlantısı koptu', () => {
-  it('Mehmet: son paket 63 dk önce, hb ile → core "Bağlantısı kopmuş olabilir"; geri gelince canlı', () => {
-    const s = server();
+  it('Mehmet: son paket 63 dk önce, hb ile → core "Bağlantısı kopmuş olabilir"; geri gelince canlı', async () => {
+    const s = await server();
     expect(s.mehmetDisconnect()).toBe(true);
     const node = Object.values(s.inboxOf(DEMO_ME)).find((v) => v.sender_id === MEHMET);
     const loc = parseDelivered(node);

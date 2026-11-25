@@ -7,11 +7,14 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { db, rtdb } from '../../functions/src/admin';
 import { sweepExpired } from '../../functions/src/handlers/sweeper';
 import { type TestUser, call, callError, cleanupRulesEnv, newUser, opId } from '../helpers/emulator';
+import { grantAll } from '../review/helpers';
 
-async function friends(): Promise<[TestUser, TestUser]> {
+/** Faz 8: varsayılan olarak iki yönde tüm istenebilir izinler; `grants: 'none'` yalnızca arkadaşlık. */
+async function friends(opts: { grants?: 'all' | 'none' } = {}): Promise<[TestUser, TestUser]> {
   const [X, Y] = await Promise.all([newUser('İsteyen'), newUser('Hedef')]);
   await call('friend_request_send', { op_id: opId(), via: 'invite_code', invite_code: Y.invite_code }, X);
   await call('friend_request_respond', { op_id: opId(), friendship_id: friendshipId(X.uid, Y.uid), accept: true }, Y);
+  if ((opts.grants ?? 'all') === 'all') await grantAll(X, Y);
   return [X, Y];
 }
 

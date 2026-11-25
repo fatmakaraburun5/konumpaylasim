@@ -5,6 +5,8 @@
  *  - Gönderince kısa "Gönderildi" geri bildirimi; soğuma süresince (core `pingCooldownLeftMs`) iki düğme de pasif
  *    ve kalan saniye yazar. Uçuştaki gönderim varken ikinci dokunuş yeni istek açmaz (depo aynı sözü döndürür).
  *  - `compact`: arkadaş listesi satırı için küçük düğmeler.
+ *  - Faz 8: ping yalnızca alıcı bana `ping` izni verdiyse gider; yoksa düğmeler yerine "Ping için izin iste".
+ *    Görünmezken ya da alıcıya konum izni (`location_view`) vermediysem ETA eklenmez (sunucu da konum ve ETA'yı siler).
  */
 import { PING_EMOJI, PING_KINDS, PING_TEXT, pingCooldownLeftMs, type PingKind, type UserId } from '@konum/core';
 import { useEffect, useState } from 'react';
@@ -13,6 +15,9 @@ import { useNow } from '../../lib/useNow';
 import { pingStore, usePingStore } from '../../state/pingStore';
 import { MIN_TOUCH, Text, useTheme } from '../../ui';
 import { PING_SENT_FEEDBACK_MS } from './pingModel';
+import { RequestPermissionButton } from '../access/RequestPermissionButton';
+import { useCanFn } from '../access/useAccess';
+import { useIsInvisible } from '../../state/invisibleStore';
 
 export interface PingButtonsProps {
   to: UserId;
@@ -29,6 +34,11 @@ export function PingButtons({ to, name, etaS = null, compact = false }: PingButt
   const lastSentAt = usePingStore((s) => s.lastSentAt[to]);
   const now = useNow(1_000);
   const [feedback, setFeedback] = useState<{ ok: boolean; text: string } | null>(null);
+  const can = useCanFn();
+  const permitted = can('ping', to, 'received');
+  const invisible = useIsInvisible();
+  // Konum çıkarılan pingte ETA da gitmez (alıcı benden uzaklığımı öğrenmesin).
+  const eta = !invisible && can('location_view', to, 'given') ? etaS : null;
 
   useEffect(() => {
     if (!feedback) return;
@@ -36,12 +46,16 @@ export function PingButtons({ to, name, etaS = null, compact = false }: PingButt
     return () => clearTimeout(t);
   }, [feedback]);
 
+  if (!permitted) {
+    return <RequestPermissionButton to={to} name={name} scopes={['ping']} label="Ping için izin iste" compact={compact} testID={`ping-request-${to}`} />;
+  }
+
   const cooldownS = Math.ceil(pingCooldownLeftMs(lastSentAt, now) / 1_000);
   const busy = sending !== undefined;
 
   const send = async (kind: PingKind) => {
     if (busy) return;
-    const r = await pingStore.getState().send(to, kind, { eta_s: kind === 'on_way' ? etaS : null });
+    const r = await pingStore.getState().send(to, kind, { eta_s: kind === 'on_way' ? eta : null });
     setFeedback(r.ok ? { ok: true, text: `${PING_EMOJI[kind]} Gönderildi` } : { ok: false, text: r.error.message });
   };
 
@@ -58,7 +72,7 @@ export function PingButtons({ to, name, etaS = null, compact = false }: PingButt
               disabled={disabled}
               accessibilityRole="button"
               accessibilityLabel={`${name} kişisine ${PING_TEXT[kind]} gönder`}
-              accessibilityHint={kind === 'on_way' && etaS ? 'Tahmini varış süren de eklenir' : undefined}
+              accessibilityHint={kind === 'on_way' && eta ? 'Tahmini varış süren de eklenir' : undefined}
               accessibilityState={{ disabled, busy: sending === kind }}
               hitSlop={compact ? 6 : 4}
               style={({ pressed }) => [

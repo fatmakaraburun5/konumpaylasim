@@ -33,3 +33,7 @@ export * from './profile';
 export * from './favorites';
 export * from './quickShare';
 export * from './widget';
+// Faz 8: yönlü izinler, görünmez mod, Güvenlik Sözleşmesi ve KVKK onayı
+export * from './access';
+export * from './invisible';
+export * from './consent';

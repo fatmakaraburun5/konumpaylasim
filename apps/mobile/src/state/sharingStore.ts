@@ -14,6 +14,9 @@
  *    aktif gösterse bile yayın geri gelmez.
  *  - Callable yanıtıyla onaylanan paylaşımlar, Firestore dinleyicisi aynı ya da daha yeni sürümü
  *    getirene kadar tutulur (geç gelen eski anlık görüntü yeni oturumu silmesin). [core_requests]
+ *  - Faz 8: konum izni (`location_view`, ben → alıcı) olmayan alıcılar `needsGrantReceiverIds` ile döner; arayüz
+ *    "izin de verilecek" diye sorup `startShare(ids, choice, { grantLocationView: true })` ile yeniden dener.
+ *    Görünmezken başlatma hiç denenmez (`invisible_mode`).
  *
  * Yan etkiler (yayın hedeflerini kalıcılaştırma, konum takibini açıp kapama, bildirim planlama)
  * burada DEĞİL, `services/sharingCoordinator.ts` içindedir: depo saf ve test edilebilir kalır.
@@ -43,9 +46,10 @@ import { useMemo } from 'react';
 import { useStore } from 'zustand';
 import { createStore, type StoreApi } from 'zustand/vanilla';
 import { now as serverClockNow } from '../lib/clock';
-import { toKonumError } from '../lib/errors';
+import { KonumError, toKonumError } from '../lib/errors';
 import { deviceTimeZone } from '../lib/timeZone';
 import { sharingApi, type SharingApi } from '../services/firebase/callables';
+import { invisibleIntent } from './publishHold';
 import {
   addStopIntent,
   getStopIntent,
@@ -67,6 +71,8 @@ export interface SharingStoreDeps {
   stopRetryBackoffMs: readonly number[];
   /** Callable'la onaylanan paylaşımın dinleyici yetişene kadar tutulma süresi (ms). */
   confirmedHoldMs: number;
+  /** Faz 8: görünmez olma niyeti var mı (varsa paylaşım başlatılmaz). */
+  isInvisible: () => boolean;
 }
 
 /** [Varsayım] Geri çekilme: 5 sn, 15 sn, 30 sn, 1 dk, 2 dk, sonra 5 dakikada bir. */
@@ -74,9 +80,18 @@ const STOP_RETRY_BACKOFF_MS = [5_000, 15_000, 30_000, 60_000, 120_000, 300_000] 
 /** [Varsayım] Firestore dinleyicisi normalde birkaç saniyede yetişir; 2 dk güvenli üst sınır. */
 const CONFIRMED_HOLD_MS = 2 * 60_000;
 
+/**
+ * `needsGrantReceiverIds`: bu kişilere konum izni (ben → o) verilmeden paylaşım başlamadı (Faz 8). Hiçbiri
+ * başlamadıysa `ok: false` + `not_permitted` döner; arayüz sorar ve `grantLocationView: true` ile yeniden dener.
+ */
 export type StartResult =
-  | { ok: true; sessionId: SessionId; skippedReceiverIds: UserId[] }
-  | { ok: false; error: SharingError };
+  | { ok: true; sessionId: SessionId; skippedReceiverIds: UserId[]; needsGrantReceiverIds: UserId[] }
+  | { ok: false; error: SharingError; needsGrantReceiverIds?: UserId[] };
+
+export interface StartShareOptions {
+  /** Faz 8: izni olmayan alıcılara aynı işlemde `location_view` izni de ver. */
+  grantLocationView?: boolean;
+}
 
 export interface SharingStoreState {
   state: SharingState;
@@ -84,7 +99,7 @@ export interface SharingStoreState {
   dismissed: Record<SessionId, true>;
   dispatch: (ev: SharingEvent) => void;
   applyServerShares: (shares: readonly OutgoingShareView[]) => void;
-  startShare: (receiverIds: readonly UserId[], choice: DurationChoice) => Promise<StartResult>;
+  startShare: (receiverIds: readonly UserId[], choice: DurationChoice, opts?: StartShareOptions) => Promise<StartResult>;
   extend: (sessionId: SessionId, minutes: ExtensionMinutes, opId?: string) => Promise<boolean>;
   stop: (sessionId: SessionId) => Promise<boolean>;
   /** Açılışta: kalıcı durdurma niyetlerini reducer'a geri yükler (yayın kapalı kalır). */
@@ -92,6 +107,8 @@ export interface SharingStoreState {
   /** Bekleyen tüm durdurma niyetlerini sunucuya yeniden gönderir (AppState active, yeniden bağlanma). */
   retryPendingStops: () => Promise<void>;
   findSession: (sessionId: SessionId) => ShareSession | undefined;
+  /** Faz 8: başka bir callable'ın başlattığı oturum (izin isteğini "izin ver + paylaş" ile onaylama). */
+  adoptStartedSession: (sessionId: SessionId, shares: readonly OutgoingShareView[]) => void;
   dismiss: (sessionId: SessionId) => void;
   /** Çıkışta her şeyi sıfırlar. */
   reset: () => void;
@@ -112,6 +129,7 @@ export function createSharingStore(overrides: Partial<SharingStoreDeps> = {}): S
     tickMs: 1_000,
     stopRetryBackoffMs: STOP_RETRY_BACKOFF_MS,
     confirmedHoldMs: CONFIRMED_HOLD_MS,
+    isInvisible: () => invisibleIntent() !== null,
     ...overrides,
   };
 
@@ -199,10 +217,11 @@ export function createSharingStore(overrides: Partial<SharingStoreDeps> = {}): S
         apply({ type: 'SERVER_SNAPSHOT', shares: visible });
       },
 
-      startShare: (receiverIds, choice) =>
+      startShare: (receiverIds, choice, opts) =>
         once<StartResult>('start', async () => {
           const receivers = [...new Set(receiverIds)];
           if (receivers.length === 0) return { ok: false, error: { code: 'invalid_argument', message: 'En az bir kişi seçin' } };
+          if (deps.isInvisible()) return { ok: false, error: new KonumError('invisible_mode').toSharingError() };
           const t = deps.now();
           let resolved;
           try {
@@ -216,7 +235,20 @@ export function createSharingStore(overrides: Partial<SharingStoreDeps> = {}): S
           const localId = localSessionId(opId);
           apply({ type: 'START_REQUESTED', op_id: opId, session_id: localId, receiver_ids: receivers, resolved, now: t });
           try {
-            const res = await deps.api.shareStart({ op_id: opId, receiver_ids: receivers, duration: choice, time_zone: deps.timeZone() });
+            const res = await deps.api.shareStart({
+              op_id: opId,
+              receiver_ids: receivers,
+              duration: choice,
+              time_zone: deps.timeZone(),
+              grant_location_view: opts?.grantLocationView === true,
+            });
+            const needsGrantReceiverIds = res.needs_grant_receiver_ids ?? [];
+            if (res.shares.length === 0 && needsGrantReceiverIds.length > 0) {
+              // Hiçbir paylaşım başlamadı: taslak kalkar, arayüz izin sorar.
+              apply({ type: 'DISMISS', session_id: localId });
+              const error = new KonumError('not_permitted').toSharingError();
+              return { ok: false, error, needsGrantReceiverIds };
+            }
             hold(res.shares);
             // Sunucu bu kişilerle olan paylaşım belgesini yeni oturumla değiştirdi: eski durdurma niyetleri bu
             // paylaşımları artık engellememeli (eski oturuma yönelik share_stop yeni oturumu etkilemez).
@@ -226,13 +258,20 @@ export function createSharingStore(overrides: Partial<SharingStoreDeps> = {}): S
               { type: 'START_SUCCEEDED', session_id: res.session_id, shares: res.shares },
               { type: 'DISMISS', session_id: localId },
             );
-            return { ok: true, sessionId: res.session_id, skippedReceiverIds: res.skipped_receiver_ids };
+            return { ok: true, sessionId: res.session_id, skippedReceiverIds: res.skipped_receiver_ids, needsGrantReceiverIds };
           } catch (e) {
             const error = toKonumError(e).toSharingError();
             apply({ type: 'START_FAILED', session_id: localId, error });
             return { ok: false, error };
           }
         }),
+
+      adoptStartedSession: (sessionId, shares) => {
+        if (shares.length === 0) return;
+        hold(shares);
+        void unblockShares(shares.map((x) => x.share_id)).catch(() => undefined);
+        apply({ type: 'START_SUCCEEDED', session_id: sessionId, shares: [...shares] });
+      },
 
       extend: (sessionId, minutes, opId) =>
         once<boolean>(`extend:${sessionId}`, async () => {

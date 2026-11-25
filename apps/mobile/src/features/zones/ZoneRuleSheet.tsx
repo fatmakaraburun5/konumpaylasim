@@ -7,6 +7,8 @@
  *   günler (core `WEEKDAY_SHORT_TR`, hazır: Her gün / Hafta içi / Hafta sonu)
  *   isteğe bağlı saat aralığı (30 dk adım; gece yarısını aşabilir: 22:00–06:00)
  *   özet satırı (core `describeZoneRule`) · Kaydet / Kuralı sil
+ * Faz 8: kişi satırları izne göre: `notify` için onun bana verdiği `zone_notify`, `start_share` için benim ona
+ * verdiğim `location_view` gerekir; yoksa satır kısa nedenle pasiftir (seçiliyse yalnızca çıkarılabilir).
  */
 import { uuidV4, WEEKDAY_SHORT_TR, ZONE_RULE_TEMPLATES, ZONE_SHARE_DURATIONS, type UserId, type ZoneRule } from '@konum/core';
 import { BottomSheetBackdrop, BottomSheetModal, BottomSheetScrollView, type BottomSheetBackdropProps } from '@gorhom/bottom-sheet';
@@ -17,6 +19,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFriendNames, useFriends } from '../../state/friendsStore';
 import { Button, Chip, IconButton, SheetHeader, Text, useTheme } from '../../ui';
 import { RecipientPicker } from '../share/RecipientPicker';
+import { permittedIds, pickerRowAccess } from '../access/accessModel';
+import { canNow, useCanFn } from '../access/useAccess';
 import {
   applyTemplate,
   DAY_PRESETS,
@@ -53,6 +57,7 @@ export function ZoneRuleSheet({ onSave, onDelete, ref }: ZoneRuleSheetProps) {
   const sheet = useRef<BottomSheetModal>(null);
   const friends = useFriends();
   const names = useFriendNames();
+  const can = useCanFn();
   const [rule, setRule] = useState<ZoneRule>(() => ruleFromTemplate('arrive_notify', ''));
   const [isNew, setIsNew] = useState(true);
   const [zoneName, setZoneName] = useState('');
@@ -82,6 +87,13 @@ export function ZoneRuleSheet({ onSave, onDelete, ref }: ZoneRuleSheetProps) {
   };
 
   const save = () => {
+    // Faz 8: izni olmayan seçili kişiler (şablon değişince kalanlar) sunucuda sessizce düşerdi; önce burada söylenir.
+    const kept = permittedIds(rule.action === 'notify' ? 'zone_notify' : 'zone_start_share', rule.recipient_ids, canNow());
+    if (kept.length !== rule.recipient_ids.length) {
+      setRule((prev) => ({ ...prev, recipient_ids: kept }));
+      setError('İzni olmayan kişiler listeden çıkarıldı. Kontrol edip yeniden kaydet.');
+      return;
+    }
     const err = validateRule(rule);
     if (err) {
       setError(err);
@@ -137,6 +149,7 @@ export function ZoneRuleSheet({ onSave, onDelete, ref }: ZoneRuleSheetProps) {
             friends={friends}
             selected={selected}
             onToggle={toggle}
+            access={(uid) => pickerRowAccess(rule.action === 'notify' ? 'zone_notify' : 'zone_start_share', uid, can)}
             onAddFriend={() => {
               sheet.current?.dismiss();
               router.push('/friends');

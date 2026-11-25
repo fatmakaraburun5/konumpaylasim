@@ -111,12 +111,36 @@ import {
   type Gender,
   type WidgetTokenIssueResponse,
   type WidgetTokenRevokeResponse,
+  // Faz 8
+  ConsentAcceptRequestSchema,
+  ConsentWithdrawSchema,
+  InvisibleSetRequestSchema,
+  PermissionRequestRespondSchema,
+  PermissionRequestSendSchema,
+  PermissionSetSchema,
+  type ConsentAcceptRequest,
+  type ConsentAcceptResponse,
+  type ConsentWithdrawResponse,
+  type InvisibleSetRequest,
+  type InvisibleSetResponse,
+  type PermissionRequestRespondRequest,
+  type PermissionRequestRespondResponse,
+  type PermissionRequestSendRequest,
+  type PermissionRequestSendResponse,
+  type PermissionSetRequest,
+  type PermissionSetResponse,
 } from '@konum/core';
 import { z } from 'zod';
 import { KonumError, toKonumError } from '../../lib/errors';
 import {
+  ConsentAcceptResponseSchema,
+  ConsentWithdrawResponseSchema,
   FriendRequestSendResponseSchema,
+  InvisibleSetResponseSchema,
   OkResponseSchema,
+  PermissionRequestRespondResponseSchema,
+  PermissionRequestSendResponseSchema,
+  PermissionSetResponseSchema,
   ShareExtendResponseSchema,
   ShareRevokeResponseSchema,
   ShareStartResponseSchema,
@@ -429,3 +453,69 @@ export interface WidgetApi {
   widgetTokenRevoke: typeof widgetTokenRevoke;
 }
 export const widgetApi: WidgetApi = { widgetTokenIssue, widgetTokenRevoke };
+
+// --- Faz 8: yönlü izinler, görünmez mod, Güvenlik Sözleşmesi / KVKK onayı ---------------------------
+
+/**
+ * Faz 8 callable'ları (core `CALLABLES.permissionRequestSend` … `consentWithdraw`; istek şemaları core'dan, yanıt
+ * şemaları yerel). Hepsi `op_id` taşır; aynı op_id ile tekrar sunucuda bir kez uygulanır (görünmez olma isteği
+ * bağlantı gelince AYNI op_id ile yeniden denenir).
+ *
+ *  - `permission_request_send`: yanıt her zaman `sent` | `already_granted` (ret soğuması isteyene söylenmez).
+ *  - `permission_request_respond`: çağıran = izni veren; `grant_scopes: []` = ret (ret push'u yok).
+ *  - `permission_set`: kişi izinleri anahtarı; kapatmak onaysız da çalışır ve zincirleme temizler.
+ *  - `invisible_set`: `invisible: true` onaysız da çalışır; kapatırken yalnızca seçilen alıcılar geri yüklenir.
+ *  - `consent_accept`: sürüm + metin özeti güncel değilse `consent_required`.
+ */
+export function permissionRequestSend(input: WithOp<PermissionRequestSendRequest>): Promise<PermissionRequestSendResponse> {
+  return invoke(
+    CALLABLES.permissionRequestSend,
+    PermissionRequestSendSchema,
+    { ...input, op_id: input.op_id ?? uuidV4() },
+    PermissionRequestSendResponseSchema,
+  );
+}
+
+export function permissionRequestRespond(input: WithOp<PermissionRequestRespondRequest>): Promise<PermissionRequestRespondResponse> {
+  return invoke(
+    CALLABLES.permissionRequestRespond,
+    PermissionRequestRespondSchema,
+    { ...input, op_id: input.op_id ?? uuidV4() },
+    PermissionRequestRespondResponseSchema,
+  );
+}
+
+export function permissionSet(input: WithOp<PermissionSetRequest>): Promise<PermissionSetResponse> {
+  return invoke(CALLABLES.permissionSet, PermissionSetSchema, { ...input, op_id: input.op_id ?? uuidV4() }, PermissionSetResponseSchema);
+}
+
+export function invisibleSet(input: WithOp<InvisibleSetRequest>): Promise<InvisibleSetResponse> {
+  return invoke(CALLABLES.invisibleSet, InvisibleSetRequestSchema, { ...input, op_id: input.op_id ?? uuidV4() }, InvisibleSetResponseSchema);
+}
+
+export function consentAccept(input: WithOp<ConsentAcceptRequest>): Promise<ConsentAcceptResponse> {
+  return invoke(CALLABLES.consentAccept, ConsentAcceptRequestSchema, { ...input, op_id: input.op_id ?? uuidV4() }, ConsentAcceptResponseSchema);
+}
+
+export function consentWithdraw(input: { op_id?: string } = {}): Promise<ConsentWithdrawResponse> {
+  return invoke(CALLABLES.consentWithdraw, ConsentWithdrawSchema, { op_id: input.op_id ?? uuidV4() }, ConsentWithdrawResponseSchema);
+}
+
+/** Faz 8 depolarının bağımlılıkları (testlerde sahte uygulanır). */
+export interface AccessApi {
+  permissionRequestSend: typeof permissionRequestSend;
+  permissionRequestRespond: typeof permissionRequestRespond;
+  permissionSet: typeof permissionSet;
+}
+export const accessApi: AccessApi = { permissionRequestSend, permissionRequestRespond, permissionSet };
+
+export interface InvisibleApi {
+  invisibleSet: typeof invisibleSet;
+}
+export const invisibleApi: InvisibleApi = { invisibleSet };
+
+export interface ConsentApi {
+  consentAccept: typeof consentAccept;
+  consentWithdraw: typeof consentWithdraw;
+}
+export const consentApi: ConsentApi = { consentAccept, consentWithdraw };

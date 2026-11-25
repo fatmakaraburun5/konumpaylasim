@@ -18,13 +18,15 @@ import { DemoStorageError } from '../src/demo/server/avatars';
 import { DemoServer, type DemoPushMessage } from '../src/demo/server/server';
 import { DEMO_ME, PEOPLE } from '../src/demo/server/world';
 import { demoWidgetInput } from '../src/demo/web/widgetModel';
+import { acceptConsent, grant } from './demoTestUtils';
 
 jest.setTimeout(30_000);
 
 const servers: DemoServer[] = [];
-function server(): DemoServer {
+async function server(): Promise<DemoServer> {
   const s = new DemoServer();
   servers.push(s);
+  await acceptConsent(s); // Faz 8: onaysız hesap çağrı yapamaz
   return s;
 }
 afterEach(() => {
@@ -52,7 +54,7 @@ const quick = (s: DemoServer, token: string, to: string, op_id = uuidV4()) =>
 
 describe('demo Faz 6: cinsiyet ve profil fotoğrafı', () => {
   it('ad verilirken cinsiyet zorunlu (gender_required), null reddedilir, sonra korunur ve arkadaş kopyasına yayılır', async () => {
-    const s = server();
+    const s = await server();
     expect(s.profileOf(DEMO_ME)?.gender).toBeNull();
     // Girişteki kalp atışı (ad / cinsiyet yok) profil oluşturmaz, hata vermez.
     expect(await codeOf(s.call('user_bootstrap', { op_id: uuidV4(), time_zone: TZ }, DEMO_ME))).toBe('ok');
@@ -75,7 +77,7 @@ describe('demo Faz 6: cinsiyet ve profil fotoğrafı', () => {
   });
 
   it('Storage kuralları (sahibi, JPEG, boyut) ve avatar çifti doğrulaması; değişince eski sürüm silinir', async () => {
-    const s = server();
+    const s = await server();
     const v1 = 1_764_000_000_000;
     const up = (path: string, data = jpeg(2_000), type = 'image/jpeg', uid: string | null = DEMO_ME) => s.storageUpload(path, data, type, uid);
     expect(await codeOf(up(`avatars/${PEOPLE.ayse.uid}/${v1}.jpg`))).toBe('storage/unauthorized');
@@ -111,8 +113,11 @@ describe('demo Faz 6: cinsiyet ve profil fotoğrafı', () => {
 
 describe('demo Faz 6: favoriler', () => {
   it('favorites_set arkadaş olmayanı / kendini sessizce atar, 5. kişi ve tekrar reddedilir; arkadaşlık bitince düşer', async () => {
-    const s = server();
+    const s = await server();
     expect(s.profileOf(DEMO_ME)?.favorite_ids).toEqual([PEOPLE.ayse.uid, PEOPLE.mehmet.uid, PEOPLE.zeynep.uid]);
+    // Faz 8: favori = tek tuşla paylaşım hedefi → konum izni verdiğim arkadaşlar (Elif hâlâ bekleyen istek).
+    await grant(s, DEMO_ME, PEOPLE.can.uid, 'location_view');
+    await grant(s, DEMO_ME, PEOPLE.ayse.uid, 'location_view');
     const set = (ids: string[]) => s.call('favorites_set', { op_id: uuidV4(), favorite_ids: ids }, DEMO_ME);
     expect(await set([PEOPLE.can.uid, PEOPLE.elif.uid, DEMO_ME, PEOPLE.ayse.uid])).toEqual({ favorite_ids: [PEOPLE.can.uid, PEOPLE.ayse.uid] });
     expect(await codeOf(set(['ayse', 'mehmet', 'zeynep', 'can', 'elif']))).toBe('invalid_argument');
@@ -126,9 +131,10 @@ describe('demo Faz 6: favoriler', () => {
 
 describe('demo Faz 6: widget token + tek tuşla paylaşım', () => {
   it('token yalnızca yanıtta; oturumsuz hızlı paylaşım started → extended, op_id tekrarı aynı yanıt; gönderene push', async () => {
-    const s = server();
+    const s = await server();
     const pushes: DemoPushMessage[] = [];
     s.subscribePush(DEMO_ME, (m) => pushes.push(m));
+    await grant(s, DEMO_ME, PEOPLE.ayse.uid, 'location_view'); // Faz 8: izin varsayılan kapalı
     const t = await issueToken(s);
     expect(t.endpoint_path).toBe('widget_quick_share');
     expect(t.expires_at - Date.now()).toBeGreaterThan(29 * 24 * HOUR);
@@ -159,7 +165,9 @@ describe('demo Faz 6: widget token + tek tuşla paylaşım', () => {
   });
 
   it('hata sırası: not_favorite, already_active, rate_limited, token_expired, iptalden sonra token_invalid', async () => {
-    const s = server();
+    const s = await server();
+    await grant(s, DEMO_ME, PEOPLE.ayse.uid, 'location_view');
+    await grant(s, DEMO_ME, PEOPLE.mehmet.uid, 'location_view');
     const t = await issueToken(s);
     expect(await codeOf(quick(s, t.token, PEOPLE.can.uid))).toBe('not_favorite');
     expect(await codeOf(quick(s, t.token, DEMO_ME))).toBe('not_favorite');
@@ -184,7 +192,7 @@ describe('demo Faz 6: widget token + tek tuşla paylaşım', () => {
   });
 
   it('widget_refresh: favorim bana paylaşımı durdurunca yalnızca veri push; snapshot core ile kurulur', async () => {
-    const s = server();
+    const s = await server();
     const pushes: DemoPushMessage[] = [];
     s.subscribePush(DEMO_ME, (m) => pushes.push(m));
     const t = await issueToken(s);

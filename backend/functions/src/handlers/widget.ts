@@ -21,6 +21,10 @@
  *  - Başarıdan sonra (en iyi çaba): gönderenin cihazlarına Faz 3 sessiz `resume_tracking` (uygulama arka planda
  *    takibi başlatsın) ve görünür `quick_share_started` ("Ayşe ile 1 saatlik paylaşım başladı"; koordinat YOK).
  *    Alıcının widget'ı `share_acl_reconciler` tetikleyicisindeki `notifyWidgetRefresh` ile yenilenir.
+ *  - Faz 8 (core `canShareLocation`): oturumsuz çağrı olduğu için callable ön kapısı yoktur; denetimler burada,
+ *    transaction içinde: profil → güncel onay (`consent_required`) → görünmez değil (`invisible_mode`; görünmez
+ *    kullanıcıya ASLA `resume_tracking` gitmez) → favori → arkadaş → `location_view` izni (`not_permitted`). Uzatma
+ *    ve "zaten aktif" dalları da aynı denetimden geçer; hızlı paylaşım izin YAZMAZ.
  */
 import {
   CALLABLES,
@@ -36,7 +40,10 @@ import {
   type WidgetTokenIssueResponse,
   type WidgetTokenRevokeRequestSchema,
   type WidgetTokenRevokeResponse,
+  canShareLocation,
+  consentRequired,
   generateWidgetToken,
+  isInvisible,
   quickShareExpiry,
   shareId,
   widgetTokenHash,
@@ -49,7 +56,7 @@ import { db } from '../admin';
 import type { CallCtx } from '../callable';
 import { COL, type ShareDoc, type UserDoc, type WidgetTokenDoc, favoriteIdsOf, isUsableProfile, refs } from '../docs';
 import { fail } from '../errors';
-import { canShare, readCaller } from '../graph';
+import { callerAccess, consentFail, isFriend, pairInput, readCaller } from '../graph';
 import { readRateLimit, runOp, writeRateLimit } from '../ops';
 import { type PushSender, buildQuickShareStartedPush, buildResumeTrackingPush, buildWidgetRefreshPush, sendPushToUser } from '../push';
 import { chunk, isServerUid, nodeRandom } from '../util';
@@ -199,9 +206,12 @@ export async function widgetQuickShare(
       const userSnap = await tx.get(refs.user(owner));
       const user = userSnap.data() as UserDoc | undefined;
       if (!isUsableProfile(user)) throw fail('token_invalid');
+      if (consentRequired(user.consent)) throw consentFail();
+      if (isInvisible(user)) throw fail('invisible_mode');
       if (!favoriteIdsOf(user).includes(to)) throw fail('not_favorite');
       const [cand] = await readStartCandidates(tx, owner, [to]);
-      if (!cand || !canShare(cand.pair)) throw fail('not_friend');
+      if (!cand || !isFriend(cand.pair)) throw fail('not_friend');
+      if (!canShareLocation(pairInput(cand.pair, callerAccess(user)))) throw fail('not_permitted');
       const uses = usesWindow(tok.doc, now);
       if (uses.count >= QUICK_SHARE_LIMITS.perTokenPerHour) {
         throw fail('rate_limited', { extra: { retry_after_ms: uses.window_start + HOUR - now } });
@@ -214,7 +224,7 @@ export async function widgetQuickShare(
       let share: ShareDoc;
       let effects: ShareDoc[] = [];
       if (decision.status === 'started') {
-        const w = writeShareStarts(tx, owner, [cand], { share_mode: decision.share_mode, expires_at: decision.expires_at }, now, aclVersions);
+        const w = writeShareStarts(tx, user, [cand], { share_mode: decision.share_mode, expires_at: decision.expires_at }, now, aclVersions);
         const started = w.started[0];
         if (!started) throw fail('not_friend');
         share = started;

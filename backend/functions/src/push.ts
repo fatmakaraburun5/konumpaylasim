@@ -31,6 +31,10 @@ import {
   type QuickShareStatus,
   QUICK_SHARE_NOTIFICATION,
   quickSharePushText,
+  type AccessScope,
+  normalizeScopes,
+  permissionGrantedText,
+  permissionRequestText,
 } from '@konum/core';
 import type { DocumentReference, Timestamp } from 'firebase-admin/firestore';
 import type { MulticastMessage } from 'firebase-admin/messaging';
@@ -448,6 +452,37 @@ export function buildWidgetRefreshPush(from: UserId, now: number = Date.now()): 
       },
       payload: { aps: { contentAvailable: true } },
     },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Faz 8: izin isteği ve izin verildi (koordinat YOK; retde ve geri almada push YOK)
+// ---------------------------------------------------------------------------
+
+/**
+ * Granter'a, görünür: "Can senden konumunu görmek istiyor" (core `permissionRequestText`). `from` = isteyenin uid'i,
+ * `scopes` = bekleyen kapsamlar (virgülle). Dokununca Arkadaşlar > İzin istekleri açılır. Arkadaşlık istekleri kanalı.
+ */
+export function buildPermissionRequestPush(requesterName: string, from: UserId, scopes: readonly AccessScope[]): PushMessage {
+  const list = normalizeScopes(scopes);
+  const tag = `permission_request_${from}`;
+  return {
+    notification: { title: 'İzin isteği', body: permissionRequestText(requesterName || 'Bir arkadaşın', list) },
+    data: { type: 'permission_request', from, scopes: list.join(',') },
+    android: { notification: { channelId: 'friend_requests', tag } },
+    apns: { headers: { 'apns-collapse-id': collapseId(tag) }, payload: { aps: { category: 'PERMISSION_REQUEST' } } },
+  };
+}
+
+/** İsteyene, görünür: "Can konumunu görmene izin verdi" (core `permissionGrantedText`). `by` = izni verenin uid'i. */
+export function buildPermissionGrantedPush(granterName: string, by: UserId, scopes: readonly AccessScope[]): PushMessage {
+  const list = normalizeScopes(scopes);
+  const tag = `permission_granted_${by}`;
+  return {
+    notification: { title: 'İzin verildi', body: permissionGrantedText(granterName || 'Arkadaşın', list) },
+    data: { type: 'permission_granted', by, scopes: list.join(',') },
+    android: { notification: { channelId: 'friend_requests', tag } },
+    apns: { headers: { 'apns-collapse-id': collapseId(tag) }, payload: { aps: { category: 'PERMISSION_GRANTED' } } },
   };
 }
 

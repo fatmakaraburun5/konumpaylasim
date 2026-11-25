@@ -1,4 +1,4 @@
-# Konum backend (Faz 1 – Faz 6)
+# Konum backend (Faz 1 – Faz 8)
 
 Firebase üzerinde Konum backend'i: Firestore ve Realtime Database (RTDB) güvenlik kuralları, Cloud Functions (2nd gen, Node 22) ve emülatörde çalışan testler.
 
@@ -35,6 +35,8 @@ backend/
     src/handlers/favorites.ts Faz 6: favorites_set (sıralı ≤ 4 favori, yalnızca arkadaşlar)
     src/handlers/widget.ts    Faz 6: widget_token_issue / revoke, widget_quick_share (oturumsuz, token'lı 1 sa
                              paylaşım), widget_refresh kararı
+    src/handlers/access.ts    Faz 8: permission_request_send / respond, permission_set (+ zincirleme temizlik),
+                             invisible_set, consent_accept / consent_withdraw
   hosting/
     public/.well-known/    apple-app-site-association + assetlinks.json (Universal Links / App Links)
     assemble.mjs           yayın klasörü: ../apps/web/dist + public → hosting/dist (predeploy)
@@ -286,7 +288,7 @@ Kod: `handlers/favorites.ts`, `handlers/widget.ts`, `handlers/user.ts` (cinsiyet
 | Ad | Etki |
 |---|---|
 | `user_bootstrap` | Profil oluşturulurken `gender` (`female` / `male`) zorunlu → yoksa `gender_required`; sonra isteğe bağlı, `null` reddedilir. `avatar_url` + `avatar_thumb_url`: projenin kovasında `avatars/{uid}/{13 hane}.jpg` ve aynı sürümün `_160.jpg` kardeşi (`checkAvatarPair`); `avatar_url: null` üçünü (`avatar_thumb_url`, `avatar_version`) temizler. Ad / fotoğraf / cinsiyet değişince kabul edilmiş arkadaşlıkların `member_profiles` kopyasına yayılır (bekleyen istekte yalnızca ad). Fotoğraf değişince önceki sürümün iki nesnesi silinir (en iyi çaba). |
-| `favorites_set` | `users/{uid}.favorite_ids` (sıralı, ≤ 4, tekrarsız). Arkadaş olmayan / engelli / kendisi sessizce düşer. Arkadaşlık kaldırma, engel, pasif hesap sıfırlaması ve hesap silme karşı tarafın listesini de temizler. |
+| `favorites_set` | `users/{uid}.favorite_ids` (sıralı, ≤ 4, tekrarsız). Arkadaş olmayan / engelli / kendisi ve (Faz 8) `location_view` iznimi almamış kişi sessizce düşer. Arkadaşlık kaldırma, engel, pasif hesap sıfırlaması ve hesap silme karşı tarafın listesini de temizler. |
 | `widget_token_issue` | Oturum + App Check. Cihaza özel 43 karakterlik token (30 gün); yalnızca `widget_tokens/{sha256}` saklanır, `ops` kaydı TUTULMAZ (düz token yanıtta bir kez). Aynı cihazın eski token'ı iptal; kullanıcı başına ≤ 5 aktif, günde ≤ 20 üretim [Varsayım]. |
 | `widget_token_revoke` | `device_id` ya da `null` (tümü, çıkışta). `{revoked: n}`. |
 | `widget_quick_share` | **Oturumsuz, App Check'siz** (`tokenCallable`). Token → sahibi; hedef favori değilse `not_favorite`, arkadaş değilse `not_friend`, token yok / iptal `token_invalid`, süresi dolmuş `token_expired`, token başına saatte 6 başarılı çağrı `rate_limited`. Aktif paylaşım varsa bitiş = max(mevcut, şimdi + 60 dk) (`extended` / `already_active`), yoksa yeni 60 dk (`started`). Sonra gönderene sessiz `resume_tracking` + görünür `quick_share_started` (iOS kategori `QUICK_SHARE`, "Durdur" eylemi `QUICK_SHARE_STOP`; ikisi de core `QUICK_SHARE_NOTIFICATION`, uygulama aynı sabitle kaydeder). |
@@ -298,6 +300,63 @@ indirme token'lı URL'yi kullanır. Firestore: `widget_tokens` kapalı.
 
 **Dağıtım:** `firebase deploy --only storage` (yeni `storage.rules`), TTL `widget_tokens.purge_at`; Functions servis
 hesabının Storage nesnelerini silme yetkisi olmalı (varsayılan hesapta var).
+
+## Faz 8: izinler, görünmez mod, Güvenlik Sözleşmesi / KVKK onayı
+
+Tasarım: `docs/PHASE8.md`. Kararlar core'da (`access.ts` matris + belge geçişleri, `invisible.ts`, `consent.ts`);
+sunucu yalnızca uygular. Kod: `handlers/access.ts`, `graph.ts` (`PairState.grantOut / grantIn`, `pairInput`,
+`readCaller` onay denetimi), `callable.ts` (`consentGate`).
+
+- **Arkadaşlık izin değildir.** `permission_grants/{granter}_{grantee}` yönlü belgedir; kabul hiçbir izin yazmaz.
+  Her etkileşim core matrisinden geçer: paylaşım / widget / bölge `start_share` / konum isteği kabulü
+  `canShareLocation` (granter → grantee `location_view`), ping `canPing` (alıcının `ping` izni; konum yalnızca
+  `pingLocationAllowed` ise eklenir, değilse sessizce çıkar), bölge bildirimi `canZoneNotify`, buluşma `canInvite`
+  (ETA `meetupEtaAllowed` değilse çıkar), yer notu `noteAudienceAllowed`, SOS `canSendSos` (`emergency_contacts_set`
+  `sos_alert` izinlerini yazar / geri alır). İzinsiz alıcı `share_start` yanıtında `needs_grant_receiver_ids`'te döner;
+  `grant_location_view: true` izni aynı işlemde yazar (`via:'share'`). Konum isteği kabulü yalnızca hedef → isteyen
+  `location_view` yazar.
+- **İstek / yanıt:** `permission_request_send` (soğuma `permission_cooldown`, günde sınır), `permission_request_respond`
+  (verilen + reddedilen kapsamlar, isteğe bağlı aynı işlemde paylaşım; retde push yok). Ret anları istemcinin
+  okuyabildiği belgede değil, sunucuya özel `permission_declines` koleksiyonundadır (TTL `purge_at`): isteyen
+  reddedildiğini öğrenmez, yeniden istemek yine `sent` döner.
+- **`permission_set`:** açmak arkadaşlık + onay ister, kapatmak her zaman çalışır ve aynı transaction'da zincirleme
+  temizlik yapar (`REVOKE_EFFECTS`: paylaşım `stopped_by_sender` ile biter + ACL mezar taşı, not / bölge / favori
+  listelerinden çıkarma). Karşı tarafa "izni geri aldı" denmez.
+- **`invisible_set`:** açmak (onaysız da çalışır) tüm giden paylaşımları ve QR bağlantılarını bitirir, anlık görüntüyü
+  `users/{uid}.invisible`'a yazar. Görünmezken `share_start`, `share_extend`, `link_share_create`, widget, konum isteği
+  kabulü `invisible_mode`; bölge olayı `suppressed:'invisible'`; bekçi / pil bildirimi gitmez. SOS görünmezliği kapatır
+  (geri yükleme yok). Kapatmak yalnızca `restore_receiver_ids` içindeki, izni süren alıcıları eski bitişle yeniden başlatır.
+- **Onay kapısı:** `CONSENT_VERSION` onayı olmayan kullanıcıya konum / sosyal callable'lar `consent_required`
+  (`details.current_version`) döner. Muaf: `consentExemptCall` (durdurma, iptal, izni kapatma, görünmez olma, engel,
+  hesap silme, `user_bootstrap`, onay çağrıları). `consent_accept` sürüm + metin özeti (`CONSENT_TEXT_SHA256`) +
+  `scrolled_to_bottom: true` ister; kayıt `users/{uid}/consents/{version}`. `consent_withdraw` giden paylaşımları ve
+  bağlantıları bitirir.
+- **Silme:** `friendship_remove`, `user_block`, pasif hesap sıfırlaması ve `account_delete` iki yöndeki izin ve ret
+  belgelerini siler; `account_delete` onay kayıtlarını da siler.
+- **Kurallar:** `permission_grants` yalnızca iki tarafa okunur, `permission_declines` tamamen kapalı,
+  `users/{uid}/consents` yalnızca sahibine; hepsinde istemci yazması kapalı.
+- **Callable'lar (Faz 8):**
+
+  | Ad | İstek | Etki |
+  |---|---|---|
+  | `permission_request_send` | `{op_id, target_id, scopes}` | Arkadaş + onay şart; zaten verilmiş kapsam düşer → `already_granted`; yanıt her zaman `sent` / `already_granted`. Push `permission_request` (koordinatsız). |
+  | `permission_request_respond` | `{op_id, requester_id, grant_scopes, share}` | `grant_scopes ∩ bekleyen` verilir, kalan reddedilir (push yok). `share` + `location_view` + görünür → aynı işlemde paylaşım (`share_skipped`: `invisible` / `no_location_view`). Push `permission_granted`. |
+  | `permission_set` | `{op_id, grantee_id, scope, granted}` | Açmak arkadaşlık + onay ister; kapatmak onaysız çalışır ve `REVOKE_EFFECTS` zincirini uygular. Yanıt: verdiğim kapsamların tamamı. |
+  | `invisible_set` | `{op_id, invisible, restore_receiver_ids?}` | Bkz. yukarı. Yanıt `{invisible, restored_receiver_ids, skipped_receiver_ids}`. |
+  | `consent_accept` | `{op_id, version, text_sha256, scrolled_to_bottom: true, platform, app_version}` | Sürüm / özet uyuşmazsa `consent_required`; aynı sürüm tekrar onaylanırsa ilk kayıt korunur. |
+  | `consent_withdraw` | `{op_id}` | Giden paylaşımlar ve bağlantılar biter; `{shares_ended, links_ended}`. |
+
+  Yeni hata kodları: `not_permitted`, `invisible_mode`, `consent_required` (failed-precondition),
+  `permission_cooldown` (resource-exhausted). `share_start` isteği `grant_location_view` alır, yanıtı
+  `needs_grant_receiver_ids` taşır.
+- **Testler:** `befriend()` geriye uyum için varsayılan olarak iki yönde tüm istenebilir izinleri yazar
+  (`{grants:'none'}` ile kapalı); `newUser()` güncel sürümü onaylar (`{consent:false}` ile onaysız).
+  Faz 8 senaryoları: `test/functions/faz8.test.ts`.
+
+**Dağıtım:** `firebase deploy --only firestore:rules,firestore:indexes` (TTL `permission_declines.purge_at`), sonra
+Functions. Mevcut kullanıcılar ilk açılışta onay ekranını görür. Faz 8 öncesi arkadaşlıklar için izin belgesi yazılmaz
+(`via:'migration'` göçü yok): etkin eski paylaşımlar bitişine kadar sürer ama uzatılamaz; yeniden başlatma
+"izin de verilecek" onayıyla olur.
 
 ## Varsayımlar ve açık noktalar
 

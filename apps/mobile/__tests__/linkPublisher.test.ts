@@ -22,6 +22,7 @@ import type { PublisherDeps } from '../src/services/firebase/publisher';
 import { combinedTargetsKey, createSamplePipeline, type PipelineDeps } from '../src/services/location/pipeline';
 import { __resetLinkStopsMemoryForTests, addLinkStop, hydrateLinkStops, isLinkBlocked } from '../src/state/linkStops';
 import { loadCursor, loadTargets, saveTargets, type PersistedLinkTarget, type PersistedTarget } from '../src/state/persist';
+import { setConsentHold } from '../src/state/publishHold';
 import { __resetStopIntentsMemoryForTests, hydrateStopIntents, isShareBlocked } from '../src/state/stopIntents';
 
 const NOW = Date.UTC(2026, 10, 23, 11, 0, 0);
@@ -167,6 +168,8 @@ describe('konum hattı + bağlantı hedefleri', () => {
   });
 
   it('eski (Faz 1) kalıcı kayıt: linkTargets yoksa boş liste sayılır', async () => {
+    // Faz 8: ön plan güncel onayı gördü (yayın anahtarı kaydı var); kayıt yokken eski liste yayınlanmaz (faz8Stores).
+    await setConsentHold('me', false);
     await AsyncStorage.setItem('konum.bg.targets.v1', JSON.stringify({ uid: 'me', targets: [friend('a')], serverOffsetMs: 0, notificationBody: '' }));
     expect((await loadTargets()).linkTargets).toEqual([]);
     const t = setup();

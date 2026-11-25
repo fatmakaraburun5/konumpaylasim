@@ -540,3 +540,42 @@ describe('Faz 6: Storage kuralları, push yükleri, widget yenileme kararı', ()
     expect(widgetRefreshFor(s('active'), null)).toEqual({ receiver: 'b1', from: 'a1' });
   });
 });
+
+describe('Faz 8: izin bildirimleri, onay muafiyetleri ve TTL', () => {
+  it('izin isteği / izin verildi bildirimleri koordinat taşımaz; veri türleri core PUSH_TYPES_F8; değerler metin', async () => {
+    const { PUSH_TYPES_F8, permissionGrantedText, permissionRequestText } = await import('@konum/core');
+    const { buildPermissionGrantedPush, buildPermissionRequestPush } = await import('../../functions/src/push');
+    const req = buildPermissionRequestPush('Can', 'uC', ['ping', 'location_view']);
+    const ok = buildPermissionGrantedPush('Ayşe', 'uA', ['location_view']);
+    expect([req.data.type, ok.data.type]).toEqual([...PUSH_TYPES_F8]);
+    expect(req.data).toEqual({ type: 'permission_request', from: 'uC', scopes: 'location_view,ping' });
+    expect(req.notification?.body).toBe(permissionRequestText('Can', ['location_view', 'ping']));
+    expect(ok.data).toEqual({ type: 'permission_granted', by: 'uA', scopes: 'location_view' });
+    expect(ok.notification?.body).toBe(permissionGrantedText('Ayşe', ['location_view']));
+    for (const m of [req, ok]) {
+      expect(JSON.stringify(m)).not.toMatch(/"lat"|"lng"|"accuracy"/);
+      for (const v of Object.values(m.data)) expect(typeof v).toBe('string');
+    }
+  });
+
+  it('onay kapısı muafiyetleri: yalnızca koruyucu yönler (izni kapatmak, görünmez olmak)', async () => {
+    const { consentExemptCall } = await import('@konum/core');
+    expect(consentExemptCall(CALLABLES.userBootstrap)).toBe(true);
+    expect(consentExemptCall(CALLABLES.consentAccept)).toBe(true);
+    expect(consentExemptCall(CALLABLES.userBlock)).toBe(true);
+    expect(consentExemptCall(CALLABLES.permissionSet, { granted: false })).toBe(true);
+    expect(consentExemptCall(CALLABLES.permissionSet, { granted: true })).toBe(false);
+    expect(consentExemptCall(CALLABLES.invisibleSet, { invisible: true })).toBe(true);
+    expect(consentExemptCall(CALLABLES.invisibleSet, { invisible: false })).toBe(false);
+    for (const n of [CALLABLES.shareStart, CALLABLES.linkShareCreate, CALLABLES.pingSend, CALLABLES.permissionRequestSend]) {
+      expect(consentExemptCall(n)).toBe(false);
+    }
+  });
+
+  it('ret soğuması kayıtlarının TTL politikası var', () => {
+    const idx = JSON.parse(readFileSync(new URL('../../firestore.indexes.json', import.meta.url), 'utf8')) as {
+      fieldOverrides: { collectionGroup: string; fieldPath: string; ttl: boolean }[];
+    };
+    expect(idx.fieldOverrides.some((f) => f.ttl && f.collectionGroup === 'permission_declines' && f.fieldPath === 'purge_at')).toBe(true);
+  });
+});

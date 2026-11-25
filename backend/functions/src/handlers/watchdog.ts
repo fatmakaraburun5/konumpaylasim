@@ -17,14 +17,17 @@
  * [Varsayım] Push'un cihazı gerçekten uyandırıp uyandırmadığı platforma bağlıdır (bkz. push.ts `buildResumeTrackingPush`):
  * zorla durdurulmuş (Android) ya da kaydırılarak kapatılmış (iOS) uygulamaya hiçbir push ulaşmaz; görünür bildirim bu
  * durumda kullanıcının tek yoludur. Bu modül firebase-functions tetikleyicisine bağlı değildir (testler doğrudan çağırır).
+ *
+ * Faz 8: görünmez gönderene hiçbir dürtme (`resume_tracking` / `tracking_stalled`) gitmez; görünmez olmak paylaşımları
+ * zaten bitirir, bu yalnızca yarış / eski veri savunmasıdır.
  */
-import { DEFAULT_RECEIVER_HB_MS, type EpochMs, LONG_SHARE_MIN_MS, PACKET_LIMITS, livePath } from '@konum/core';
+import { DEFAULT_RECEIVER_HB_MS, type EpochMs, LONG_SHARE_MIN_MS, PACKET_LIMITS, consentRequired, isInvisible, livePath } from '@konum/core';
 import type { DocumentSnapshot, Query, QueryDocumentSnapshot } from 'firebase-admin/firestore';
 import * as logger from 'firebase-functions/logger';
 import { trailPath } from '../acl';
 import { db, rtdb } from '../admin';
 import { LIMITS } from '../config';
-import { COL, type ShareDoc, type StallNudges } from '../docs';
+import { COL, type ShareDoc, type StallNudges, type UserDoc, refs } from '../docs';
 import { type PushSender, buildResumeTrackingPush, buildTrackingStalledPush, sendPushToUser } from '../push';
 import { chunk } from '../util';
 
@@ -194,6 +197,15 @@ export async function sweepStalls(opts: StallSweepOptions = {}): Promise<StallSw
         }
       }),
     );
+  }
+
+  // --- Faz 8: görünmez ya da güncel onayı olmayan gönderenler atlanır (onaysız cihaz uyandırılıp konum yayınlatılmaz) ---
+  for (const part of chunk([...perSender.keys()], 100)) {
+    const snaps = await db().getAll(...part.map((uid) => refs.user(uid)));
+    snaps.forEach((s, i) => {
+      const u = s.data() as UserDoc | undefined;
+      if (isInvisible(u) || consentRequired(u?.consent)) perSender.delete(part[i] as string);
+    });
   }
 
   // --- push (en iyi çaba; kayıt önce yazıldığı için hata tekrar yağmuru yaratmaz) ---

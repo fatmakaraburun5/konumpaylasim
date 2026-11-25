@@ -27,14 +27,14 @@ export function Faz4Section({ snap, renderRow }: Faz4Props) {
     {
       key: 'f4-ping-here',
       title: "Ayşe 'Buradayım' göndersin",
-      hint: 'Konumlu sinyal: üstte kart, Ayşe\'nin pininde nabız halkası.',
-      run: () => (demoControls.aysePingHere() ? 'Ayşe "📍 Buradayım" gönderdi.' : 'Ayşe ile arkadaş değilsin.'),
+      hint: 'Konumlu sinyal: üstte kart, Ayşe\'nin pininde nabız halkası. Önce Ayşe\'ye ping izni ver (Kişi izinleri).',
+      run: () => (demoControls.aysePingHere() ? 'Ayşe "📍 Buradayım" gönderdi.' : 'Gönderilemedi: Ayşe\'ye ping izni vermedin.'),
     },
     {
       key: 'f4-ping-onway',
       title: "Mehmet 'Yoldayım' (12 dk)",
-      hint: 'Yaklaşık varış süresiyle; ekran kilitliyken bildirim olarak gelir.',
-      run: () => (demoControls.mehmetPingOnWay(12) ? 'Mehmet "🚶 Yoldayım · ~12 dk" gönderdi.' : 'Mehmet ile arkadaş değilsin.'),
+      hint: 'Yaklaşık varış süresiyle; ekran kilitliyken bildirim olarak gelir. Önce Mehmet\'e ping izni ver.',
+      run: () => (demoControls.mehmetPingOnWay(12) ? 'Mehmet "🚶 Yoldayım · ~12 dk" gönderdi.' : 'Gönderilemedi: Mehmet\'e ping izni vermedin.'),
     },
     {
       key: 'f4-ayse-note',

@@ -24,6 +24,7 @@ import {
   opId,
   randomPhone,
   signInWithPhone,
+  acceptConsent,
 } from '../helpers/emulator';
 import { befriend, outcome, start } from './helpers';
 
@@ -141,6 +142,7 @@ describe('avatar_url izleme pikseli', () => {
     expect((await callError('user_bootstrap', { display_name: 'Saldırgan', gender: 'male', avatar_url: other }, auth)).status).toBe('INVALID_ARGUMENT');
     const own = `https://firebasestorage.googleapis.com/v0/b/demo-konum.firebasestorage.app/o/avatars%2F${auth.uid}%2F1732500000000.jpg?alt=media`;
     await call('user_bootstrap', { display_name: 'Saldırgan', gender: 'male', avatar_url: own }, auth);
+    await acceptConsent(auth);
     await call('friend_request_send', { op_id: opId(), via: 'phone', phone_e164: victim.phone }, auth);
     const fs = await clientFirestore(victim.uid);
     const snap = await fs.doc(`friendships/${friendshipId(auth.uid, victim.uid)}`).get();

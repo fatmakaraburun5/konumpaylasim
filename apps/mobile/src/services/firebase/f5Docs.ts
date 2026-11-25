@@ -27,7 +27,8 @@ export function meetupFromDoc(id: string, data: unknown): Meetup | null {
   return parseMeetup(raw);
 }
 
-const SUPPRESSED = new Set(['cooldown', 'stale', 'outside_window', 'disabled', 'daily_limit']);
+// Faz 8: `invisible` = olay anında görünmezdim (bildirim gitmedi).
+const SUPPRESSED = new Set(['cooldown', 'stale', 'outside_window', 'disabled', 'daily_limit', 'invisible']);
 
 export function zoneEventFromDoc(data: unknown): ZoneEventLog | null {
   if (!data || typeof data !== 'object') return null;

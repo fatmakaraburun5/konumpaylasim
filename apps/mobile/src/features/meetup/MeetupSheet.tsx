@@ -10,8 +10,11 @@
  *       (varsayılan: yayılım ≤ 2 km → Yürüyüş, değilse Araç); haritada bırakılan nokta varsa "Sen" için
  *       "Konumum / Seçilen nokta" (seçili hedef → `positionOverrides.me`); değişince "Önerileri güncelle"
  *   Paylaş adımı: alıcılar (varsayılan katılımcılar, en çok 4), isteğe bağlı saat, not → `meetupStore.share`.
+ * Faz 8: davet yalnızca bana `meetup_invite` izni verenlere gider; izni olmayan alıcı çipi pasiftir ("izin yok") ve
+ * varsayılan alıcılara eklenmez.
  */
 import {
+  ACCESS_TEXT,
   MEETUP_CATEGORIES,
   MEETUP_CATEGORY_EMOJI,
   MEETUP_CATEGORY_TEXT,
@@ -32,6 +35,8 @@ import { useFriends } from '../../state/friendsStore';
 import { meetupStore, useMeetupStore } from '../../state/meetupStore';
 import { Avatar, Button, Chip, MIN_TOUCH, SheetHeader, Text, useTheme } from '../../ui';
 import { TRAVEL_MODE_CHIP } from '../map/EtaCard';
+import { permittedIds, pickerRowAccess } from '../access/accessModel';
+import { canNow, useCanFn } from '../access/useAccess';
 import { defaultMeetupMode, MEETUP_FALLBACK_TEXT, meetAtOptions, participantPoints, suggestionRows, toggleMeetupFriend } from './meetupModel';
 
 export interface MeetupSheetRequest {
@@ -65,6 +70,7 @@ export function MeetupSheet({ friendPositions, myPosition, names, onOpenChange, 
   const insets = useSafeAreaInsets();
   const sheet = useRef<BottomSheetModal>(null);
   const friends = useFriends();
+  const can = useCanFn();
   const status = useMeetupStore((s) => s.status);
   const result = useMeetupStore((s) => s.result);
   const selectedIndex = useMeetupStore((s) => s.selectedIndex);
@@ -116,7 +122,7 @@ export function MeetupSheet({ friendPositions, myPosition, names, onOpenChange, 
         setPickedPoint(picked);
         setUsePicked(picked !== null);
         setLocalError(null);
-        setShareTo(ids);
+        setShareTo(permittedIds('meetup_invite', ids, canNow()));
         setMeetAtId('none');
         setNote('');
         setShareError(null);
@@ -143,7 +149,12 @@ export function MeetupSheet({ friendPositions, myPosition, names, onOpenChange, 
     if (r.next.length === friendIds.length) return;
     setFriendIds(r.next);
     setModes((prev) => defaultsFor(r.next, override, prev));
-    setShareTo((prev) => (r.next.includes(uid) ? [...new Set([...prev, uid])] : prev.filter((u) => u !== uid)).slice(0, MEETUP_LIMITS.maxShareRecipients));
+    setShareTo((prev) =>
+      (r.next.includes(uid) ? [...new Set([...prev, ...permittedIds('meetup_invite', [uid], canNow())])] : prev.filter((u) => u !== uid)).slice(
+        0,
+        MEETUP_LIMITS.maxShareRecipients,
+      ),
+    );
     setDirty(true);
   };
   const setMode = (key: string, m: TravelMode) => {
@@ -349,10 +360,26 @@ export function MeetupSheet({ friendPositions, myPosition, names, onOpenChange, 
           <>
             <Section title={`Kime gönderilsin${shareTo.length > 0 ? ` (${shareTo.length})` : ''}`}>
               <View style={[styles.wrap, { gap: spacing.xs }]}>
-                {friends.map((f) => (
-                  <Chip key={f.uid} label={f.displayName} selected={shareTo.includes(f.uid)} onPress={() => toggleShareTo(f.uid)} />
-                ))}
+                {friends.map((f) => {
+                  const a = pickerRowAccess('meetup_invite', f.uid, can);
+                  const on = shareTo.includes(f.uid);
+                  return (
+                    <Chip
+                      key={f.uid}
+                      label={a ? `${f.displayName} · ${a.tag}` : f.displayName}
+                      selected={on}
+                      disabled={!!a && !on}
+                      accessibilityHint={a?.disabledReason ?? undefined}
+                      onPress={() => toggleShareTo(f.uid)}
+                    />
+                  );
+                })}
               </View>
+              {friends.some((f) => pickerRowAccess('meetup_invite', f.uid, can)) ? (
+                <Text variant="caption" color="textSecondary">
+                  {`"${ACCESS_TEXT.noGrantBadge}" olanlar sana buluşma daveti izni vermedi. Kişi izinlerinden isteyebilirsin.`}
+                </Text>
+              ) : null}
             </Section>
             <Section title="Buluşma saati (isteğe bağlı)">
               <View style={[styles.wrap, { gap: spacing.xs }]} accessibilityRole="radiogroup" accessibilityLabel="Buluşma saati">

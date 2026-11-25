@@ -39,6 +39,7 @@ import {
   saveZoneReports,
   type PersistedZone,
 } from '../../state/persist';
+import { hydratePublishHold, isPublishHeld } from '../../state/publishHold';
 import { sharingStore } from '../../state/sharingStore';
 import { zonesStore, type ZoneMonitoring } from '../../state/zonesStore';
 import { zoneEventReport } from '../firebase/callables';
@@ -144,6 +145,9 @@ export function createZoneMonitor(platform: ZonePlatform): ZoneMonitorApi {
     loadReports: loadZoneReports,
     saveReports: saveZoneReports,
     report: async (req) => {
+      // Faz 8: görünmezken / onaysız bölge olayı sunucuya gitmez (yeniden denenmez, kuyruktan düşer).
+      await hydratePublishHold();
+      if (isPublishHeld()) throw new KonumError('invisible_mode');
       if (!(await platform.ensureAuth())) throw new KonumError('unavailable');
       return zoneEventReport(req);
     },

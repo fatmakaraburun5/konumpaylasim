@@ -14,6 +14,8 @@ export const CHANNELS = {
   sos: 'sos',
   /** Faz 4: "Buradayım / Yoldayım" (core `NOTIFICATION_CHANNELS_F4.ping`). */
   ping: 'ping',
+  /** Faz 8: arkadaşlık ve izin istekleri / izin verildi (backend FCM `channel_id: friend_requests`). */
+  friendRequests: 'friend_requests',
 } as const;
 
 export const expiryNotificationId = (sessionId: string) => `share-expiring-${sessionId}`;

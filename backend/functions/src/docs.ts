@@ -42,6 +42,13 @@
  *    (`favorites_set` yazar; arkadaşlık bitince / hesap silinince sunucu temizler). Belge yalnızca sahibine açık.
  *  - yalnızca sunucu: `widget_tokens/{sha256Hex(token)}` (widget hızlı paylaşım token'ı; düz token YOK; `purge_at` TTL)
  *  - Storage `avatars/{uid}/{version}.jpg` + `{version}_160.jpg` (storage.rules: yalnızca sahibi yazar / siler)
+ *
+ * Faz 8 (yalnızca callable yazar):
+ *  - `permission_grants/{granter}_{grantee}` yönlü izinler (core `PermissionGrantDoc`; iki taraf okur). Belgedeki
+ *    `declined_at` istemciye HER ZAMAN boş yazılır: ret anları isteyene (grantee) sızmasın diye sunucuya özel
+ *    `permission_declines/{granter}_{grantee}` belgesinde tutulur (yalnızca granter okur, `purge_at` TTL).
+ *  - `users/{uid}.invisible` / `users/{uid}.consent` (core `InvisibleState` / `ProfileConsent`; sahibi okur)
+ *  - `users/{uid}/consents/{version}` onay kaydı (core `ConsentRecord`; yalnızca sahibi okur)
  */
 import {
   type EpochMs,
@@ -66,8 +73,10 @@ import {
   blockId,
   isGender,
   friendshipId,
+  grantId,
   requestId,
   shareId,
+  type AccessScope,
 } from '@konum/core';
 import { Timestamp } from 'firebase-admin/firestore';
 import { db } from './admin';
@@ -135,6 +144,11 @@ export interface UserDoc extends UserProfile {
   deleting?: boolean;
   /** Faz 4: acil durum kişileri (en çok 5, sıralı; yalnızca `emergency_contacts_set` yazar). */
   emergency_contacts?: UserId[];
+  /**
+   * Faz 8: görünmez moddan son çıkış anı (`invisible_set(false)` ya da SOS). Bu andan önce olmuş bölge olayı
+   * `suppressed:'invisible'` olur (görünmezken çevrimdışı kalan ikinci cihazın geç raporu).
+   */
+  visible_since?: EpochMs | null;
 }
 
 /**
@@ -428,6 +442,10 @@ export const COL = {
   meetupCache: 'meetup_cache',
   // Faz 6
   widgetTokens: PATHS.widgetTokens,
+  // Faz 8
+  permissionGrants: PATHS.permissionGrants,
+  permissionDeclines: PATHS.permissionDeclines,
+  consents: 'consents',
 } as const;
 
 /** Faz 4 RTDB yolları. */
@@ -486,7 +504,25 @@ export const refs = {
   meetupCache: (key: string) => db().doc(PATHS.meetupCache(key)),
   // Faz 6
   widgetToken: (tokenHash: string) => db().doc(PATHS.widgetToken(tokenHash)),
+  // Faz 8
+  grant: (granter: UserId, grantee: UserId) => db().doc(PATHS.permissionGrant(granter, grantee)),
+  permissionDecline: (granter: UserId, grantee: UserId) => db().collection(COL.permissionDeclines).doc(grantId(granter, grantee)),
+  consents: (uid: UserId) => db().collection(PATHS.consents(uid)),
+  consent: (uid: UserId, version: string) => db().doc(PATHS.consent(uid, version)),
 } as const;
+
+/**
+ * Faz 8 `permission_declines/{granter}_{grantee}` (yalnızca sunucu yazar, yalnızca granter okur): kapsam başına son
+ * ret anı. İzin belgesi grantee'ye açık olduğu için ret burada tutulur; tekrar isteme soğuması
+ * (`planPermissionRequest`) ve granter'ın kartında reddedilen kapsamların gizlenmesi (`liveRequestScopes`) buradan.
+ */
+export interface PermissionDeclineDoc {
+  granter_id: UserId;
+  grantee_id: UserId;
+  declined_at: Partial<Record<AccessScope, EpochMs>>;
+  updated_at: EpochMs;
+  purge_at: Timestamp;
+}
 
 /** Biten belgeler için TTL anı. [Varsayım] 7 gün. */
 export const purgeAt = (now: EpochMs): Timestamp => Timestamp.fromMillis(now + LIMITS.endedDocTtlMs);

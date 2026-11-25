@@ -13,12 +13,16 @@
  *   devices/{user_id}/tokens/{token_id}   FCM token'ları (sahibi yazar)
  *   link_shares/{link_id}                 Faz 2: bağlantı (QR) paylaşımı (yalnızca gönderen okur)
  *   widget_tokens/{sha256(token)}         Faz 6: widget hızlı paylaşım token'ı (yalnızca sunucu)
+ *   permission_grants/{granter}_{grantee} Faz 8: yönlü izinler (iki taraf okur), bkz. `access.ts`
+ *   users/{user_id}/consents/{version}    Faz 8: onay kayıtları (yalnızca sahibi okur), bkz. `consent.ts`
  *
  * Canlı konum Realtime Database'dedir, bkz. `packet.ts`, `link.ts` ve `contracts.ts`.
  */
 import type { EpochMs } from './time';
 import type { ShareMode } from './duration';
 import type { Gender } from './profile';
+import type { InvisibleState } from './invisible';
+import type { ProfileConsent } from './consent';
 
 export type UserId = string;
 export type ShareId = string;
@@ -43,6 +47,11 @@ export interface UserProfile {
   avatar_version: number | null;
   /** Sıralı favoriler (en çok `FAVORITES_LIMIT`); ilk = tek tuşla paylaşım hedefi. Yalnızca sahibi okur. */
   favorite_ids: UserId[];
+  // --- Faz 8 (isteğe bağlı: eski belgeler alan taşımaz) ---
+  /** Görünmez mod durumu; yoksa / null ise görünür (`isInvisible`). Yalnızca callable (`invisible_set`) yazar. */
+  invisible?: InvisibleState | null;
+  /** Onaylanan sözleşme sürümü; yoksa / eski sürümse onay kapısı açılır (`consentRequired`). */
+  consent?: ProfileConsent | null;
 }
 
 /**
@@ -87,8 +96,9 @@ export type ShareEndReason =
 export type ShareAudience = 'friend' | 'link';
 
 /**
- * Yönlü konum paylaşımı: sender → receiver. Arkadaşlık paylaşım DEMEK DEĞİLDİR;
- * paylaşım ise kabul edilmiş, engelsiz bir arkadaşlık GEREKTİRİR.
+ * Yönlü konum paylaşımı: sender → receiver. Arkadaşlık paylaşım DEMEK DEĞİLDİR, izin de değildir.
+ * Faz 8: paylaşım kabul edilmiş, engelsiz bir arkadaşlık + sender'ın receiver'a verdiği `location_view` izni +
+ * sender görünür + sender'ın güncel onayı GEREKTİRİR (`canShareLocation`, access.ts).
  */
 export interface LocationShare {
   share_id: ShareId;
@@ -120,7 +130,7 @@ export interface LocationRequest {
   created_at: EpochMs;
   expires_at: EpochMs;
   responded_at: EpochMs | null;
-  /** Kabulde oluşan paylaşım (target → requester). */
+  /** Kabulde oluşan paylaşım (target → requester). Faz 8: kabul target→requester `location_view` iznini de yazar; ters yön yazılmaz. */
   share_id: ShareId | null;
 }
 

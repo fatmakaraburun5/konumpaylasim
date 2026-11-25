@@ -202,9 +202,31 @@ export const demoControls = {
   setMyFavorites(ids: readonly string[]): string[] {
     return demoServer().setFavoritesOf(DEMO_ME, ids);
   },
-  /** Favorilerimi demo başlangıcına döndürür (Ayşe, Mehmet, Zeynep). */
+  /** Favorilerimi demo başlangıcına döndürür (Ayşe, Mehmet, Zeynep; Faz 8: yalnızca konum izni verdiklerim kalır). */
   restoreMyFavorites(): string[] {
     return demoServer().setFavoritesOf(DEMO_ME, DEMO_ME_FAVORITES);
+  },
+
+  // --- Faz 8 ---------------------------------------------------------------------------------------
+  /** "Can konumunu görmek istiyor": bana `location_view` isteği (push + "İzin istekleri" kartı). Dönen: gönderildi mi. */
+  canRequestsMyLocation(): boolean {
+    return demoServer().canRequestsMyLocation();
+  },
+  /** "Ayşe iznini geri alsın": konum izni kalkar, paylaşımı biter; tekrar basınca yeniden verir ve paylaşır. */
+  ayseRevokes(): 'revoked' | 'granted' | null {
+    return demoServer().ayseRevokes();
+  },
+  /** "Mehmet sana ping izni versin" (bana `permission_granted` push'u). Dönen: yeni izin verildi mi. */
+  mehmetGrantsPing(): boolean {
+    return demoServer().mehmetGrantsPing();
+  },
+  /** "Sözleşme güncellendi (yeniden onay)": onayım eski sürüme çekilir → kapı "Metin güncellendi" ile açılır. */
+  bumpConsent(): void {
+    demoServer().bumpConsent();
+  },
+  /** Onayımı tamamen siler (ilk açılış kapısı). */
+  resetConsent(): void {
+    demoServer().resetConsent();
   },
 
   /** Demoyu baştan başlatır: sunucu + uygulamanın kalıcı anahtarları silinir, sayfa yeniden yüklenir. */

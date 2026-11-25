@@ -7,6 +7,8 @@
  *  - Metin ve emoji core `sanitizeNoteText` ile temizlenir; boş metin → `invalid_argument` (`field: text`).
  *  - `visible_to`: tekilleştirilir, kişinin kendisi atılır, kabul edilmemiş ya da engelli arkadaşlar SESSİZCE atılır
  *    (kimin arkadaş olduğu yanıttan öğrenilmez; yanıt yalnızca kabul edilen listeyi taşır). Boş = yalnızca sahibi.
+ *    Faz 8 (core `noteAudienceAllowed`): yalnızca sahibin `location_view` izni verdiği arkadaşlar kalır; izin geri
+ *    alınınca kişi sahibin notlarının kitlesinden çıkar (`permission_set`).
  *  - Yeni not: sahibin aktif not sayısı ≥ `NOTE_LIMITS.maxActivePlaceNotes` → `note_limit_reached`.
  *  - Düzenleme: not yoksa, süresi geçtiyse ya da sahibi değilse `note_not_found`; `created_at` korunur, süre
  *    `now + duration_ms` olarak yeniden başlar.
@@ -23,6 +25,7 @@ import {
   type EpochMs,
   type UserId,
   isNoteActive,
+  noteAudienceAllowed,
   sanitizeNoteText,
 } from '@konum/core';
 import { FieldValue, Timestamp } from 'firebase-admin/firestore';
@@ -32,7 +35,7 @@ import type { CallCtx } from '../callable';
 import { LIMITS } from '../config';
 import { COL, type PlaceNoteDoc, refs, toPlaceNote } from '../docs';
 import { fail } from '../errors';
-import { canShare, readCaller, readPairStates } from '../graph';
+import { callerAccess, isFriend, pairInput, readCaller, readPairStates } from '../graph';
 import { runOp } from '../ops';
 import { assertDocId, chunk, isServerUid, unique } from '../util';
 
@@ -46,7 +49,7 @@ export async function placeNoteUpsert(ctx: CallCtx, data: z.output<typeof PlaceN
   const newId = data.note_id ?? refs.newPlaceNote().id;
 
   return runOp(ctx, data.op_id, CALLABLES.placeNoteUpsert, data, async (tx) => {
-    await readCaller(tx, ctx.uid);
+    const me = await readCaller(tx, ctx.uid);
     const ref = refs.placeNote(newId);
     let existing: PlaceNoteDoc | null = null;
     if (data.note_id !== null) {
@@ -61,9 +64,10 @@ export async function placeNoteUpsert(ctx: CallCtx, data: z.output<typeof PlaceN
       if (active >= NOTE_LIMITS.maxActivePlaceNotes) throw fail('note_limit_reached');
     }
     const pairs = await readPairStates(tx, ctx.uid, audience);
+    const access = callerAccess(me);
     const visible_to = audience.filter((_, i) => {
       const p = pairs[i];
-      return p !== undefined && canShare(p);
+      return isFriend(p) && noteAudienceAllowed(pairInput(p, access));
     });
 
     const expires_at = ctx.now + data.duration_ms;

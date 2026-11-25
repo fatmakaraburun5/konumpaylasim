@@ -22,6 +22,10 @@
  * `meetup_share`: alıcılar kabul edilmiş + engelsiz arkadaşlar (diğerleri sessizce düşer; hiç kalmazsa
  *  `not_friends`); `etas` içindeki 'me' anahtarı çağıranın uid'ine çevrilir; yer adı / adres / not temizlenir;
  *  `expires_at = now + shareTtlMs`. Belge `meetups/{id}` (gönderen + alıcılar okur). Her alıcıya `meetup` push.
+ *  Faz 8 (core `canInvite` / `meetupEtaAllowed`): alıcı yalnızca bana `meetup_invite` izni vermiş arkadaş olabilir
+ *  (arkadaş var ama izinli yoksa `not_permitted`). ETA'lar konumdan türetilir: benim ETA'm yalnızca TÜM alıcılara
+ *  `location_view` iznim varsa ve görünür isem kalır; başka bir katılımcının (Z) ETA'sı yalnızca Z alıcıysa, görünürse
+ *  ve Z bana ve diğer TÜM alıcılara `location_view` vermişse kalır; diğerleri sessizce çıkarılır.
  * `meetup_respond`: yalnızca `to` içindeki ve önerenle hâlâ arkadaş olan kullanıcı; belge yok / aktif değil / üye
  *  değil → hepsi AYNI `meetup_not_found`. `responses.{uid}`; değiştiyse önerene `meetup_response` push.
  * `meetup_cancel`: yalnızca öneren; `status: cancelled` (idempotent). Alıcılara push YOK [Varsayım]: kart dinleyiciyle
@@ -52,8 +56,10 @@ import {
   type MeetupSuggestion,
   type TravelMode,
   type UserId,
+  canInvite,
   fallbackEta,
   geohashEncode,
+  meetupEtaAllowed,
   isMeetupActive,
   meetupCacheKey,
   meetupCenter,
@@ -77,7 +83,7 @@ import type { CallCtx } from '../callable';
 import { LIMITS, MAPS } from '../config';
 import { COL, type MeetupCacheDoc, type MeetupDoc, type UserDoc, refs, toMeetup } from '../docs';
 import { fail } from '../errors';
-import { canShare, readCaller, readPairStates } from '../graph';
+import { assertConsent, callerAccess, isFriend, pairInput, readCaller, readPairStates } from '../graph';
 import { readRateLimit, runOp, writeRateLimit } from '../ops';
 import { type PushMessage, type PushSender, buildMeetupPush, buildMeetupResponsePush, sendPushToUser } from '../push';
 import { assertDocId, chunk, isServerUid, sha256Hex, unique } from '../util';
@@ -266,11 +272,16 @@ export async function meetupShare(ctx: CallCtx, data: z.output<typeof MeetupShar
     const me = await readCaller(tx, ctx.uid);
     const rate = await readRateLimit(tx, ctx.uid, 'meetup_share', LIMITS.meetupSharePerHour, HOUR, now);
     const pairs = await readPairStates(tx, ctx.uid, candidates);
-    const to = candidates.filter((_, i) => {
-      const p = pairs[i];
-      return p !== undefined && canShare(p);
-    });
-    if (to.length === 0) throw fail('not_friends');
+    const access = callerAccess(me);
+    const pairOf = new Map(candidates.map((u, i) => [u, pairs[i]] as const));
+    const to = candidates.filter((u) => canInvite(pairInput(pairOf.get(u), access)));
+    if (to.length === 0) throw fail(candidates.some((u) => isFriend(pairOf.get(u))) ? 'not_permitted' : 'not_friends');
+
+    // ETA süzgeci (konumdan türetilen bilgi yalnızca izin verilen kişilere): yalnızca ÖNERENİN ETA'sı, o da yalnızca
+    // tüm alıcılara `location_view` izni varsa ve görünürse kalır. Başka katılımcının (Z) ETA'sı HİÇ saklanmaz: Z'nin
+    // görünmezliğine / izinlerine bağlı bir süzgecin sonucu önerene "Z görünmez" bilgisini sızdırırdı (§1.7).
+    const myEtaOk = to.every((y) => meetupEtaAllowed(pairInput(pairOf.get(y), access)));
+    const keptEtas = etas.filter((e) => e.key === ctx.uid && myEtaOk);
 
     const expires_at = now + MEETUP_LIMITS.shareTtlMs;
     const doc: MeetupDoc = {
@@ -286,7 +297,7 @@ export async function meetupShare(ctx: CallCtx, data: z.output<typeof MeetupShar
         primary_type: data.place.primary_type ?? null,
         category: data.place.category,
       },
-      etas,
+      etas: keptEtas,
       meet_at: data.meet_at ?? null,
       note,
       responses: {},
@@ -321,8 +332,9 @@ export async function meetupRespond(ctx: CallCtx, data: z.output<typeof MeetupRe
     const [snap, meSnap] = await tx.getAll(ref, refs.user(ctx.uid));
     const d = snap?.data() as MeetupDoc | undefined;
     if (!d || !(d.to ?? []).includes(ctx.uid) || !isMeetupActive(d, now)) throw notFound();
+    assertConsent(meSnap?.data() as UserDoc | undefined);
     const [pair] = await readPairStates(tx, ctx.uid, [d.from]);
-    if (!pair || !canShare(pair)) throw notFound();
+    if (!isFriend(pair)) throw notFound();
     if (d.responses?.[ctx.uid] === data.response) return { response: { meetup: toMeetup(d), server_now: now } };
     const rate = await readRateLimit(tx, ctx.uid, 'meetup_respond', LIMITS.meetupRespondPerHour, HOUR, now);
     tx.update(ref, { [`responses.${ctx.uid}`]: data.response, updated_at: now });

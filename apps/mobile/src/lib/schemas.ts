@@ -7,12 +7,18 @@
  * gelirse de epoch ms'e çevrilir; bozuk belge sessizce atlanır.
  */
 import {
+  AccessScopeSchema,
   FAVORITES_LIMIT,
   GenderSchema,
+  INVISIBLE_SNAPSHOT_MAX,
   ProfileFieldsF6Schema,
+  RequestableScopeSchema,
   SHARE_MODES,
   type Friendship,
+  type InvisibleSnapshotEntry,
+  type InvisibleState,
   type OutgoingShareView,
+  type ProfileConsent,
   type ShareEndReason,
   type ShareMode,
   type UserProfile,
@@ -91,6 +97,38 @@ const favoriteIds = z.preprocess((v) => {
   return out.slice(0, FAVORITES_LIMIT);
 }, z.array(z.string()));
 
+// --- Faz 8: görünmez mod ve onay özeti (eski belgede yok → null; bozuk alan → null) ---
+
+const SnapshotEntrySchema = z.object({
+  receiver_id: uid,
+  share_mode: shareMode,
+  expires_at: epochMsOrNull,
+  started_at: epochMs,
+});
+
+/** Anlık görüntü: bozuk kayıtlar tek tek atılır (geri yükleme listesi bütünüyle kaybolmasın). */
+const snapshotEntries = z.preprocess((v) => {
+  if (!Array.isArray(v)) return [];
+  const out: InvisibleSnapshotEntry[] = [];
+  for (const x of v) {
+    const r = SnapshotEntrySchema.safeParse(x);
+    if (r.success) out.push(r.data);
+  }
+  return out.slice(0, INVISIBLE_SNAPSHOT_MAX);
+}, z.array(SnapshotEntrySchema));
+
+export const InvisibleStateSchema: z.ZodType<InvisibleState> = z.object({
+  on: z.boolean(),
+  since: epochMsOrNull,
+  snapshot: snapshotEntries,
+  links_ended: z.number().int().nonnegative().default(0).catch(0),
+});
+
+export const ProfileConsentSchema: z.ZodType<ProfileConsent> = z.object({
+  version: z.string().min(1).max(32),
+  accepted_at: epochMs,
+});
+
 export const UserProfileSchema: z.ZodType<UserProfile> = z.object({
   user_id: uid,
   display_name: z.string().default(''),
@@ -103,6 +141,9 @@ export const UserProfileSchema: z.ZodType<UserProfile> = z.object({
   avatar_thumb_url: urlOrNull,
   avatar_version: z.number().int().positive().nullable().default(null).catch(null),
   favorite_ids: favoriteIds,
+  // --- Faz 8 (eski belgede yoksa null: görünür, onay kapısı açılır) ---
+  invisible: InvisibleStateSchema.nullable().default(null).catch(null),
+  consent: ProfileConsentSchema.nullable().default(null).catch(null),
 });
 
 const PublicProfileSchema = z.object({
@@ -141,6 +182,8 @@ export const ShareStartResponseSchema = z.object({
   session_id: z.string().min(1),
   shares: sharesArray,
   skipped_receiver_ids: z.array(z.string()).default([]),
+  /** Faz 8: `location_view` iznim olmadığı için atlanan alıcılar. */
+  needs_grant_receiver_ids: z.array(z.string()).default([]),
   server_now: z.number(),
 });
 
@@ -165,6 +208,52 @@ export const FriendRequestSendResponseSchema = z.object({ status: z.literal('sen
 
 /** [Varsayım] core'da tanımlı değil: genel "tamam" yanıtı (respond / cancel / remove). */
 export const OkResponseSchema = z.object({ server_now: z.number().optional() }).loose();
+
+// --- Faz 8: izin / görünmez mod / onay yanıtları (core yalnızca TS arayüzü veriyor) ---------------
+
+const requestableScope = RequestableScopeSchema;
+const accessScope = AccessScopeSchema;
+/** Bilinmeyen kapsam (ileri sürüm) sessizce düşer. */
+const scopeList = <T extends z.ZodType<string>>(item: T) =>
+  z.preprocess((v) => (Array.isArray(v) ? v.filter((x) => item.safeParse(x).success) : []), z.array(item));
+
+export const PermissionRequestSendResponseSchema = z.object({
+  status: z.enum(['sent', 'already_granted']),
+  server_now: z.number(),
+});
+
+export const PermissionRequestRespondResponseSchema = z.object({
+  granted_scopes: scopeList(requestableScope),
+  declined_scopes: scopeList(requestableScope),
+  share: z.object({ session_id: z.string().min(1), shares: sharesArray }).nullable().default(null),
+  share_skipped: z.enum(['invisible', 'no_location_view']).nullable().default(null).catch(null),
+  server_now: z.number(),
+});
+
+export const PermissionSetResponseSchema = z.object({
+  grantee_id: uid,
+  scopes: scopeList(accessScope),
+  server_now: z.number(),
+});
+
+export const InvisibleSetResponseSchema = z.object({
+  invisible: z.boolean(),
+  restored_receiver_ids: z.array(z.string()).default([]),
+  skipped_receiver_ids: z.array(z.string()).default([]),
+  server_now: z.number(),
+});
+
+export const ConsentAcceptResponseSchema = z.object({
+  consent: ProfileConsentSchema,
+  server_now: z.number(),
+});
+
+export const ConsentWithdrawResponseSchema = z.object({
+  consent: z.null().default(null),
+  shares_ended: z.number().int().nonnegative().default(0),
+  links_ended: z.number().int().nonnegative().default(0),
+  server_now: z.number(),
+});
 
 // --- user_bootstrap (core'da sözleşme yok) ----------------------------------------
 

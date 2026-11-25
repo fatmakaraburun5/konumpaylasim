@@ -20,13 +20,16 @@ import {
 import { demoRoute, fakeReverseGeocode } from '../src/demo/server/fakeGoogle';
 import { DemoServer } from '../src/demo/server/server';
 import { AYSE_PATH, DEMO_ME, MY_LOOP } from '../src/demo/server/world';
+import { acceptConsent } from './demoTestUtils';
 
 jest.setTimeout(30_000);
 
 const servers: DemoServer[] = [];
-function server(): DemoServer {
+/** Faz 8: demo hesabım onaysız başlar; sözleşme gerçek callable ile onaylanır. */
+async function server(): Promise<DemoServer> {
   const s = new DemoServer();
   servers.push(s);
+  await acceptConsent(s);
   return s;
 }
 afterEach(() => {
@@ -53,7 +56,7 @@ function livePacket(name = 'Deniz Kaya', expiresAt?: number) {
 
 describe('demo sunucusu: bağlantı (QR) yaşam döngüsü', () => {
   it('create → token yalnızca yanıtta, link_live yazılır, izleyici canlıyı ve durdurmada bitişi görür', async () => {
-    const s = server();
+    const s = await server();
     const created = LinkShareCreateResponseSchema.parse(
       await s.call('link_share_create', { op_id: uuidV4(), duration: { kind: 'preset', preset: 'h1' } }, DEMO_ME),
     );
@@ -90,7 +93,7 @@ describe('demo sunucusu: bağlantı (QR) yaşam döngüsü', () => {
   });
 
   it('yanıtı kaybolan create aynı op_id ile tekrarlanınca aynı bağlantı için token yenilenir', async () => {
-    const s = server();
+    const s = await server();
     const op = uuidV4();
     const a = LinkShareCreateResponseSchema.parse(await s.call('link_share_create', { op_id: op, duration: { kind: 'preset', preset: 'm15' } }, DEMO_ME));
     const b = LinkShareCreateResponseSchema.parse(await s.call('link_share_create', { op_id: op, duration: { kind: 'preset', preset: 'm15' } }, DEMO_ME));
@@ -103,7 +106,7 @@ describe('demo sunucusu: bağlantı (QR) yaşam döngüsü', () => {
   });
 
   it('uzatma Faz 1 kuralıyla, kural ACL ile aynı expires_at ister; başkasının bağlantısı link_not_found', async () => {
-    const s = server();
+    const s = await server();
     const a = LinkShareCreateResponseSchema.parse(await s.call('link_share_create', { op_id: uuidV4(), duration: { kind: 'preset', preset: 'h1' } }, DEMO_ME));
     const ext = LinkShareUpdateResponseSchema.parse(await s.call('link_share_extend', { op_id: uuidV4(), link_id: a.link_id, minutes: 30 }, DEMO_ME));
     expect(ext.expires_at).toBe((a.expires_at as number) + 30 * 60_000);
@@ -118,7 +121,7 @@ describe('demo sunucusu: bağlantı (QR) yaşam döngüsü', () => {
   });
 
   it('sunucudan iptal (demo paneli) izleyiciyi hemen kapatır', async () => {
-    const s = server();
+    const s = await server();
     const a = LinkShareCreateResponseSchema.parse(await s.call('link_share_create', { op_id: uuidV4(), duration: { kind: 'indefinite' } }, DEMO_ME));
     expect(a.expires_at).toBeNull();
     await s.applyFanout({ [`link_live/${a.token_hash}`]: { ...livePacket(), share_mode: 'indefinite' } }, DEMO_ME);
@@ -156,7 +159,7 @@ describe('demo sunucusu: sahte Routes / Geocoding', () => {
   });
 
   it('route_compute: önbellek (5 dk dilimi) isabeti cached:true, kota sayılmaz; Google kapalıyken maps_unavailable', async () => {
-    const s = server();
+    const s = await server();
     const req = { origin: me, destination: ayse, travel_mode: 'DRIVE' as const };
     const first = RouteComputeResponseSchema.parse(await s.call('route_compute', { op_id: uuidV4(), ...req }, DEMO_ME));
     expect(first.cached).toBe(false);
@@ -170,7 +173,7 @@ describe('demo sunucusu: sahte Routes / Geocoding', () => {
   });
 
   it('geocode_reverse: hücre merkezine en yakın cadde, denizde etiket yok, ikinci istek önbellekten', async () => {
-    const s = server();
+    const s = await server();
     const r1 = GeocodeReverseResponseSchema.parse(await s.call('geocode_reverse', ayse, DEMO_ME));
     expect(r1.label).toMatch(/Kadıköy$/);
     expect(r1.cached).toBe(false);

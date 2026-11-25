@@ -9,8 +9,11 @@
  *     yine yoksa `invalid_argument` + "Konumun alınamadı".
  *  3. Pil (deviceStatus) ve adres (geocodeRepo önbelleği / en çok `addressTimeoutMs`, hata yutulur) paralel.
  *  4. `sos_send` ağ hatasında (`unavailable`) AYNI op_id ile 3 sn arayla 5 kez daha denenir (sunucu bir kez uygular).
- *  5. Başarıdan sonra best-effort: acil kişilere zaten canlı paylaşım yoksa 1 saatlik paylaşım başlatılır [Varsayım];
- *     aktifken uygulama öndeyken koordinatör her `updateMinIntervalMs`'de `updateTick()` ile konumu tazeler.
+ *  5. Başarıdan sonra best-effort: sunucu görünmezliği kapattığı için yerel görünmez niyeti HEMEN silinir (profil
+ *     anlık görüntüsü beklenmez); sonra acil kişilere zaten canlı paylaşım yoksa 1 saatlik paylaşım başlatılır
+ *     [Varsayım]. Konum izni (`location_view`) kendiliğinden VERİLMEZ: izni olmayan kişilerle canlı paylaşım başlamaz
+ *     ve bu SOS ekranında söylenir (`liveShareSkipped`; SOS konumunu yine görürler). Aktifken uygulama öndeyken
+ *     koordinatör her `updateMinIntervalMs`'de `updateTick()` ile konumu tazeler.
  * Alıcı: `sos_alerts` (recipient_ids array-contains ben) → `applyReceived`; yeni aktif SOS (benim "Gördüm" demediğim)
  * `focusedSosId`'yi en yeniye ayarlar → tam ekran acil durum kartı.
  */
@@ -39,6 +42,7 @@ import { locationEngine } from '../services/location/ExpoLocationEngine';
 import { readDeviceStatus } from '../services/location/deviceStatus';
 import { geocodeRepo } from '../services/maps/geocodeRepo';
 import { authStore } from './authStore';
+import { invisibleStore } from './invisibleStore';
 import { locationStore } from './locationStore';
 import { permissionsStore } from './permissionsStore';
 import type { Result } from './pingStore';
@@ -58,6 +62,8 @@ export interface SosState {
   outgoing: SosAlert | null;
   phase: 'idle' | 'sending' | 'active' | 'resolving';
   error: string | null;
+  /** SOS'la başlatılan canlı paylaşımın konum izni olmadığı için başlamadığı acil kişiler (SOS'u yine görürler). */
+  liveShareSkipped: UserId[];
   send(opts?: { route?: SosRoute | null }): Promise<Result<{ sos_id: string }>>;
   resolve(): Promise<boolean>;
   /** Alıcısı olduğum, `isSosVisible` olanlar. */
@@ -92,8 +98,10 @@ export interface SosStoreDeps {
   device: () => Promise<DeviceStatus>;
   /** Okunabilir adres; bulunamazsa / zaman aşımında null. */
   address: (loc: SosLocation, timeoutMs: number) => Promise<string | null>;
-  /** Acil kişilere canlı paylaşım (zaten yoksa). Hata yutulur. */
-  autoShare: (contacts: readonly UserId[]) => Promise<void>;
+  /** Acil kişilere canlı paylaşım (zaten yoksa). Hata yutulur. Konum izni olmadığı için atlananlar döner. */
+  autoShare: (contacts: readonly UserId[]) => Promise<void | { needsGrant: readonly UserId[] }>;
+  /** `sos_send` görünmezliği sunucuda kapattı: yerel niyet + profil hemen temizlenir. */
+  onServerVisible: () => Promise<void>;
   sleep: (ms: number) => Promise<void>;
   /** `unavailable` sonrası yeniden deneme aralıkları (aynı op_id). */
   retryDelaysMs: readonly number[];
@@ -154,12 +162,13 @@ const defaultAddress = async (loc: SosLocation, timeoutMs: number): Promise<stri
 };
 
 /** [Varsayım] SOS ile birlikte acil kişilere, zaten paylaşım yoksa, 1 saatlik canlı paylaşım başlatılır. */
-const defaultAutoShare = async (contacts: readonly UserId[]): Promise<void> => {
+const defaultAutoShare = async (contacts: readonly UserId[]): Promise<{ needsGrant: readonly UserId[] }> => {
   const st = sharingStore.getState();
   const live = new Set(selectPublishTargets(st.state).map((t) => t.receiver_id));
   const missing = contacts.filter((c) => !live.has(c));
-  if (missing.length === 0) return;
-  await st.startShare(missing, { kind: 'preset', preset: 'h1' }).catch(() => undefined);
+  if (missing.length === 0) return { needsGrant: [] };
+  const r = await st.startShare(missing, { kind: 'preset', preset: 'h1' }).catch(() => null);
+  return { needsGrant: r?.needsGrantReceiverIds ?? [] };
 };
 
 const noContacts = () => ({ code: 'no_emergency_contacts' as const, message: ERROR_CODES.no_emergency_contacts.message });
@@ -175,6 +184,7 @@ export function createSosStore(overrides: Partial<SosStoreDeps> = {}): StoreApi<
     device: readDeviceStatus,
     address: defaultAddress,
     autoShare: defaultAutoShare,
+    onServerVisible: () => invisibleStore.getState().clearAfterServerVisible(),
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
     retryDelaysMs: RETRY_DELAYS_MS,
     newOpId: uuidV4,
@@ -225,6 +235,7 @@ export function createSosStore(overrides: Partial<SosStoreDeps> = {}): StoreApi<
     contactsSaving: false,
     outgoing: null,
     phase: 'idle',
+    liveShareSkipped: [],
     error: null,
     incoming: {},
     focusedSosId: null,
@@ -274,8 +285,17 @@ export function createSosStore(overrides: Partial<SosStoreDeps> = {}): StoreApi<
             const res = await deps.api.sosSend(req);
             outgoingConfirmedAt = Date.now();
             lastUpdateAt = Date.now();
-            set({ outgoing: res.sos, phase: 'active', error: null });
-            void deps.autoShare(res.sos.recipient_ids.length ? res.sos.recipient_ids : contacts).catch(() => undefined);
+            set({ outgoing: res.sos, phase: 'active', error: null, liveShareSkipped: [] });
+            const recipients = res.sos.recipient_ids.length ? res.sos.recipient_ids : contacts;
+            // Sunucu görünmezliği kapattı: yerel niyet önce silinir (yoksa paylaşım yerelde invisible_mode ile düşer).
+            void deps
+              .onServerVisible()
+              .catch(() => undefined)
+              .then(() => deps.autoShare(recipients))
+              .then((r) => {
+                if (r && r.needsGrant.length) set({ liveShareSkipped: [...r.needsGrant] });
+              })
+              .catch(() => undefined);
             return { ok: true, sos_id: res.sos.sos_id };
           } catch (e) {
             const err = toKonumError(e);
@@ -426,12 +446,21 @@ export function createSosStore(overrides: Partial<SosStoreDeps> = {}): StoreApi<
       outgoingConfirmedAt = 0;
       lastUpdateAt = 0;
       seenIncoming.clear();
-      set({ emergencyContacts: [], contactsLoaded: false, contactsSaving: false, outgoing: null, phase: 'idle', error: null, incoming: {}, focusedSosId: null });
+      set({ emergencyContacts: [], contactsLoaded: false, contactsSaving: false, outgoing: null, phase: 'idle', error: null, liveShareSkipped: [], incoming: {}, focusedSosId: null });
     },
   }));
 }
 
 export const sosStore = createSosStore();
+
+/** Benim süren (aktif) SOS'um var mı? (Görünmez mod metinleri: SOS görünmezlikten etkilenmez.) */
+export function selectOutgoingSosActive(s: Pick<SosState, 'outgoing'>): boolean {
+  return s.outgoing !== null && isSosActive(s.outgoing);
+}
+
+export function useOutgoingSosActive(): boolean {
+  return useStore(sosStore, selectOutgoingSosActive);
+}
 
 export function useSosStore<T>(selector: (s: SosState) => T): T {
   return useStore(sosStore, selector);

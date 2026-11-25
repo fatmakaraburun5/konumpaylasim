@@ -36,6 +36,7 @@ import {
   canExtend,
   encodeLinkToken,
   extendExpiry,
+  isInvisible,
   linkTokenHash,
 } from '@konum/core';
 import { Timestamp, type Transaction } from 'firebase-admin/firestore';
@@ -176,7 +177,8 @@ export async function linkShareCreate(
     data,
     async (tx) => {
       const rate = await readRateLimit(tx, ctx.uid, 'link_create', LIMITS.linkCreatePerHour, HOUR, ctx.now);
-      await readCaller(tx, ctx.uid); // profil yoksa / hesap siliniyorsa yeni bağlantı yok
+      const me = await readCaller(tx, ctx.uid); // profil yoksa / hesap siliniyorsa / onay yoksa yeni bağlantı yok
+      if (isInvisible(me)) throw fail('invisible_mode'); // Faz 8: görünmezken QR bağlantısı da açılmaz
       const mine = await tx.get(db().collection(COL.linkShares).where('sender_id', '==', ctx.uid).where('status', '==', 'active'));
       const active = mine.docs.map((d) => d.data() as LinkShareDoc).filter((l) => isLive(l, ctx.now));
       if (active.length >= LINK_LIMITS.maxActivePerUser) {
@@ -244,6 +246,9 @@ export async function linkShareExtend(
   data: z.output<typeof LinkShareExtendRequestSchema>,
 ): Promise<LinkShareUpdateResponse> {
   return runLinkOp<LinkShareUpdateResponse>(ctx, data.op_id, CALLABLES.linkShareExtend, data, async (tx) => {
+    // Faz 8: görünmezken uzatma yok (§1.4); demo ile aynı sıra (sahiplik denetiminden önce).
+    const me = await readCaller(tx, ctx.uid);
+    if (isInvisible(me)) throw fail('invisible_mode');
     const cur = await readOwnLink(tx, ctx.uid, data.link_id);
     if (cur.status !== 'active') throw fail('share_not_active');
     if (!canExtend(cur, ctx.now)) {

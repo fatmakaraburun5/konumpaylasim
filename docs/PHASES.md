@@ -1,6 +1,6 @@
 # Fazlar ve geçiş noktaları
 
-Her faz bir öncekinin sözleşmelerini (packages/core) **genişletir**, değiştirmez. Yeni alanlar eklenir, mevcut alanların anlamı değişmez.
+Her faz bir öncekinin sözleşmelerini (packages/core) **genişletir**, değiştirmez. Yeni alanlar eklenir, mevcut alanların anlamı değişmez. **İstisna: Faz 8** etkileşim koşullarını bilinçli olarak **daraltır** (arkadaşlık artık hiçbir etkileşim için yeterli değil; yönlü izin, görünmez mod ve onay kapısı gerekir).
 
 | Faz | Kapsam | Durum |
 | --- | --- | --- |
@@ -10,6 +10,7 @@ Her faz bir öncekinin sözleşmelerini (packages/core) **genişletir**, değiş
 | 4 | Tek dokunuşla "Buradayım / Yoldayım" ping'i, konum yanına kısa durum notu ve yer notu, tam konumlu SOS (basılı tut + geri sayım, acil kişiler, yüksek öncelikli push, alıcıda tam ekran acil kartı) | Kod hazır; birim, kural ve emülatör testleri geçti, tarayıcı demosunda uçtan uca çalışıyor; gerçek cihazda bildirim davranışı ve Apple Critical Alerts onayı bekliyor. Ayrıntı: [`PHASE4.md`](PHASE4.md) |
 | 5 | Varış / ayrılış tetikleyicileri (Ev, İş, özel bölgeler; iOS `CLCircularRegion` / Android `GeofencingClient`; "vardığımda bildir", "çıkınca paylaşımı başlat"; GPS sapması filtresi), harita üzerinde "Buluşma noktası" önerisi (orta nokta / adil erişim süresi, Places + Route Matrix, numaralı pinler, paylaşım ve alıcı kartı) | Kod hazır; birim, kural ve emülatör testleri geçti, tarayıcı demosunda uçtan uca çalışıyor; gerçek cihazda bölge algılama ve gerçek Places / Routes anahtarı bekliyor. Ayrıntı: [`PHASE5.md`](PHASE5.md) |
 | 6 | Ana ekran ve kilit ekranı widget'ları (iOS WidgetKit, Android AppWidget + Hızlı Ayar kutucuğu), favoriye tek dokunuşla 1 saatlik paylaşım (widget token'ı, arka plan tetiği, geri sayım + bildirim), kamera / galeriden profil fotoğrafı (kırpma, sıkıştırma, önbellek), kayıtta zorunlu cinsiyet ve cinsiyet renkli çerçeve (liste, widget, harita pini, baş harf yedeği) | Kod hazır; birim, kural (Firestore + Storage) ve emülatör testleri geçti, tarayıcı demosunda uçtan uca çalışıyor; Swift / Kotlin widget kodu derlenmedi, gerçek cihazda widget ve kilit ekranı davranışı bekliyor. Ayrıntı: [`PHASE6.md`](PHASE6.md), yayın listesi: [`RELEASE_CHECKLIST.md`](RELEASE_CHECKLIST.md) |
+| 8 | Yönlü kişi izinleri (`permission_grants`: konumu görme, ping, varış bildirimi, buluşma daveti, SOS; arkadaşlık izin değil, varsayılan kapalı), izin isteği / onayı / geri alma zincirleri, sunucuda zorlanan görünmez mod (seçmeli geri yükleme), Güvenlik Sözleşmesi ve KVKK aydınlatma / açık rıza onay kapısı (kaydırma şartı, sürüm + SHA-256 kaydı, geri çekme) | Kod hazır; birim, kural ve emülatör testleri geçti, tarayıcı demosunda uçtan uca çalışıyor; KVKK metni hukuk incelemesi, gerçek cihazda deneme ve eski arkadaşlıklar için izin göçü bekliyor. Ayrıntı: [`PHASE8.md`](PHASE8.md) |
 
 ## Faz 1 → Faz 2 geçiş noktası
 
@@ -279,3 +280,31 @@ arka plan konumu gerekçesi, bildirimler / SOS, widget'lar, App Check ve kuralla
 test hesapları, çökme raporlama, faz bazında cihaz kabulü). Faz 6 cihaz senaryoları: [`PHASE6.md`](PHASE6.md) §9.1.
 
 Gerçek Firebase projesine geçiş (dağıtım, sırlar, CI) henüz yapılmadı: `firebase-kurulum` dalına bakın.
+
+## Faz 8 (uygulandı)
+
+Faz 7 numarası atlandı. Tasarım sözleşmesi, uygulama kararları, testler ve açıklar [`PHASE8.md`](PHASE8.md)
+dosyasındadır. Özet:
+
+| Parça | Ne yapıldı |
+| --- | --- |
+| Yönlü izinler | `permission_grants/{granter}_{grantee}` (iki taraf okur, yalnızca callable yazar). Kapsamlar `location_view`, `ping`, `zone_notify`, `meetup_invite`, `sos_alert` (`sos_alert` dışındakiler istenebilir; o yalnızca acil kişi seçimiyle doğar). Arkadaş kabulü hiçbir izin yazmaz. Her etkileşim core `access.ts` matrisinden geçer (backend ve demo aynı fonksiyonları çağırır). |
+| İstek ve onay | `permission_request_send` (10 dk çift soğuması, 24 sa ret soğuması, günde 30, istek 48 sa), `permission_request_respond` (seçilen kapsamlar + isteğe bağlı aynı işlemde paylaşım), `permission_set` (kişi izinleri anahtarı; kapatmak zincirleme temizler). Ret anları sunucuya özel `permission_declines`'ta; retde ve geri almada push yok. `share_start` izinsiz alıcıyı `needs_grant_receiver_ids`'te döner, `grant_location_view` ile izin aynı işlemde yazılır. |
+| Görünmez mod | `invisible_set`: tüm giden paylaşımlar `stopped_by_sender` ile, QR bağlantıları biter; görünmezken paylaşım / uzatma / widget / bölge olayı açılamaz, cihaz yayın yapmaz. Görünür olunca yalnızca seçilen kişiler eski bitişle döner (varsayılan hiçbiri). SOS görünmezken gider ve modu kapatır. |
+| Onay (KVKK) | `CONSENT_VERSION` + `CONSENT_TEXT_SHA256`; kapı cinsiyet kapısından sonra, oturum servisleri onaydan sonra başlar. Düğme metin sonuna kadar kaydırılınca açılır. Kayıt `users/{uid}/consents/{version}` (platform, uygulama sürümü, kaydırma). Onaysız kullanıcıya konum / sosyal callable'lar `consent_required`; koruyucu işlemler (durdur, geri al, engelle, sil, görünmez ol, onayı geri çek) her zaman çalışır. |
+
+Faz 8 kabul ölçütleri (bu depoda): arkadaş kabulü izin yazmaz ✓; tek taraflı onay ters yönde yetki doğurmaz ✓; geri
+alma paylaşımı bitirir ve RTDB yazmasını reddettirir ✓; görünmezken yeni paylaşım `invisible_mode`, teslim 0 ✓; onaysız
+konum çağrısı `consent_required`, yanlış özet / kaydırmasız onay reddedilir ✓ (emülatör + kural testleri); onay kapısı →
+izin isteği → Kişi izinleri → görünmez ol → seçmeli geri yükleme → yeniden onay ✓ (tarayıcı demosu, Playwright 60
+denetim).
+
+**Faz 8 → yayın** (`RELEASE_CHECKLIST.md`'ye ek)
+- [ ] KVKK metni hukuk incelemesi; `[Şirket unvanı]`, `[Adres]`, `[KEP / e-posta]` doldurulsun; 18 yaş kuralı ve
+      yurt dışı aktarım dili onaylansın. Metin değişirse `CONSENT_VERSION` artırılsın.
+- [ ] Eski arkadaşlıklar için izin göçü kararı (`via:'migration'` doldurması yazılmadı; şu an herkes izinleri yeniden verir).
+- [ ] `firestore.rules`, `firestore.indexes.json` (TTL `permission_declines.purge_at`) ve 6 yeni callable; istemci ve
+      backend birlikte yayımlansın (eski istemci `consent_required` alır).
+- [ ] Cihazda: onay kapısı (ekran okuyucu, büyük yazı), görünmezken arka plan yayınının durması, geri almada alıcının
+      ekranı, `permission_request` push'unun Arkadaşlar > İzin istekleri'ni açması (`PHASE8.md` §9.1).
+

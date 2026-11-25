@@ -13,6 +13,9 @@
  * Faz 6: `quick_share_started` (widget'tan başlatılan paylaşım, gönderene görünür) önde yerel bildirimle gösterilir;
  * `widget_refresh` (yalnızca veri) widget'ı yeniler. Arka planda (başsız) widget paylaşımı kalıcı hedeflere alınır
  * (widgetBackground.ts) ve takip `resume_tracking` ile başlar.
+ *
+ * Faz 8: `permission_request` / `permission_granted` (görünür, koordinatsız) önde yerel bildirimle gösterilir;
+ * dokununca (önde, arka planda ya da soğuk açılışta) Arkadaşlar ekranı açılır (f8Services). Retde push yoktur.
  */
 import { QUICK_SHARE_NOTIFICATION, lowBatteryPushText, type PushData, type UserId } from '@konum/core';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -34,6 +37,8 @@ import * as Notifications from './expoNotifications';
 import { f4ForegroundContent, routeF4Open } from './f4Push';
 import { f5ForegroundContent, isF5PushType, routeF5Open, routeF5Received } from './f5Push';
 import { f6ForegroundContent, isF6PushType, routeF6Received } from './f6Push';
+import { f8ForegroundContent, isF8PushType, routeF8Open, routeF8Received } from './f8Push';
+import { friendsStore, selectFriends } from '../../state/friendsStore';
 import { handleWidgetBackgroundPush } from '../widgets/widgetBackground';
 
 const OWNER_KEY = 'konum.push.owner.v1';
@@ -75,7 +80,8 @@ export async function registerPushToken(uid: UserId): Promise<() => void> {
   const unMessage = onMessage(messaging, (m) => void handleForegroundMessage(m).catch(() => undefined));
   // Faz 4: sistemin gösterdiği FCM bildirimine dokunma (arka plan / kapalıyken) → SOS kartı / ping vurgusu.
   // Faz 5: bölge olayı → göndereni vurgula, buluşma önerisi / yanıtı → buluşma kartı.
-  const openRoute = (data: Record<string, unknown> | undefined) => routeF4Open(data) || routeF5Open(data);
+  // Faz 8: izin isteği / izin verildi → Arkadaşlar.
+  const openRoute = (data: Record<string, unknown> | undefined) => routeF4Open(data) || routeF5Open(data) || routeF8Open(data);
   const unOpened = onNotificationOpenedApp(messaging, (m) => void openRoute((m as unknown as PushLike).data));
   void getInitialNotification(messaging)
     .then((m) => (m ? openRoute((m as unknown as PushLike).data) : false))
@@ -111,6 +117,10 @@ export function batteryLowContent(m: PushLike): { title: string; body: string } 
     title: m.notification?.title ?? fallback.title,
     body: m.notification?.body ?? fallback.body,
   };
+}
+
+function friendName(uid: UserId): string | null {
+  return selectFriends(friendsStore.getState()).find((f) => f.uid === uid)?.displayName || null;
 }
 
 async function handleForegroundMessage(msg: RemoteMessage): Promise<void> {
@@ -155,6 +165,18 @@ async function handleForegroundMessage(msg: RemoteMessage): Promise<void> {
           categoryIdentifier: QUICK_SHARE_NOTIFICATION.category,
         },
         trigger: Platform.OS === 'android' ? { channelId: f6.channelId } : null,
+      });
+    }
+    return;
+  }
+  // Faz 8: izin isteği / izin verildi yerel bildirimle (dokununca Arkadaşlar).
+  if (isF8PushType(m.data?.type)) {
+    routeF8Received(m.data);
+    const f8 = f8ForegroundContent(m, friendName);
+    if (f8) {
+      await Notifications.scheduleNotificationAsync({
+        content: { title: f8.title, body: f8.body, data: f8.data, sound: f8.sound ? 'default' : false, interruptionLevel: f8.interruptionLevel },
+        trigger: Platform.OS === 'android' ? { channelId: f8.channelId } : null,
       });
     }
     return;

@@ -20,19 +20,31 @@
  * filtresi → `zone_event_report`). iOS'ta bölge varken uyku çiti de bu göreve kayıtlıdır (geofenceRegistry.ts):
  * `konum-sleep` kimlikli ÇIKIŞ uyku çiti olarak işlenir. zoneMonitor'ün içe aktarılması konum hattının bölge
  * filtresi bağlantısını (zoneSampleTap) da kurar.
+ *
+ * Faz 8: yayın kesme anahtarı (görünmez mod / onay kapısı) açıkken bölge olayı ve uyku çiti işlenmez; konum örnekleri
+ * hatta gider ama hat hiçbir hedefi kullanılabilir saymaz (hedefleri boşaltır, takibi kapatır).
  */
 import { LocationGeofencingEventType, type LocationObject, type LocationRegion } from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
+import { hydratePublishHold, isPublishHeld } from '../../state/publishHold';
 import { registerOutboxStore } from '../outbox/outboxStore';
 import { expoSqliteOutboxStore } from '../outbox/sqliteOutboxStore';
 import { ensureAdaptiveRuntime } from './adaptive/runtime';
 import { GEOFENCE_TASK_NAME, LOCATION_TASK_NAME, SLEEP_REGION_ID, ZONE_GEOFENCE_TASK_NAME } from './LocationEngine';
-import { handleMotionEvent, handleSamples } from './pipeline';
+import { applyPublishHold, handleMotionEvent, handleSamples } from './pipeline';
 import { toRawSample } from './trackingOptions';
 import { zoneMonitor } from './zoneMonitor';
 import { zoneIdFromRegion } from './zoneMonitorCore';
 
 registerOutboxStore(expoSqliteOutboxStore());
+
+/** Faz 8: kesme anahtarı açıksa hedefleri hemen boşalt (takip kapanır) ve true dön. */
+async function heldNow(): Promise<boolean> {
+  await hydratePublishHold();
+  if (!isPublishHeld()) return false;
+  await applyPublishHold().catch(() => undefined);
+  return true;
+}
 
 interface LocationTaskData {
   locations?: LocationObject[];
@@ -62,6 +74,7 @@ TaskManager.defineTask<GeofenceTaskData>(GEOFENCE_TASK_NAME, async ({ data, erro
   }
   if (data?.eventType !== LocationGeofencingEventType.Exit) return;
   if (data.region?.identifier && data.region.identifier !== SLEEP_REGION_ID) return;
+  if (await heldNow()) return;
   ensureAdaptiveRuntime();
   await handleMotionEvent({ type: 'geofence_exit' });
 });
@@ -75,6 +88,8 @@ TaskManager.defineTask<GeofenceTaskData>(ZONE_GEOFENCE_TASK_NAME, async ({ data,
   const event = t === LocationGeofencingEventType.Enter ? 'enter' : t === LocationGeofencingEventType.Exit ? 'exit' : null;
   if (!event) return;
   const id = data?.region?.identifier;
+  // Faz 8: görünmezken / onaysız bölge olayı gönderilmez (sunucu da reddeder), uyku çiti takibi uyandırmaz.
+  if (await heldNow()) return;
   if (id === SLEEP_REGION_ID) {
     if (event !== 'exit') return;
     ensureAdaptiveRuntime();

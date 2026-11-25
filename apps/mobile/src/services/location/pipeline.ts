@@ -27,6 +27,10 @@
  *    (`outboxRepo`); bağlantı varken taze yayından ÖNCE kuyruk boşaltılır (q: 1 + recorded_at + iz).
  *  - Düşük pil: core `lowBatteryTrigger` %15 geçişinde (oturum başına bir kez) yayını zorlar ve
  *    `battery_low_notify` çağırır; çevrimdışıysa çağrı kuyruğa alınır (aynı op_id).
+ *
+ * Faz 8: yayın kesme anahtarı (`state/publishHold`: görünmez mod niyeti ya da onay kapısı) açıkken HİÇBİR hedef
+ * kullanılabilir sayılmaz: hedefler kilit içinde boşaltılır, takip kapanır, imleç ve kuyruk silinir; yazmadan hemen
+ * önce ve yayıncının her denemesinde de sorulur (sunucu ayrıca paylaşımları bitirir ve RTDB yazılarını reddeder).
  */
 import {
   batteryPct,
@@ -83,6 +87,7 @@ import {
   type PersistedTarget,
 } from '../../state/persist';
 import { hydrateLinkStops, isLinkBlocked } from '../../state/linkStops';
+import { hydratePublishHold, isPublishHeld } from '../../state/publishHold';
 import { hydrateStopIntents, isShareBlocked } from '../../state/stopIntents';
 import { lastActivityEvent } from './adaptive/activitySource';
 import { createAdaptiveController, type AdaptiveController, type ObserveResult } from './adaptive/adaptiveController';
@@ -155,6 +160,9 @@ export interface PipelineDeps {
    * eklenir; bağlantı (QR) paketlerine EKLENMEZ. Not değişince (etiket farklı) yayın zorlanır.
    */
   statusNote: (uid: UserId) => Promise<StatusNote | null>;
+  /** Faz 8: yayın kesme anahtarı (görünmez mod / onay kapısı): açıkken hiçbir şey yayınlanmaz. */
+  isHeld: () => boolean;
+  hydrateHold: () => Promise<void>;
 }
 
 /** Firebase Auth: oturum yerelden geri yüklenene kadar bekle; zaman aşımında "bilinmiyor". */
@@ -234,6 +242,8 @@ const defaultDeps = (getDeps: () => PipelineDeps): PipelineDeps => ({
     const p = await loadStatusNote();
     return p && p.uid === uid ? p.note : null;
   },
+  isHeld: isPublishHeld,
+  hydrateHold: hydratePublishHold,
 });
 
 export interface SamplePipeline {
@@ -252,6 +262,8 @@ export interface SamplePipeline {
   applyTrackingNow: () => Promise<{ applied: boolean; failed: boolean; profileId: TrackingProfileId | null }>;
   /** Faz 3: çıkış / paylaşım bitti: hareket durumu ve uyku çiti sıfırlanır. */
   resetAdaptive: () => Promise<void>;
+  /** Faz 8: kesme anahtarı açıldıysa ŞİMDİ uygula (hedefler boşalır, takip kapanır, kuyruk silinir). */
+  applyHold: () => Promise<void>;
 }
 
 export function createSamplePipeline(overrides: Partial<PipelineDeps> = {}): SamplePipeline {
@@ -276,11 +288,18 @@ export function createSamplePipeline(overrides: Partial<PipelineDeps> = {}): Sam
     flushOutbox: (force = false) => enqueue(() => flushStandalone(deps(), force), undefined),
     applyTrackingNow: () => enqueue(() => applyStandalone(deps()), { applied: false, failed: true, profileId: null }),
     resetAdaptive: () => enqueue(() => deps().adaptive.reset(), undefined),
+    applyHold: () =>
+      enqueue(async () => {
+        const d = deps();
+        await d.hydrateHold();
+        if (d.isHeld()) await pruneAndMaybeStop(d);
+      }, undefined),
   };
 }
 
 /** Ön planın "şimdi uygula" isteği (yeni hedef, yeni bildirim metni, ön plana dönüş). */
 async function applyStandalone(d: PipelineDeps): Promise<{ applied: boolean; failed: boolean; profileId: TrackingProfileId | null }> {
+  await d.hydrateHold();
   const persisted = await loadTargets();
   const now = serverNow(persisted.serverOffsetMs, d.deviceNow());
   const targets = persisted.targets.filter(usableAt(d, now));
@@ -299,8 +318,9 @@ async function applyStandalone(d: PipelineDeps): Promise<{ applied: boolean; fai
   return { applied: obs.apply.apply, failed, profileId: obs.bgPlan.profile.id };
 }
 
-const usableAt = (d: PipelineDeps, now: EpochMs) => (t: PersistedTarget) => !isExpired(t, now) && !d.isBlocked(t.share_id);
-const usableLinkAt = (d: PipelineDeps, now: EpochMs) => (t: PersistedLinkTarget) => !isExpired(t, now) && !d.isLinkBlocked(t.link_id);
+/** Faz 8: kesme anahtarı açıkken hiçbir hedef kullanılabilir değildir (yayın yok, takip kapanır). */
+const usableAt = (d: PipelineDeps, now: EpochMs) => (t: PersistedTarget) => !d.isHeld() && !isExpired(t, now) && !d.isBlocked(t.share_id);
+const usableLinkAt = (d: PipelineDeps, now: EpochMs) => (t: PersistedLinkTarget) => !d.isHeld() && !isExpired(t, now) && !d.isLinkBlocked(t.link_id);
 
 /** Yayın kararındaki "hedef listesi değişti mi" anahtarı: arkadaş anahtarı + bağlantı kimlikleri. */
 export function combinedTargetsKey(targets: readonly PersistedTarget[], links: readonly PersistedLinkTarget[]): string {
@@ -397,7 +417,7 @@ async function flushQueue(d: PipelineDeps, uid: UserId, now: EpochMs, lastLiveTs
     uid,
     now,
     targets: [...shares.map(toShareOutboxTarget), ...links.map(toLinkOutboxTarget)],
-    isAllowed: (t) => (t.kind === 'share' ? !d.isBlocked(t.share_id) : !d.isLinkBlocked(linkIdByHash.get(t.token_hash) ?? '')),
+    isAllowed: (t) => !d.isHeld() && (t.kind === 'share' ? !d.isBlocked(t.share_id) : !d.isLinkBlocked(linkIdByHash.get(t.token_hash) ?? '')),
     write: d.writeRaw,
     call: d.callPending,
     lastLiveTs,
@@ -419,6 +439,11 @@ async function flushStandalone(d: PipelineDeps, force: boolean): Promise<void> {
   if ((await d.outbox.pendingCount()) === 0) return;
   await d.hydrateBlocks();
   await d.hydrateLinkBlocks();
+  await d.hydrateHold();
+  if (d.isHeld()) {
+    await pruneAndMaybeStop(d);
+    return;
+  }
   const persisted = await loadTargets();
   if (!persisted.uid) return;
   const auth = await d.probeAuth();
@@ -458,6 +483,7 @@ async function notifyLowBattery(
 async function processMotion(d: PipelineDeps, event: MotionEvent | { type: 'geofence_exit' | 'tick' }): Promise<void> {
   await d.hydrateBlocks();
   await d.hydrateLinkBlocks();
+  await d.hydrateHold();
   const persisted = await loadTargets();
   const now = serverNow(persisted.serverOffsetMs, d.deviceNow());
   const targets = persisted.targets.filter(usableAt(d, now));
@@ -497,6 +523,7 @@ async function processSamples(
 ): Promise<void> {
   await d.hydrateBlocks();
   await d.hydrateLinkBlocks();
+  await d.hydrateHold();
   const persisted = await loadTargets();
   const offset = persisted.serverOffsetMs;
   const nowFn = () => serverNow(offset, d.deviceNow());
@@ -603,13 +630,13 @@ async function processSamples(
     const friendResult: PublishResult | null = finalTargets.length
       ? await publishSample(
           { sample: norm.sample, device, senderId: uid, targets: finalTargets, now, activity, extras: friendExtras },
-          { ...d.publisherDeps(uid, nowFn), isAllowed: (id) => !d.isBlocked(id) },
+          { ...d.publisherDeps(uid, nowFn), isAllowed: (id) => !d.isHeld() && !d.isBlocked(id) },
         )
       : null;
     const linkResult: LinkPublishResult | null = finalLinks.length
       ? await publishLinkSample(
           { sample: norm.sample, device, targets: finalLinks, now, extras },
-          { ...d.linkPublisherDeps(uid, nowFn), isAllowed: (id) => !d.isLinkBlocked(id) },
+          { ...d.linkPublisherDeps(uid, nowFn), isAllowed: (id) => !d.isHeld() && !d.isLinkBlocked(id) },
         )
       : null;
     /** Yazılamayan (ağ / zaman aşımı) hedefler kuyruğa. */
@@ -713,4 +740,9 @@ export function applyTrackingNow(): ReturnType<SamplePipeline['applyTrackingNow'
 
 export function resetAdaptive(): Promise<void> {
   return defaultPipeline.resetAdaptive();
+}
+
+/** Faz 8: görünmez oldu / onay kapısı açıldı → hedefleri ŞİMDİ boşalt, takibi kapat (sonraki örneği beklemeden). */
+export function applyPublishHold(): Promise<void> {
+  return defaultPipeline.applyHold();
 }

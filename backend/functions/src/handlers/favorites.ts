@@ -9,12 +9,15 @@
  *    `sanitizeFavorites`); yanıt saklanan listeyi döner. Profil yoksa / hesap siliniyorsa `failed-precondition`.
  *  - Arkadaşlık kaldırma / engelleme (graph.ts `readPairF4Cleanup`), pasif hesap sıfırlaması ve hesap silme
  *    (`removeFromFavorites`) uid'i karşı tarafın listesinden de çıkarır.
+ *  - Faz 8: favori = tek tuşla konum paylaşımı hedefi; yalnızca `location_view` izni verdiğim arkadaşlar kalır
+ *    (izin geri alınınca `permission_set` kişiyi listeden çıkarır).
  */
 import {
   CALLABLES,
   type FavoritesSetRequestSchema,
   type FavoritesSetResponse,
   type UserId,
+  hasGrant,
   sanitizeFavorites,
 } from '@konum/core';
 import { FieldValue } from 'firebase-admin/firestore';
@@ -22,7 +25,7 @@ import type { z } from 'zod';
 import { db } from '../admin';
 import type { CallCtx } from '../callable';
 import { COL, refs } from '../docs';
-import { canShare, readCaller, readPairStates } from '../graph';
+import { isFriend, readCaller, readPairStates } from '../graph';
 import { runOp } from '../ops';
 import { chunk, isServerUid, unique } from '../util';
 
@@ -34,7 +37,7 @@ export async function favoritesSet(ctx: CallCtx, data: z.output<typeof Favorites
     const friends = new Set<UserId>(
       candidates.filter((_, i) => {
         const p = pairs[i];
-        return p !== undefined && canShare(p);
+        return isFriend(p) && hasGrant(p?.grantOut, 'location_view');
       }),
     );
     const list = sanitizeFavorites(data.favorite_ids, friends);

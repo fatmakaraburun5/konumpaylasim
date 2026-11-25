@@ -6,10 +6,15 @@
  *  - Her değişiklik `version + 1`; RTDB `share_acl` aynası bu sürümle eski yazmaları reddeder.
  *  - Arkadaş olmayan / engelli alıcı hata vermez, sessizce atlanır (nedeni söylenmez).
  *  - Süre her zaman SUNUCUDA hesaplanır; istemcinin önizlemesi bilgilendirme amaçlıdır.
+ *  - Faz 8 (core `canShareLocation`): paylaşım X→Y için arkadaşlık + X'in Y'ye verdiği `location_view` izni + X
+ *    görünür + X'in güncel onayı gerekir. İzinsiz (arkadaş) alıcı hata vermez: `grant_location_view` açıksa izin aynı
+ *    transaction'da yazılır (`via:'share'`), değilse alıcı atlanır ve YALNIZCA çağırana `needs_grant_receiver_ids`
+ *    içinde döner. Görünmezken başlatma / uzatma `invisible_mode`. Uzatma, alıcı başına izni yeniden doğrular.
  */
 import {
   CALLABLES,
   type EpochMs,
+  type GrantVia,
   type ResolvedDuration,
   type ShareEndReason,
   type ShareExtendRequestSchema,
@@ -21,17 +26,22 @@ import {
   type ShareStopResponse,
   type UserId,
   canExtend,
+  canShareLocation,
+  emptyGrantDoc,
   extendExpiry,
+  hasGrant,
+  isInvisible,
   shareId,
+  withGranted,
 } from '@konum/core';
 import type { Transaction } from 'firebase-admin/firestore';
 import type { z } from 'zod';
 import { type AclSource, readAclVersions } from '../acl';
 import { db } from '../admin';
 import type { CallCtx } from '../callable';
-import { COL, type RequestDoc, type ShareDoc, endedShare, purgeAt, refs, toView } from '../docs';
+import { COL, type RequestDoc, type ShareDoc, type UserDoc, endedShare, purgeAt, refs, toView } from '../docs';
 import { fail } from '../errors';
-import { type PairState, canShare, endFields, readCaller, readPairStates } from '../graph';
+import { type PairState, callerAccess, consentFail, endFields, isFriend, pairInput, readCaller, readPairStates } from '../graph';
 import { runOp } from '../ops';
 import type { ShareRevokeResponse } from '../schemas';
 import { assertDocId, assertUid, newSessionId, resolveForZone, unique } from '../util';
@@ -96,37 +106,77 @@ export function buildActiveShare(
 export interface ShareStartWrite {
   session_id: string;
   started: ShareDoc[];
-  /** `canShare` olmayan (arkadaş değil / engelli) adaylar. */
+  /** Arkadaş olmayan / engelli adaylar (sessizce atlanır). */
   skipped: UserId[];
+  /** Faz 8: arkadaş ama gönderenin `location_view` iznini almamış adaylar (yalnızca çağırana döner). */
+  needs_grant: UserId[];
+  /** Faz 8: bu adımda `location_view` izni yazılan alıcılar. */
+  granted: UserId[];
+}
+
+export interface ShareStartOptions {
+  /** Bir konum isteğine yanıtsa alıcı başına istek kimliği. */
+  inResponseTo?: (receiver: UserId) => string | null;
+  /**
+   * Faz 8: alıcıda `location_view` yoksa izni aynı transaction'da bu kaynakla yaz (gönderenin açık onayı:
+   * `grant_location_view`, konum isteği kabulü). null / verilmezse izinsiz alıcı `needs_grant`e düşer.
+   */
+  grantVia?: (receiver: UserId) => GrantVia | null;
 }
 
 /**
- * `share_start` ve Faz 6 widget hızlı paylaşımının (`widget_quick_share`, "started" dalı) ORTAK iç fonksiyonu:
- * okuma aşamasında `readStartCandidates` ile okunan adaylardan paylaşabilenlere yeni aktif paylaşım yazar (yeni
- * oturum kimliği), diğerlerini `skipped` olarak döndürür. Transaction YAZMA aşamasında çağrılır.
+ * `share_start`, Faz 6 widget hızlı paylaşımı ("started" dalı), Faz 8 izin isteği yanıtı ve görünür olunca geri yükleme
+ * ORTAK iç fonksiyonu: okuma aşamasında `readStartCandidates` ile okunan adaylardan paylaşabilenlere (core
+ * `canShareLocation`) yeni aktif paylaşım yazar (yeni oturum kimliği). Transaction YAZMA aşamasında çağrılır; gönderen
+ * görünmezse ya da onayı yoksa hiçbir şey yazmadan hata verir (çağıran bunu okuma aşamasında zaten denetler).
  */
 export function writeShareStarts(
   tx: Transaction,
-  sender: UserId,
+  sender: UserDoc,
   cands: readonly StartCandidate[],
   resolved: ResolvedDuration,
   now: EpochMs,
   aclVersions: ReadonlyMap<string, number>,
-  inResponseTo: (receiver: UserId) => string | null = () => null,
+  opts: ShareStartOptions = {},
 ): ShareStartWrite {
+  const me = callerAccess(sender);
+  if (me.invisible) throw fail('invisible_mode');
+  if (!me.consent) throw consentFail();
   const sessionId = newSessionId();
-  const started: ShareDoc[] = [];
-  const skipped: UserId[] = [];
+  const out: ShareStartWrite = { session_id: sessionId, started: [], skipped: [], needs_grant: [], granted: [] };
   for (const c of cands) {
-    if (!canShare(c.pair)) {
-      skipped.push(c.receiver_id);
+    if (!isFriend(c.pair)) {
+      out.skipped.push(c.receiver_id);
       continue;
     }
-    const doc = buildActiveShare(sender, c, resolved, sessionId, now, aclVersions.get(shareId(sender, c.receiver_id)) ?? 0, inResponseTo(c.receiver_id));
+    let grantOut = c.pair.grantOut;
+    if (!hasGrant(grantOut, 'location_view')) {
+      const via = opts.grantVia?.(c.receiver_id) ?? null;
+      if (!via) {
+        out.needs_grant.push(c.receiver_id);
+        continue;
+      }
+      grantOut = withGranted(grantOut ?? emptyGrantDoc(sender.user_id, c.receiver_id, now), ['location_view'], via, now);
+      tx.set(refs.grant(sender.user_id, c.receiver_id), { ...grantOut, declined_at: {} });
+      out.granted.push(c.receiver_id);
+    }
+    if (!canShareLocation(pairInput({ ...c.pair, grantOut }, me))) {
+      out.skipped.push(c.receiver_id);
+      continue;
+    }
+    const doc = buildActiveShare(
+      sender.user_id,
+      c,
+      resolved,
+      sessionId,
+      now,
+      aclVersions.get(shareId(sender.user_id, c.receiver_id)) ?? 0,
+      opts.inResponseTo?.(c.receiver_id) ?? null,
+    );
     tx.set(refs.shareById(doc.share_id), doc);
-    started.push(doc);
+    out.started.push(doc);
   }
-  return { session_id: sessionId, started, skipped };
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -143,7 +193,9 @@ export async function shareStart(ctx: CallCtx, data: z.output<typeof ShareStartR
 
   return runOp(ctx, data.op_id, CALLABLES.shareStart, data, async (tx) => {
     // Profil yoksa / hesap siliniyorsa yeni paylaşım yok (silinen hesabın geçerli token'ıyla hayalet paylaşım).
-    await readCaller(tx, ctx.uid);
+    // Faz 8: onay yoksa consent_required; görünmezken invisible_mode.
+    const me = await readCaller(tx, ctx.uid);
+    if (isInvisible(me)) throw fail('invisible_mode');
     const cands = await readStartCandidates(tx, ctx.uid, candidates);
 
     // Bir konum isteğine yanıt olarak başlatıldıysa isteği de aynı transaction'da kapat.
@@ -155,9 +207,13 @@ export async function shareStart(ctx: CallCtx, data: z.output<typeof ShareStartR
     }
 
     // --- yazmalar ---
-    const w = writeShareStarts(tx, ctx.uid, cands, resolved, ctx.now, aclVersions, (receiver) =>
-      request && request.requester_id === receiver ? request.request_id : null,
-    );
+    // İzin: kullanıcı "Konumunu görme izni de verilecek" onayını verdiyse (`grant_location_view`) ya da alıcının
+    // bekleyen konum isteğine yanıt veriyorsa (kabul = target→requester izni, ters yön yazılmaz).
+    const answers = (receiver: UserId) => Boolean(request && request.requester_id === receiver);
+    const w = writeShareStarts(tx, me, cands, resolved, ctx.now, aclVersions, {
+      inResponseTo: (receiver) => (request && answers(receiver) ? request.request_id : null),
+      grantVia: (receiver) => (data.grant_location_view ? 'share' : answers(receiver) ? 'location_request' : null),
+    });
     const started = w.started;
     const skipped: UserId[] = [...requested.filter((r) => r === ctx.uid), ...w.skipped];
     if (request && started.some((s) => s.receiver_id === request.requester_id)) {
@@ -174,6 +230,7 @@ export async function shareStart(ctx: CallCtx, data: z.output<typeof ShareStartR
       session_id: w.session_id,
       shares: started.map(toView),
       skipped_receiver_ids: skipped,
+      needs_grant_receiver_ids: w.needs_grant,
       server_now: ctx.now,
     };
     return { response, shareEffects: started };
@@ -186,14 +243,25 @@ export async function shareStart(ctx: CallCtx, data: z.output<typeof ShareStartR
 
 export async function shareExtend(ctx: CallCtx, data: z.output<typeof ShareExtendRequestSchema>): Promise<ShareExtendResponse> {
   return runOp(ctx, data.op_id, CALLABLES.shareExtend, data, async (tx) => {
+    // Faz 8: uzatma da paylaşımdır: onay şart, görünmezken invisible_mode, alıcı başına izin yeniden doğrulanır.
+    const me = await readCaller(tx, ctx.uid);
+    if (isInvisible(me)) throw fail('invisible_mode');
     const snap = await tx.get(
       db().collection(COL.shares).where('sender_id', '==', ctx.uid).where('session_id', '==', data.session_id),
     );
     const active = snap.docs.map((d) => d.data() as ShareDoc).filter((s) => s.status === 'active');
     if (active.length === 0) throw fail('share_not_active');
-    const extendable = active.filter((s) => canExtend(s, ctx.now));
+    const access = callerAccess(me);
+    const pairs = await readPairStates(
+      tx,
+      ctx.uid,
+      active.map((s) => s.receiver_id),
+    );
+    const allowed = active.filter((_, i) => canShareLocation(pairInput(pairs[i], access)));
+    if (allowed.length === 0) throw fail('not_permitted');
+    const extendable = allowed.filter((s) => canExtend(s, ctx.now));
     if (extendable.length === 0) {
-      if (active.some((s) => s.expires_at !== null && s.expires_at <= ctx.now)) throw fail('already_expired');
+      if (allowed.some((s) => s.expires_at !== null && s.expires_at <= ctx.now)) throw fail('already_expired');
       throw fail('invalid_duration', { message: 'Süresiz paylaşım uzatılamaz' });
     }
 

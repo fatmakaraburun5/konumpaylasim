@@ -28,13 +28,15 @@ export interface SosActiveScreenProps {
   resolving: boolean;
   error: string | null;
   names: Record<UserId, string>;
+  /** Konum izni olmadığı için canlı paylaşımın başlamadığı acil kişiler (SOS konumunu yine görürler). */
+  liveShareSkipped?: readonly UserId[];
   onResolve: () => void;
   onClose: () => void;
 }
 
 export const callEmergency = () => void Linking.openURL(`tel:${EMERGENCY_NUMBER}`).catch(() => undefined);
 
-export function SosActiveScreen({ visible, alert, resolving, error, names, onResolve, onClose }: SosActiveScreenProps) {
+export function SosActiveScreen({ visible, alert, resolving, error, names, liveShareSkipped = [], onResolve, onClose }: SosActiveScreenProps) {
   const { radius, spacing } = useTheme();
   const insets = useSafeAreaInsets();
   const now = useNow(5_000);
@@ -102,6 +104,12 @@ export function SosActiveScreen({ visible, alert, resolving, error, names, onRes
               </Text>
             ) : null}
           </View>
+
+          {active && liveShareSkipped.length > 0 ? (
+            <Text variant="label" style={styles.fg} testID="sos-live-share-skipped">
+              {`Konum izni vermediğin için canlı paylaşım başlatılmadı: ${liveShareSkipped.map((id) => names[id] ?? 'Arkadaşın').join(', ')}. SOS konumunu yine görürler.`}
+            </Text>
+          ) : null}
 
           {error ? (
             <Text variant="label" style={styles.fg} accessibilityLiveRegion="assertive">
