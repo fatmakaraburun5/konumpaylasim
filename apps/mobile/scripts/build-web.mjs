@@ -64,6 +64,13 @@ for (const [tag, src] of scripts) {
   html = html.replace(tag, () => `<script>${escapeInline(js)}</script>`);
 }
 
+function buildStamp() {
+  const r = spawnSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: root, encoding: 'utf8' });
+  const hash = r.status === 0 ? r.stdout.trim() : 'yerel';
+  const dirty = spawnSync('git', ['status', '--porcelain', '--', '.'], { cwd: root, encoding: 'utf8' });
+  return hash + (dirty.status === 0 && dirty.stdout.trim() ? '+' : '');
+}
+
 const prelude = `<script>
 (function () {
   // Uygulama içi geçişler adres çubuğundaki yolu değiştirmesin (bkz. scripts/build-web.mjs).
@@ -91,7 +98,9 @@ html = html
   .replace(/<title>[^<]*<\/title>/, '<title>Konum · Web önizleme</title>')
   .replace('<meta httpEquiv="X-UA-Compatible" content="IE=edge" />', '')
   .replace('</head>', () => head)
-  .replace('<noscript> You need to enable JavaScript to run this app. </noscript>', '<noscript>Bu önizleme için JavaScript gerekir.</noscript>');
+  .replace('<noscript> You need to enable JavaScript to run this app. </noscript>', '<noscript>Bu önizleme için JavaScript gerekir.</noscript>')
+  // Sürüm damgası: kullanıcının hangi dosyayı açtığı ekran görüntüsünden anlaşılsın (eski kopya karışmasın).
+  .replace('</body>', () => `<div id="konum-build" aria-hidden="true" style="position:fixed;left:4px;bottom:2px;z-index:2147483647;pointer-events:none;font:10px/1.2 system-ui,sans-serif;color:#6B7280;opacity:.6">sürüm ${buildStamp()}</div></body>`);
 
 fs.rmSync(outDir, { recursive: true, force: true });
 fs.mkdirSync(outDir, { recursive: true });

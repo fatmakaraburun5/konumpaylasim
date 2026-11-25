@@ -13,7 +13,7 @@
 import { demoServer } from '../../demo/server';
 import { demoOnline } from '../../demo/web/network';
 import { registerAvatarDataUri } from '../../ui/avatarUri';
-import { AvatarError, type AvatarPlatform, type AvatarSource, type CropRect, type EncodedImage, type PickResult, type SourceImage } from './avatarPipeline';
+import { AVATAR_ERROR_TEXT, AvatarError, centerSquareCrop, type AvatarPlatform, type AvatarSource, type CropRect, type EncodedImage, type PickResult, type SourceImage } from './avatarPipeline';
 import { decodeImageFile, decodeWithBrowser, renderSquareJpeg, WEB_IMAGE_ACCEPT, type DecodedImage } from './webImageDecode';
 
 /** Demo "kovası" (backend `avatarBuckets` gerçekte projenin kovası). */
@@ -24,22 +24,22 @@ export const DEMO_AVATAR_BUCKET = 'konum-demo.appspot.com';
  * gösterilir). Yeni seçimde öncekiler bırakılır. null = çözülemedi.
  */
 const picked = new Map<string, DecodedImage | null>();
+/**
+ * Ana boy (512) JPEG data: adresi → onu üreten asıl görüntü + kırpma. Küçük boy (160) bu asıl görüntüden çizilir;
+ * 512'lik JPEG'i yeniden çözmek gerekmez (kısıtlı görüntüleyicilerde ikinci çözme hata kaynağıydı).
+ */
+const derived = new Map<string, { img: DecodedImage; crop: CropRect | null }>();
 let seq = 0;
 
 function releasePicked() {
-  for (const [key, d] of picked) {
-    d?.close();
-    if (key.startsWith('blob:')) URL.revokeObjectURL(key);
-  }
+  for (const d of picked.values()) d?.close();
   picked.clear();
+  derived.clear();
 }
 
-function keyFor(file: File): string {
-  try {
-    return URL.createObjectURL(file);
-  } catch {
-    return `konum-web-image:${++seq}`;
-  }
+/** Çözülemeyen dosyanın anahtarı: URL DEĞİL (blob: önizlemesi sıkı CSP'de engelleniyor ve konsolu dolduruyor). */
+function opaqueKey(): string {
+  return `konum-web-image:${++seq}`;
 }
 
 /**
@@ -112,35 +112,45 @@ export async function pickAvatarImage(source: AvatarSource): Promise<PickResult>
   if (!file) return { kind: 'cancelled' };
   releasePicked();
   const decoded = await decodeImageFile(file).catch(() => null);
-  const key = (decoded && previewFor(decoded)) || keyFor(file);
+  const key = (decoded && previewFor(decoded)) || opaqueKey();
   picked.set(key, decoded);
   // Çözülemese de "seçildi" döner: hata sıkıştırma adımında anlamlı metinle (`unsupported_format`) gösterilir.
   return { kind: 'picked', image: { uri: key, width: decoded?.width ?? 0, height: decoded?.height ?? 0 } };
 }
 
-async function sourceFor(uri: string): Promise<DecodedImage | null> {
-  if (picked.has(uri)) return picked.get(uri) ?? null;
-  // Küçük boy, ana boyun (bizim ürettiğimiz) JPEG data: adresinden üretilir. `fetch(data:)` KULLANILMAZ: sıkı
-  // CSP'li görüntüleyicide (connect-src 'none') engelleniyor ve "Fotoğraf okunamadı" hatasına düşüyordu.
+async function sourceFor(uri: string): Promise<{ img: DecodedImage; crop: CropRect | null; own: boolean } | null> {
+  if (picked.has(uri)) {
+    const img = picked.get(uri);
+    return img ? { img, crop: null, own: true } : null;
+  }
+  const d = derived.get(uri);
+  if (d) return { img: d.img, crop: d.crop, own: true };
+  // Yedek: başka bir data: adresi (ör. sayfa yenilendikten sonra). `fetch(data:)` KULLANILMAZ: sıkı CSP'li
+  // görüntüleyicide (connect-src 'none') engelleniyor ve "Fotoğraf okunamadı" hatasına düşüyordu.
   if (uri.startsWith('data:')) {
     const blob = dataUrlToBlob(uri);
-    return blob ? decodeWithBrowser(blob) : null;
+    const img = blob ? await decodeWithBrowser(blob) : null;
+    return img ? { img, crop: null, own: false } : null;
   }
   return null;
 }
 
 async function encode(src: SourceImage, px: number, quality: number, crop: CropRect | null): Promise<EncodedImage> {
-  const own = picked.has(src.uri);
-  const img = await sourceFor(src.uri);
-  if (!img) throw new AvatarError('unsupported_format');
+  const s = await sourceFor(src.uri);
+  if (!s) throw new AvatarError('unsupported_format');
+  const useCrop = crop ?? s.crop;
   try {
-    const { dataUrl, bytes } = renderSquareJpeg(img, px, quality, crop);
+    const { dataUrl, bytes } = renderSquareJpeg(s.img, px, quality, useCrop);
+    if (s.own) derived.set(dataUrl, { img: s.img, crop: useCrop ?? centerSquareCrop(s.img.width, s.img.height) });
     return { uri: dataUrl, width: px, height: px, bytes };
-  } catch {
-    throw new AvatarError('invalid_image');
+  } catch (e) {
+    // Görüntüleyiciye özgü hatalar uzaktan teşhis edilebilsin: kısa neden koda eklenir.
+    const why = e instanceof Error ? e.name || e.message : String(e);
+    console.warn('[avatar] encode', px, e);
+    throw new AvatarError('invalid_image', `${AVATAR_ERROR_TEXT.invalid_image} (${px}: ${why.slice(0, 40)})`);
   } finally {
-    // data: kaynaklı (küçük boy) geçici çözüm hemen bırakılır; seçilen asıl görüntü yeni seçime kadar kalır.
-    if (!own) img.close();
+    // data: kaynaklı geçici çözüm hemen bırakılır; seçilen asıl görüntü yeni seçime kadar kalır.
+    if (!s.own) s.img.close();
   }
 }
 

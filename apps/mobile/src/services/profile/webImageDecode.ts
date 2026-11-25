@@ -7,9 +7,9 @@
  * WebKit ve uygulama içi WebView'lar) bu yol "okunamadı" hatasına düşüyor [Varsayım: kullanıcı cihazında
  * yeniden üretilemedi, Chromium'da çalışıyor]. Burada CORS'suz ve URL'siz yollar sırayla denenir:
  *
- *   1. createImageBitmap(dosya)  (EXIF yönü uygulanır)
- *   2. <img> + nesne adresi (crossOrigin YOK)
- *   3. <img> + data: adresi
+ *   1. createImageBitmap(dosya)  (EXIF yönü uygulanır; CSP'den etkilenmez)
+ *   2. <img> + data: adresi  (sıkı CSP'li görüntüleyiciler img-src data:'ya izin verir)
+ *   3. <img> + nesne adresi (crossOrigin YOK; tuval dışa aktarılabiliyorsa)
  *
  * Desteklenen: JPEG/JPG/JFIF, PNG, WEBP, GIF (ilk kare), BMP, ICO, AVIF; HEIC/HEIF ve TIFF tarayıcı çözebiliyorsa
  * (Safari / iPhone çözer; ayrıca iPhone dosya seçicisi HEIC'i zaten JPEG'e çevirir).
@@ -72,7 +72,32 @@ function readAsDataURL(blob: Blob): Promise<string> {
   });
 }
 
-/** Tarayıcının kendi çözücüleriyle (1-3). Olmazsa null. */
+/**
+ * <img> ile çözülen görüntü tuvale çizilip dışa aktarılabiliyor mu? (Eski WebKit / opak kökenli çerçevede `blob:`
+ * görseli tuvali "kirletebilir"; o zaman toDataURL SecurityError atar ve "Fotoğraf okunamadı" çıkar.)
+ */
+function exportable(img: HTMLImageElement): boolean {
+  const c = document.createElement('canvas');
+  c.width = 1;
+  c.height = 1;
+  try {
+    const g = c.getContext('2d');
+    if (!g) return false;
+    g.drawImage(img, 0, 0, 1, 1);
+    c.toDataURL();
+    return true;
+  } catch {
+    return false;
+  } finally {
+    c.width = 0;
+    c.height = 0;
+  }
+}
+
+/**
+ * Tarayıcının kendi çözücüleriyle. Olmazsa null. Sıra: createImageBitmap (CSP'den etkilenmez) → data: <img> (sıkı
+ * CSP'ler img-src data:'ya izin verir, tuvali kirletmez) → blob: <img> (son çare).
+ */
 export async function decodeWithBrowser(blob: Blob): Promise<DecodedImage | null> {
   if (typeof createImageBitmap === 'function') {
     for (const opts of [{ imageOrientation: 'from-image' } as ImageBitmapOptions, undefined]) {
@@ -85,21 +110,25 @@ export async function decodeWithBrowser(blob: Blob): Promise<DecodedImage | null
       }
     }
   }
-  if (typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function') {
-    const url = URL.createObjectURL(blob);
-    try {
-      const img = await loadImg(url);
-      return { source: img, width: img.naturalWidth, height: img.naturalHeight, close: () => URL.revokeObjectURL(url) };
-    } catch {
-      URL.revokeObjectURL(url);
-    }
-  }
   try {
     const img = await loadImg(await readAsDataURL(blob));
-    return { source: img, width: img.naturalWidth, height: img.naturalHeight, close: () => undefined };
+    if (exportable(img)) return { source: img, width: img.naturalWidth, height: img.naturalHeight, close: () => undefined };
   } catch {
-    return null;
+    // sıradaki yol
   }
+  let url: string | null = null;
+  try {
+    url = URL.createObjectURL(blob);
+    const img = await loadImg(url);
+    if (exportable(img)) {
+      const u = url;
+      return { source: img, width: img.naturalWidth, height: img.naturalHeight, close: () => URL.revokeObjectURL(u) };
+    }
+  } catch {
+    // yok
+  }
+  if (url) URL.revokeObjectURL(url);
+  return null;
 }
 
 function makeCanvas(w: number, h: number): HTMLCanvasElement {
