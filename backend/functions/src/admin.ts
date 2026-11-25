@@ -7,6 +7,7 @@ import { type Auth, getAuth } from 'firebase-admin/auth';
 import { type Database, getDatabase } from 'firebase-admin/database';
 import { type Firestore, getFirestore } from 'firebase-admin/firestore';
 import { type Messaging, getMessaging } from 'firebase-admin/messaging';
+import { type Storage, getStorage } from 'firebase-admin/storage';
 
 let app: App | undefined;
 let firestore: Firestore | undefined;
@@ -35,6 +36,11 @@ export function adminAuth(): Auth {
 
 export function messaging(): Messaging {
   return getMessaging(adminApp());
+}
+
+/** Faz 6: avatar nesnelerini silmek için (emülatörde `FIREBASE_STORAGE_EMULATOR_HOST`). */
+export function adminStorage(): Storage {
+  return getStorage(adminApp());
 }
 
 /** Testler: açık RTDB/Firestore bağlantılarını kapatır (işlem asılı kalmasın). */

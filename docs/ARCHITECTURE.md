@@ -1,6 +1,6 @@
-# Mimari (Faz 1–5)
+# Mimari (Faz 1–6)
 
-Bu dosya kodun nasıl bir araya geldiğini kısaca anlatır. Ayrıntılar kodda ve alt README'lerdedir. Çelişki olursa `packages/core` geçerlidir. Faz 2 (harita, ETA, QR bağlantısı, web haritası, Maps maliyeti) ayrıntısı: [`PHASE2.md`](PHASE2.md). Faz 3 (arka plan takibi, pil, çevrimdışı kuyruk) ayrıntısı: [`PHASE3.md`](PHASE3.md). Faz 4 (ping, kısa notlar, tam konumlu SOS) ayrıntısı: [`PHASE4.md`](PHASE4.md). Faz 5 (varış / ayrılış tetikleyicileri, buluşma noktası) ayrıntısı: [`PHASE5.md`](PHASE5.md).
+Bu dosya kodun nasıl bir araya geldiğini kısaca anlatır. Ayrıntılar kodda ve alt README'lerdedir. Çelişki olursa `packages/core` geçerlidir. Faz 2 (harita, ETA, QR bağlantısı, web haritası, Maps maliyeti) ayrıntısı: [`PHASE2.md`](PHASE2.md). Faz 3 (arka plan takibi, pil, çevrimdışı kuyruk) ayrıntısı: [`PHASE3.md`](PHASE3.md). Faz 4 (ping, kısa notlar, tam konumlu SOS) ayrıntısı: [`PHASE4.md`](PHASE4.md). Faz 5 (varış / ayrılış tetikleyicileri, buluşma noktası) ayrıntısı: [`PHASE5.md`](PHASE5.md). Faz 6 (widget'lar, tek dokunuşla 1 saat, profil fotoğrafı, cinsiyet çerçevesi) ayrıntısı: [`PHASE6.md`](PHASE6.md). Mağaza yayını öncesi liste: [`RELEASE_CHECKLIST.md`](RELEASE_CHECKLIST.md).
 
 ## Bileşenler
 
@@ -21,6 +21,10 @@ Bu dosya kodun nasıl bir araya geldiğini kısaca anlatır. Ayrıntılar kodda 
 | Faz 3: mobil | `apps/mobile/src/services/{location/adaptive,outbox}`, `modules/konum-activity`, `features/permissions` | Uyarlamalı takip (plan → OS isteği, uyku çiti, 60 sn zamanlayıcı), SQLite kuyruk + boşaltma, hareket etkinliği yerel modülü, kademeli izin akışı, alıcıda son doğrulanmış konum ve kesikli iz |
 | Faz 3: backend | `backend/functions/src/handlers/{battery,watchdog}.ts`, `database.rules.json` | `battery_low_notify` (oturum başına bir kez), `share_stall_watchdog` (sessiz → görünür dürtme, iz budama), `live_trail` kuralları, ACL `started_at` |
 | Faz 3: e2e | `apps/web/e2e/faz3/` | Gerçek emülatörlerde mobil yayıncı + kuyruk + bekçi kabul testi (`run-faz3.sh`) |
+| Faz 6: çekirdek | `packages/core/src/{widget,quickShare,favorites,profile}.ts` | Widget anlık görüntüsü (`buildWidgetSnapshot`, ≤ 16 KB, `widgetSnapshotChanged`, `widgetSyncDecision`), hızlı paylaşım yönlendirmesi (`quickShareRoute`) ve sunucu kararı (`quickShareExpiry`), token biçimi ve hız sınırı, `QUICK_SHARE_NOTIFICATION`, favori kuralları (≤ 4), `GENDER_RING`, `initialsOf`, avatar yolları ve `checkAvatarPair` |
+| Faz 6: mobil | `apps/mobile/src/{services/widgets,services/profile,features/profile,features/quickShare}`, `state/{favoritesStore,profileStore,quickShareStore,widgetStore}.ts`, `services/f6Services.ts` | `widgetSync` (anlık görüntü yazma / yenileme kısıtı), `widgetBridge` (yerel modül köprüsü, web'de no-op), fotoğraf hattı (`avatarPipeline`: kırp, 512 + 160 px JPEG, `avatarUpload`), `GenderPicker` / `GenderGate`, `ProfileScreen`, `QuickShareSheet`, `app/quick-share.tsx` derin bağlantısı, "Durdur" bildirim eylemi |
+| Faz 6: native | `apps/mobile/targets/widgets` (Swift, `@bacons/apple-targets`), `modules/konum-widgets` (Expo modülü: iOS App Group yazıcı, Android AppWidget / Hızlı Ayar / WorkManager, config plugin) | iOS 17 WidgetKit (ana ekran + kilit ekranı, `StartQuickShareIntent`), Android RemoteViews 2x2 / 4x2, `QuickShareReceiver`, `QuickShareTileService`; widget token'ı anahtarlık (App Group erişim grubu) / AndroidKeyStore'da |
+| Faz 6: backend | `backend/functions/src/handlers/{widget,favorites,user}.ts`, `backend/storage.rules` | `widget_token_issue/revoke`, `widget_quick_share` (oturumsuz, token yetkili), `favorites_set`, `user_bootstrap` (+ `gender`, `avatar_thumb_url`), `widget_refresh` uyandırması, Storage avatar kuralları |
 
 ## Paylaşım başlatma
 
@@ -105,6 +109,36 @@ yazar, uygulama kapalıysa push gider. Push koordinat taşımaz, koordinat yetki
 - Mobilde iki depo (`state/{zonesStore,meetupStore}.ts`) ve tek başlatıcı (`services/f5Services.ts`); çıkışta OS
   bölge kaydı kalkar, kalıcı bölge durumu silinir.
 
+## Widget ve tek dokunuşla 1 saat (Faz 6)
+
+Widget süreci Firebase SDK'sını ve uygulamanın JS kodunu çalıştırmaz. Uygulama yazar, widget yalnızca okur; tek ağ çağrısı
+hızlı paylaşımdır.
+
+```text
+uygulama (ön plan / push / WorkManager)
+  → buildWidgetSnapshot (favoriler ≤ 4, son durum, pil, fotoğraf dosyası, aktif paylaşım; ham koordinat yok)
+  → widgetSyncDecision (yazma ≥ 60 sn, yenileme ≥ 5 dk; büyük değişiklikte hemen)
+  → widgetBridge: iOS App Group UserDefaults + WidgetCenter / Android SharedPreferences + AppWidgetManager
+
+widget "1 sa paylaş" (iOS AppIntent .requiresAuthentication / Android receiver, kutucuk unlockAndRun)
+  → token anahtarlıkta / KeyStore'da var mı, dolmak üzere mi, arka plan izni var mı (quickShareRoute)
+     ├─ hayır → derin bağlantı konum://quick-share?... → uygulama açılır, aynı adımı orada tamamlar
+     └─ evet  → POST widget_quick_share {token, to_uid, op_id}
+                 → sunucu: özet eşle, süre / iptal / saatlik 6 çağrı / arkadaşlık / favori denetimi
+                 → quickShareExpiry: started | extended | already_active (60 dk)
+                 → resume_tracking (sessiz) + quick_share_started (görünür, iOS "Durdur" eylemi)
+```
+
+## Profil fotoğrafı ve cinsiyet çerçevesi (Faz 6)
+
+- Kayıtta `user_bootstrap` profil oluşturulurken `gender` ister (`gender_required`). Faz 6 öncesi hesap `GenderGate` ile
+  bir kez seçer. Cinsiyet ve küçük avatar `friendships.member_profiles` kopyasına yayılır.
+- Kamera / galeri → kare kırpma → 512 px (q0,8) + 160 px (q0,7) JPEG (EXIF / GPS atılır) → Storage
+  `avatars/{uid}/{sürüm}.jpg` ve `{sürüm}_160.jpg` → `user_bootstrap {avatar_url, avatar_thumb_url}` (sunucu
+  `checkAvatarPair` ile aynı sürüm olduğunu doğrular, eski sürümü siler).
+- Liste, widget ve harita pini aynı kuralı kullanır: 160 px fotoğraf (yoksa baş harfler) + cinsiyet renginde 3 px halka
+  (`GENDER_RING`: kadın pembe, erkek mavi, bilinmiyor gri). Önbellek expo-image bellek + disk, anahtar `avatar_version`.
+
 ## Gizlilik modeli
 
 - Alıcı yalnızca `live_locations/{kendi_uid}` altını okur. Gönderenin kime paylaştığını göremez.
@@ -129,6 +163,11 @@ yazar, uygulama kapalıysa push gider. Push koordinat taşımaz, koordinat yetki
   koordinat taşımaz, push ve olay kaydı yalnızca bölge adını taşır. Buluşma önerisi için bana görünen arkadaş konumları
   hesap amacıyla sunucuya ve Google'a gider, saklanmaz (sonuç 10 dk kullanıcıya özel önbellekte). Paylaşılan öneri
   yalnızca yeri ve paylaşım anındaki ETA'ları taşır.
+- Faz 6: widget anlık görüntüsü ve `quick_share_started` / `widget_refresh` push'ları ham koordinat taşımaz; kilit
+  ekranında yer adı ve pil varsayılan olarak gizlidir (kullanıcı ayarı). Widget token'ı sunucuda yalnızca SHA-256
+  özetiyle durur, yalnızca sahibinin favorilerine 1 saatlik paylaşım açabilir (saatte 6, 30 gün). Fotoğraf yeniden
+  kodlanır (EXIF / GPS gitmez); Storage nesnesini kurallarla yalnızca sahibi okur, arkadaşlar indirme token'lı URL ile
+  görür. Favori listesi yalnızca sahibine açıktır. Cinsiyet yalnızca çerçeve rengi için arkadaş kopyasına gider.
 
 ## Yollar
 
@@ -163,6 +202,10 @@ yazar, uygulama kapalıysa push gider. Push koordinat taşımaz, koordinat yetki
 | `zone_cooldowns/{uid}_{zone_id}_{transition}` | Firestore | yok | sunucu (son bildirim anı, TTL) |
 | `meetups/{meetup_id}` | Firestore | öneren (`from`), alıcılar (`to`) | callable (`meetup_*`, 12 sa + TTL `purge_at`) |
 | `meetup_cache/{id}` | Firestore | yok | sunucu (10 dk, kullanıcıya özel, TTL `expire_at`) |
+| `users/{uid}.gender`, `.avatar_thumb_url`, `.avatar_version` | Firestore | sahibi (arkadaşlar `member_profiles` kopyasından) | callable (`user_bootstrap`) |
+| `users/{uid}.favorite_ids` | Firestore | yalnızca sahibi | callable (`favorites_set`; arkadaşlık bitince / hesap silmede sunucu çıkarır) |
+| `widget_tokens/{sha256}` | Firestore | yok | sunucu (`widget_token_issue/revoke`, 30 gün TTL, saatlik çağrı sayacı) |
+| `avatars/{uid}/{sürüm}.jpg`, `{sürüm}_160.jpg` | Storage | sahibi (`get`), arkadaşlar indirme URL'siyle | sahibi (yalnızca JPEG, ≤ 400 / 60 KB); sunucu eski sürümü ve hesap silmede klasörü siler |
 
 ## Bilinen açıklar
 
@@ -178,6 +221,10 @@ yazar, uygulama kapalıysa push gider. Push koordinat taşımaz, koordinat yetki
   onayı bekliyor (kapalı). Android'de "Rahatsız Etme erişimi" adımı yok (`PHASE4.md` §7).
 - Faz 5: OS bölge algılama (iOS `CLCircularRegion`, Android `GeofencingClient`), başsız paylaşım başlatma ve native
   harita katmanları gerçek cihazda denenmedi; Places / Routes gerçek anahtarla denenmedi (`PHASE5.md` §8).
+- Faz 6: Swift widget hedefi ve Kotlin widget modülü derlenmedi (yalnızca `expo prebuild` yapılandırması doğrulandı).
+  Android'de widget başına favori seçici yok (sıralı ilk favoriler). iOS 16 cihazda widget yok. Uygulama kapalıyken
+  widget'tan başlayan paylaşımın takibe dönmesi sessiz push'a bağlı. Yetim avatar dosyaları süpürülmez. Uygulama içi
+  hesap silme ekranı ve çökme raporlama yok (`PHASE6.md` §10, `RELEASE_CHECKLIST.md`).
 
 ## Çekirdek iş listesi
 

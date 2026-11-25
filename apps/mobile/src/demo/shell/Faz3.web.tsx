@@ -641,8 +641,10 @@ const isF4Push = (n: DemoNotification) => isF4PushType(n.data?.type);
 const isSosPush = (n: DemoNotification) => n.data?.type === 'sos';
 /** Faz 5: bölge olayı, buluşma önerisi / yanıtı ve "bölge kuralı paylaşımı başlattı" yerel bildirimi. */
 const isF5Push = (n: DemoNotification) => isF5PushType(n.data?.type) || n.data?.type === 'zone_share_started';
-/** Dokunulunca uygulamadaki gerçek yanıt yoluna giren push'lar (Faz 4 + Faz 5). */
-const isRoutedPush = (n: DemoNotification) => isF4Push(n) || isF5Push(n);
+/** Faz 6: widget'tan başlatılan paylaşımın gönderen onayı (uygulama bunu yerel bildirimle gösterirse). */
+const isF6Push = (n: DemoNotification) => n.data?.type === 'quick_share_started';
+/** Dokunulunca uygulamadaki gerçek yanıt yoluna giren push'lar (Faz 4 + Faz 5 + Faz 6). */
+const isRoutedPush = (n: DemoNotification) => isF4Push(n) || isF5Push(n) || isF6Push(n);
 const isBatteryPush = (n: DemoNotification) => n.data?.type === 'battery_low' || isRoutedPush(n);
 
 /** Bildirime dokunma: Faz 4/5 push'u uygulamadaki gerçek yanıt yoluna girer (SOS kartı / ping vurgusu / buluşma kartı). */

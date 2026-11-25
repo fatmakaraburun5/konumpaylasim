@@ -36,6 +36,12 @@
  *  - `meetups/{meetup_id}` paylaşılan buluşma önerileri (core `Meetup` + `purge_at`; `from` ve `to` okur)
  *  - yalnızca sunucu: `zone_cooldowns/{uid}_{zone_id}_{transition}` (son bildirim anı), `meetup_cache/{anahtar}`
  *    (öneri yanıtı önbelleği; kullanıcıya özel, `expire_at` TTL), `maps_quota/{uid}_{gün}.meetup` sayacı
+ *
+ * Faz 6:
+ *  - `users/{uid}`: `gender`, `avatar_thumb_url`, `avatar_version` (`user_bootstrap` yazar), `favorite_ids`
+ *    (`favorites_set` yazar; arkadaşlık bitince / hesap silinince sunucu temizler). Belge yalnızca sahibine açık.
+ *  - yalnızca sunucu: `widget_tokens/{sha256Hex(token)}` (widget hızlı paylaşım token'ı; düz token YOK; `purge_at` TTL)
+ *  - Storage `avatars/{uid}/{version}.jpg` + `{version}_160.jpg` (storage.rules: yalnızca sahibi yazar / siler)
  */
 import {
   type EpochMs,
@@ -58,6 +64,7 @@ import {
   type UserProfile,
   PATHS,
   blockId,
+  isGender,
   friendshipId,
   requestId,
   shareId,
@@ -128,6 +135,23 @@ export interface UserDoc extends UserProfile {
   deleting?: boolean;
   /** Faz 4: acil durum kişileri (en çok 5, sıralı; yalnızca `emergency_contacts_set` yazar). */
   emergency_contacts?: UserId[];
+}
+
+/**
+ * Faz 6 `widget_tokens/{sha256Hex(token)}` (yalnızca sunucu; kurallarda kapalı). Düz token SAKLANMAZ.
+ * `uses`: token başına saatlik sabit pencere sayacı (`QUICK_SHARE_LIMITS.perTokenPerHour`).
+ */
+export interface WidgetTokenDoc {
+  uid: UserId;
+  device_id: string;
+  created_at: EpochMs;
+  expires_at: EpochMs;
+  last_used_at: EpochMs | null;
+  uses: { window_start: EpochMs; count: number };
+  revoked: boolean;
+  revoked_at?: EpochMs | null;
+  /** TTL: bitişten 1 gün sonra ya da iptalden 1 gün sonra. */
+  purge_at: Timestamp;
 }
 
 export interface BlockDoc {
@@ -402,6 +426,8 @@ export const COL = {
   zoneCooldowns: 'zone_cooldowns',
   meetups: PATHS.meetups,
   meetupCache: 'meetup_cache',
+  // Faz 6
+  widgetTokens: PATHS.widgetTokens,
 } as const;
 
 /** Faz 4 RTDB yolları. */
@@ -458,6 +484,8 @@ export const refs = {
   meetup: (id: string) => db().doc(PATHS.meetup(id)),
   newMeetup: () => db().collection(COL.meetups).doc(),
   meetupCache: (key: string) => db().doc(PATHS.meetupCache(key)),
+  // Faz 6
+  widgetToken: (tokenHash: string) => db().doc(PATHS.widgetToken(tokenHash)),
 } as const;
 
 /** Biten belgeler için TTL anı. [Varsayım] 7 gün. */
@@ -477,17 +505,34 @@ export function toView(s: ShareDoc): OutgoingShareView {
   };
 }
 
-export function publicProfile(u: Pick<UserProfile, 'display_name' | 'avatar_url'> | undefined): PublicProfile {
-  return { display_name: u?.display_name ?? '', avatar_url: u?.avatar_url ?? null };
+/**
+ * Arkadaşlara kopyalanan profil. Faz 6: cinsiyet (çerçeve rengi) ve 160 px küçük avatar da kopyalanır.
+ * Eski (Faz 6 öncesi) belgelerde alanlar yoksa `null` (istemci gri çerçeve + ana boy / baş harf gösterir).
+ */
+export function publicProfile(
+  u: (Pick<UserProfile, 'display_name' | 'avatar_url'> & Partial<Pick<UserProfile, 'gender' | 'avatar_thumb_url'>>) | undefined,
+): PublicProfile {
+  const avatar = u?.avatar_url ?? null;
+  return {
+    display_name: u?.display_name ?? '',
+    avatar_url: avatar,
+    gender: isGender(u?.gender) ? u.gender : null,
+    // Ana fotoğraf yoksa küçük boy da yok (yarım kalmış güncelleme kopyaya sızmasın).
+    avatar_thumb_url: avatar ? (u?.avatar_thumb_url ?? null) : null,
+  };
 }
 
 /**
- * Bekleyen istekte hedefe gösterilen isteyen profili: yalnızca ad. Avatar adresi kabulden önce
+ * Bekleyen istekte hedefe gösterilen isteyen profili: yalnızca ad. Avatar adresi (ve Faz 6 cinsiyeti) kabulden önce
  * kopyalanmaz (yabancının resmi hedef cihazda istek kartı çizilirken yüklenmesin). Kabulde güncel profil yazılır.
  */
 export function pendingProfile(u: Pick<UserProfile, 'display_name'> | undefined): PublicProfile {
-  return { display_name: u?.display_name ?? '', avatar_url: null };
+  return { display_name: u?.display_name ?? '', avatar_url: null, gender: null, avatar_thumb_url: null };
 }
+
+/** Eski belgelerde eksik Faz 6 alanları: favori listesi (yalnızca dizi olarak okunur). */
+export const favoriteIdsOf = (u: Partial<Pick<UserProfile, 'favorite_ids'>> | undefined): UserId[] =>
+  Array.isArray(u?.favorite_ids) ? u.favorite_ids.filter((x): x is UserId => typeof x === 'string') : [];
 
 /** Profil eksikse ya da hesap siliniyorsa false (yeni paylaşım / istek yok). */
 export const isUsableProfile = (u: UserDoc | undefined): u is UserDoc => Boolean(u && !u.deleting);

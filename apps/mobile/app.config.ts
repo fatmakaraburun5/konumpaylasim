@@ -217,6 +217,27 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       },
     ],
     './plugins/withLocationForegroundService',
+    /**
+     * Faz 6: profil fotoğrafı. Kamera ile çekme ve galeriden seçme. iOS 14+ sistem seçicisi (PHPicker) kitaplık izni
+     * istemez; metin yalnızca eski yol / sınırlı erişim için. Android 13+ fotoğraf seçici izinsiz çalışır.
+     */
+    [
+      'expo-image-picker',
+      {
+        photosPermission: 'Profil fotoğrafını galerinden seçebilmen için fotoğraflarına erişiyoruz. Yalnızca seçtiğin fotoğraf yüklenir.',
+        cameraPermission: 'Profil fotoğrafı çekebilmen için kameraya erişiyoruz.',
+        microphonePermission: false,
+      },
+    ],
+    /**
+     * Faz 6: ana ekran / kilit ekranı widget'ları (modules/konum-widgets + targets/widgets). SIRA ÖNEMLİ:
+     * konum-widgets eklentisi App Group'u (`group.${BUNDLE_ID}`) ios.entitlements'a zamanuyumlu yazar ve Android
+     * widget sağlayıcı / hızlı paylaşım alıcısı / Hızlı Ayarlar kutucuğu kayıtlarını manifeste ekler;
+     * @bacons/apple-targets ardından WidgetKit hedefini kurar (paket kimliği `${BUNDLE_ID}.widgets`, yalnızca bu
+     * hedefte iOS 17.0; uygulamanın dağıtım hedefi değişmez). Takım kimliği `APPLE_TEAM_ID` [Varsayım: EAS'ta tanımlanır].
+     */
+    './modules/konum-widgets/app.plugin.js',
+    ['@bacons/apple-targets', env('APPLE_TEAM_ID') ? { appleTeamId: env('APPLE_TEAM_ID') } : {}],
   ],
   experiments: {
     typedRoutes: false,

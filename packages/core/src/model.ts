@@ -12,11 +12,13 @@
  *   location_requests/{requester_id}_{target_id} konum isteği (iki taraf okur)
  *   devices/{user_id}/tokens/{token_id}   FCM token'ları (sahibi yazar)
  *   link_shares/{link_id}                 Faz 2: bağlantı (QR) paylaşımı (yalnızca gönderen okur)
+ *   widget_tokens/{sha256(token)}         Faz 6: widget hızlı paylaşım token'ı (yalnızca sunucu)
  *
  * Canlı konum Realtime Database'dedir, bkz. `packet.ts`, `link.ts` ve `contracts.ts`.
  */
 import type { EpochMs } from './time';
 import type { ShareMode } from './duration';
+import type { Gender } from './profile';
 
 export type UserId = string;
 export type ShareId = string;
@@ -32,12 +34,28 @@ export interface UserProfile {
   created_at: EpochMs;
   /** Faz 1'de 0; büyüdükçe RTDB parçalama (sharding) için. */
   rtdb_instance: number;
+  // --- Faz 6 ---
+  /** Kayıtta zorunlu; `null` YALNIZCA Faz 6 öncesi (eski) hesaplarda. Çerçeve rengi: `genderRingColor`. */
+  gender: Gender | null;
+  /** 160 px küçük boy (`avatars/{uid}/{version}_160.jpg`); pin / liste / widget bunu kullanır. */
+  avatar_thumb_url: string | null;
+  /** Son yüklenen fotoğrafın sürümü (yükleme anı epoch ms); önbellek anahtarı (`recyclingKey`). */
+  avatar_version: number | null;
+  /** Sıralı favoriler (en çok `FAVORITES_LIMIT`); ilk = tek tuşla paylaşım hedefi. Yalnızca sahibi okur. */
+  favorite_ids: UserId[];
 }
 
-/** Arkadaşlara gösterilen profil kopyası (friendships.member_profiles içinde). */
+/**
+ * Arkadaşlara gösterilen profil kopyası (friendships.member_profiles içinde). Faz 6 alanları profil yayılımıyla
+ * (backend `user.ts`) kabul edilmiş arkadaşlıklara yazılır; bekleyen istek profili yalnızca ad taşır (`gender: null`,
+ * fotoğraf yok).
+ */
 export interface PublicProfile {
   display_name: string;
   avatar_url: string | null;
+  // --- Faz 6 ---
+  gender: Gender | null;
+  avatar_thumb_url: string | null;
 }
 
 export type FriendshipStatus = 'pending' | 'accepted';

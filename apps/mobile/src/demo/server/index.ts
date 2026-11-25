@@ -28,7 +28,7 @@ import {
 } from '../../services/notifications/expoNotifications.web';
 import { AYSE_BATTERY, AYSE_LOW_BATTERY, DemoServer, type DemoSnapshot } from './server';
 import { safeStorage } from './storage';
-import { PEOPLE } from './world';
+import { DEMO_ME, DEMO_ME_FAVORITES, PEOPLE } from './world';
 
 let instance: DemoServer | null = null;
 
@@ -46,8 +46,10 @@ export {
   type DemoBatteryNotice,
   type DemoPushMessage,
   type DemoSnapshot,
+  type DemoWidgetSource,
 } from './server';
-export { DEMO_ME, DEMO_ME_INVITE, DEMO_ME_NAME, DEMO_OTP, MAP_HOME, PEOPLE } from './world';
+export { DEMO_ME, DEMO_ME_FAVORITES, DEMO_ME_INVITE, DEMO_ME_NAME, DEMO_OTP, MAP_HOME, PEOPLE } from './world';
+export { DemoStorageError } from './avatars';
 export { DEMO_DEFAULT_BATTERY_PCT, demoBatteryPct } from '../web/device';
 export { presentedDemoNotifications, respondToDemoNotification, type DemoNotification };
 
@@ -182,6 +184,27 @@ export const demoControls = {
   /** "Ayşe buluşma noktası önersin": Ayşe ile benim aramda bir kafe → bana öneri (push + kart). Dönen: meetup_id. */
   ayseSuggestMeetup(): string | null {
     return demoServer().botMeetupSuggest(PEOPLE.ayse.uid, demoPosition());
+  },
+
+  // --- Faz 6 ---------------------------------------------------------------------------------------
+  /**
+   * "Widget oturumu sunucuda dolsun": benim widget token'larımın süresi SUNUCUDA dolar (cihaz bilmez) → sonraki
+   * dokunuş `token_expired` alır, widget uygulamayı derin bağlantıyla açar, uygulama token'ı yeniler. Dönen: token sayısı.
+   */
+  widgetExpireToken(): number {
+    return demoServer().expireWidgetTokens(DEMO_ME, null);
+  },
+  /** "Hız sınırı dolsun": token'larımın bu saatlik penceresi 6/6 → sonraki dokunuş `rate_limited`. */
+  widgetRateLimit(): number {
+    return demoServer().exhaustWidgetTokens(DEMO_ME, null);
+  },
+  /** Favorilerimi ayarlar (`favorites_set` ile aynı temizlik). Dönen: saklanan liste. */
+  setMyFavorites(ids: readonly string[]): string[] {
+    return demoServer().setFavoritesOf(DEMO_ME, ids);
+  },
+  /** Favorilerimi demo başlangıcına döndürür (Ayşe, Mehmet, Zeynep). */
+  restoreMyFavorites(): string[] {
+    return demoServer().setFavoritesOf(DEMO_ME, DEMO_ME_FAVORITES);
   },
 
   /** Demoyu baştan başlatır: sunucu + uygulamanın kalıcı anahtarları silinir, sayfa yeniden yüklenir. */

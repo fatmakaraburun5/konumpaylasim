@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Faz 6: widget renkleri (açık tema). Cinsiyet çerçevesi renkleri Kotlin'de anlık görüntüdeki `ring` alanından gelir. -->
+<resources>
+  <color name="konum_w_bg">#FFFFFF</color>
+  <color name="konum_w_text">#111827</color>
+  <color name="konum_w_text2">#6B7280</color>
+  <color name="konum_w_accent">#2563EB</color>
+  <color name="konum_w_on_accent">#FFFFFF</color>
+  <color name="konum_w_live">#16A34A</color>
+  <color name="konum_w_danger">#DC2626</color>
+</resources>

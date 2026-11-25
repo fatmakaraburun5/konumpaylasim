@@ -13,6 +13,7 @@ import {
   type ShareDoc,
   type UserDoc,
   endedShare,
+  favoriteIdsOf,
   isUsableProfile,
   purgeAt,
   refs,
@@ -113,11 +114,14 @@ export function writePairCascade(
 
 // ---------------------------------------------------------------------------
 // Faz 4: arkadaşlık biterken (kaldırma / engelleme) acil kişi ve yer notu kitlesi temizliği
+// (Faz 6: aynı adımda favori listeleri de temizlenir)
 // ---------------------------------------------------------------------------
 
 export interface PairF4Cleanup {
   /** `emergency_contacts` listesinden çıkarılacak karşı taraf. */
   contacts: { ref: DocumentReference; remove: UserId }[];
+  /** Faz 6: `favorite_ids` listesinden çıkarılacak karşı taraf (aynı kullanıcı belgeleri okunduğu için burada). */
+  favorites: { ref: DocumentReference; remove: UserId }[];
   /** `visible_to` listesinden çıkarılacak karşı taraf (yer notları). */
   notes: { ref: DocumentReference; remove: UserId }[];
 }
@@ -129,12 +133,15 @@ export interface PairF4Cleanup {
 export async function readPairF4Cleanup(tx: Transaction, a: UserId, b: UserId): Promise<PairF4Cleanup> {
   const [ua, ub] = await tx.getAll(refs.user(a), refs.user(b));
   const contacts: PairF4Cleanup['contacts'] = [];
+  const favorites: PairF4Cleanup['favorites'] = [];
   for (const [snap, other] of [
     [ua, b],
     [ub, a],
   ] as const) {
-    const list = (snap?.data() as UserDoc | undefined)?.emergency_contacts;
+    const u = snap?.data() as UserDoc | undefined;
+    const list = u?.emergency_contacts;
     if (snap?.exists && Array.isArray(list) && list.includes(other)) contacts.push({ ref: snap.ref, remove: other });
+    if (snap?.exists && favoriteIdsOf(u).includes(other)) favorites.push({ ref: snap.ref, remove: other });
   }
   const notesCol = db().collection(COL.placeNotes);
   const [na, nb] = await Promise.all([
@@ -145,11 +152,12 @@ export async function readPairF4Cleanup(tx: Transaction, a: UserId, b: UserId): 
     ...na.docs.filter((d) => (d.data() as PlaceNoteDoc).owner_id === a).map((d) => ({ ref: d.ref, remove: b })),
     ...nb.docs.filter((d) => (d.data() as PlaceNoteDoc).owner_id === b).map((d) => ({ ref: d.ref, remove: a })),
   ];
-  return { contacts, notes };
+  return { contacts, favorites, notes };
 }
 
 /** Yazma aşaması: karşı tarafı listelerden çıkarır (belge yoksa dokunmaz; okuma aşaması var olanları seçti). */
 export function writePairF4Cleanup(tx: Transaction, c: PairF4Cleanup): void {
   for (const x of c.contacts) tx.update(x.ref, { emergency_contacts: FieldValue.arrayRemove(x.remove) });
+  for (const x of c.favorites) tx.update(x.ref, { favorite_ids: FieldValue.arrayRemove(x.remove) });
   for (const x of c.notes) tx.update(x.ref, { visible_to: FieldValue.arrayRemove(x.remove) });
 }

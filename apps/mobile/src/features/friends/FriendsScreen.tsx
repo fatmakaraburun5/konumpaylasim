@@ -6,17 +6,32 @@
  * Faz 4: "Acil durum kişileri" kartı (EmergencyContactsSheet ile düzenlenir; SOS bu kişilere gider) ve her arkadaş
  * satırında tek dokunuşla "📍 Buradayım / 🚶 Yoldayım" (konum paylaşımı olmasa da gönderilebilir).
  * Faz 5: "Bölgelerim" kartı (varış / ayrılış kuralları ekranına giriş).
+ * Faz 6: profil kartı (fotoğraf + ad → Profil ve widget ekranı), "Favoriler" kartı (widget sırası, her birinde
+ * tek dokunuşla "⏱ 1 sa" paylaşım) ve her arkadaş satırında yıldız (en çok 4; sınırda kısa uyarı). Satırlarda
+ * fotoğraf + cinsiyet çerçevesi.
  */
-import { formatInviteCode, SOS_LIMITS } from '@konum/core';
+import { FAVORITES_LIMIT, formatInviteCode, SOS_LIMITS, type UserId } from '@konum/core';
 import { useRouter } from 'expo-router';
 import { useRef, useState } from 'react';
-import { Alert, ScrollView, Share, StyleSheet, TextInput, View } from 'react-native';
+import { Alert, Pressable, ScrollView, Share, StyleSheet, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuthStore } from '../../state/authStore';
-import { friendsStore, useFriendNames, useFriendRequests, useFriends, useOutgoingRequests, type FriendOpResult } from '../../state/friendsStore';
+import { favoritesStore, useFavoriteIds, useFavoritesStore } from '../../state/favoritesStore';
+import {
+  friendAvatarProps,
+  friendsStore,
+  useFriendNames,
+  useFriendRequests,
+  useFriends,
+  useFriendsById,
+  useOutgoingRequests,
+  type FriendOpResult,
+} from '../../state/friendsStore';
 import { useSosStore } from '../../state/sosStore';
-import { Avatar, Button, cardShadow, IconButton, MIN_TOUCH, Text, useTheme } from '../../ui';
+import { Avatar, Button, cardShadow, Icon, IconButton, MIN_TOUCH, Text, useTheme } from '../../ui';
 import { PingButtons } from '../ping/PingButtons';
+import { FriendAvatar } from '../profile/FriendAvatar';
+import { QuickShareButton } from '../quickShare/QuickShareButton';
 import { EmergencyContactsSheet, type EmergencyContactsSheetHandle } from '../sos/EmergencyContactsSheet';
 
 export function FriendsScreen() {
@@ -29,6 +44,9 @@ export function FriendsScreen() {
   const outgoing = useOutgoingRequests();
   const names = useFriendNames();
   const emergencyContacts = useSosStore((s) => s.emergencyContacts);
+  const favoriteIds = useFavoriteIds();
+  const favError = useFavoritesStore((s) => s.error);
+  const byId = useFriendsById();
   const contactsSheet = useRef<EmergencyContactsSheetHandle>(null);
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
@@ -73,6 +91,56 @@ export function FriendsScreen() {
         </Text>
       </View>
       <ScrollView contentContainerStyle={{ padding: spacing.md, gap: spacing.md, paddingBottom: insets.bottom + spacing.xl }} keyboardShouldPersistTaps="handled">
+        {profile ? (
+          <Pressable
+            onPress={() => router.push('/profile')}
+            accessibilityRole="button"
+            accessibilityLabel="Profil ve widget ayarları"
+            testID="friends-profile-card"
+            style={({ pressed }) => [...card, styles.row, { opacity: pressed ? 0.85 : 1 }]}
+          >
+            <FriendAvatar uid={profile.user_id} fallbackName={profile.display_name} size={44} />
+            <View style={styles.flex}>
+              <Text variant="heading" numberOfLines={1}>
+                {profile.display_name}
+              </Text>
+              <Text variant="label" color="textSecondary" numberOfLines={1}>
+                {profile.avatar_url ? 'Fotoğraf, ad ve widget ayarları' : 'Fotoğraf ekle · ad ve widget ayarları'}
+              </Text>
+            </View>
+            <Text variant="label" color="primary">
+              Profil
+            </Text>
+          </Pressable>
+        ) : null}
+
+        <View style={card} testID="favorites-card">
+          <Text variant="heading">{`Favoriler (${favoriteIds.length}/${FAVORITES_LIMIT})`}</Text>
+          {favoriteIds.length === 0 ? (
+            <Text variant="label" color="textSecondary">
+              Arkadaş listende ☆ simgesine dokunarak en çok {FAVORITES_LIMIT} favori seç. Favoriler ana ekran widget’ında görünür; tek dokunuşla 1 saat konum paylaşabilirsin.
+            </Text>
+          ) : (
+            favoriteIds.map((uid) => {
+              const fname = byId[uid]?.displayName ?? 'Arkadaş';
+              return (
+                <View key={uid} style={[styles.row, { gap: spacing.sm, minHeight: MIN_TOUCH }]} testID={`favorite-row-${uid}`}>
+                  <FriendAvatar uid={uid} fallbackName={fname} size={36} />
+                  <Text variant="body" style={styles.flex} numberOfLines={1}>
+                    {fname}
+                  </Text>
+                  <QuickShareButton uid={uid} name={fname} />
+                </View>
+              );
+            })
+          )}
+          {favError ? (
+            <Text variant="label" color="danger" accessibilityLiveRegion="polite" testID="favorites-error">
+              {favError}
+            </Text>
+          ) : null}
+        </View>
+
         {profile?.invite_code ? (
           <View style={card}>
             <Text variant="label" color="textSecondary">
@@ -211,10 +279,11 @@ export function FriendsScreen() {
                     if (e.nativeEvent.actionName === 'remove') confirmRemove(f.friendshipId, f.displayName);
                   }}
                 >
-                  <Avatar name={f.displayName} size={36} />
+                  <Avatar {...friendAvatarProps(f)} size={36} />
                   <Text variant="body" style={styles.flex} numberOfLines={1}>
                     {f.displayName}
                   </Text>
+                  <FavoriteStar uid={f.uid} name={f.displayName} on={favoriteIds.includes(f.uid)} />
                   <Button
                     title="Çıkar"
                     variant="ghost"
@@ -242,7 +311,26 @@ export function FriendsScreen() {
   );
 }
 
+/** Favori yıldızı: dokunuş iyimser; sınır doluysa favoriler kartında kısa uyarı (favoritesStore.error). */
+function FavoriteStar({ uid, name, on }: { uid: UserId; name: string; on: boolean }) {
+  const { colors } = useTheme();
+  return (
+    <Pressable
+      testID={`favorite-toggle-${uid}`}
+      onPress={() => void favoritesStore.getState().toggle(uid)}
+      accessibilityRole="button"
+      accessibilityState={{ selected: on }}
+      accessibilityLabel={on ? `${name} favorilerden çıkar` : `${name} favorilere ekle`}
+      hitSlop={6}
+      style={({ pressed }) => [styles.star, { backgroundColor: pressed ? colors.surfaceAlt : 'transparent' }]}
+    >
+      <Icon name={on ? 'starFilled' : 'star'} color={on ? colors.warning : colors.textSecondary} />
+    </Pressable>
+  );
+}
+
 const styles = StyleSheet.create({
+  star: { width: MIN_TOUCH, height: MIN_TOUCH, borderRadius: 999, alignItems: 'center', justifyContent: 'center' },
   root: { flex: 1 },
   header: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   input: { minHeight: MIN_TOUCH + 4, letterSpacing: 1 },

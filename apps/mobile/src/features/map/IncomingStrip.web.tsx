@@ -9,7 +9,8 @@
 import { formatAgo, LOW_BATTERY_PCT, lowBatteryBadge, syncedPointsText, type EpochMs, type ReceiverStatus, type UserId } from '@konum/core';
 import { Alert, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { incomingStore, type IncomingFriendLocation } from '../../state/incomingStore';
-import { Avatar, cardShadow, IconButton, Text, useTheme } from '../../ui';
+import { cardShadow, IconButton, Text, useTheme } from '../../ui';
+import { FriendAvatar } from '../profile/FriendAvatar';
 
 /** Uyarı rengiyle gösterilen alıcı durumları. */
 const WARN: ReadonlySet<ReceiverStatus> = new Set(['delayed', 'offline_suspected', 'stale']);
@@ -74,7 +75,7 @@ export function IncomingStrip({ items, names, now, onFocus }: IncomingStripProps
                 { backgroundColor: pressed ? colors.surfaceAlt : 'transparent', borderRadius: radius.lg, padding: spacing.xs, gap: spacing.xs },
               ]}
             >
-              <Avatar name={name} size={36} freshness={f.freshness} />
+              <FriendAvatar uid={f.senderId} fallbackName={name} size={36} freshness={f.freshness} />
               <View>
                 <Text variant="label" numberOfLines={1} style={styles.name}>
                   {name}

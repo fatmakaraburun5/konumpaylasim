@@ -1,0 +1,40 @@
+rules_version = '2';
+
+// Faz 6: Cloud Storage kuralları — yalnızca profil fotoğrafları (avatar).
+//
+// Yol: avatars/{uid}/{version}.jpg (ana, 512 px, ≤ 400 KB) ve avatars/{uid}/{version}_160.jpg (küçük, 160 px,
+// ≤ 60 KB); version = yükleme anı epoch ms (13 hane). Sınırlar core AVATAR_LIMITS / AVATAR_FILE_RE ile aynı olmalı
+// (sözleşme testi test/unit/contract.test.ts karşılaştırır).
+//
+//  - Yazma: yalnızca sahibi, yalnızca bu dosya adlarıyla, yalnızca image/jpeg ve boyut sınırı içinde. Cihaz fotoğrafı
+//    yeniden kodlar (EXIF/GPS atılır); sunucu içeriği ayrıca doğrulamaz [Varsayım].
+//  - Okuma: arkadaşlar fotoğrafı `member_profiles` içindeki İNDİRME TOKEN'LI URL ile görür (token kural dışıdır,
+//    Faz 1 tasarımı). Kural okuması yalnızca SAHİBİNE açık ve yalnızca `get`: istemci SDK'sı yüklemeden sonra
+//    `getDownloadURL()` için nesne meta verisini okur. Listeleme kapalı (sürüm geçmişi kimseye görünmez).
+//  - Silme: sahibi (fotoğrafı kaldırma / değiştirme). Sunucu (Admin SDK) kuralları atlar: eski sürümü ve hesap
+//    silmede tüm klasörü siler.
+service firebase.storage {
+  match /b/{bucket}/o {
+    function isOwner(uid) {
+      return request.auth != null && request.auth.uid == uid;
+    }
+
+    function validAvatar(file) {
+      return request.resource.contentType == 'image/jpeg'
+        && ((file.matches('^[0-9]{13}[.]jpg$') && request.resource.size <= 400000)
+          || (file.matches('^[0-9]{13}_160[.]jpg$') && request.resource.size <= 60000));
+    }
+
+    match /avatars/{uid}/{file} {
+      allow get: if isOwner(uid);
+      allow list: if false;
+      allow create, update: if isOwner(uid) && validAvatar(file);
+      allow delete: if isOwner(uid);
+    }
+
+    // Geri kalan her şey kapalı.
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

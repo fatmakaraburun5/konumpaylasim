@@ -11,7 +11,8 @@ import { Animated, Platform, Pressable, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNow } from '../../lib/useNow';
 import { usePingStore } from '../../state/pingStore';
-import { Avatar, cardShadow, IconButton, Text, useTheme } from '../../ui';
+import { cardShadow, IconButton, Text, useTheme } from '../../ui';
+import { FriendAvatar } from '../profile/FriendAvatar';
 import { PING_TOAST_AUTO_HIDE_MS, pingToastItem } from './pingModel';
 
 export interface PingToastProps {
@@ -66,7 +67,7 @@ export function PingToast({ names, onShowOnMap }: PingToastProps) {
         style={[styles.card, cardShadow, { backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.sm, gap: spacing.sm, borderColor: colors.primary }]}
         testID="ping-toast"
       >
-        <Avatar name={name} size={40} />
+        <FriendAvatar uid={item.from} fallbackName={name} size={40} />
         <View style={styles.flex}>
           <Text variant="heading" numberOfLines={1}>
             {name}

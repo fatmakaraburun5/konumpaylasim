@@ -72,3 +72,23 @@ export function callable<S extends z.ZodType, R>(name: string, schema: S, handle
     },
   );
 }
+
+/**
+ * Faz 6: OTURUMSUZ ve App Check'siz callable (yalnızca `widget_quick_share`). Widget uzantısı / AppWidget alıcısı
+ * Firebase Auth ve App Check'e erişemez; yetki istekteki widget token'ıdır ve işleyici onu doğrular. Gövde
+ * protokolü aynıdır (`POST {data}` → `{result}` | `{error}`), hata eşlemesi aynıdır. İstekte `Authorization`
+ * başlığı olsa bile kimlik KULLANILMAZ (token sahibinin uid'i esas). Secret bildirilmez (telefon biberi gerekmez).
+ */
+export function tokenCallable<S extends z.ZodType, R>(name: string, schema: S, handler: (data: z.output<S>) => Promise<R>) {
+  return onCall(
+    { region: REGION, enforceAppCheck: false, maxInstances: MAX_INSTANCES },
+    async (req: CallableRequest<unknown>): Promise<R> => {
+      try {
+        const data = parseInput(schema, req.data);
+        return await handler(data);
+      } catch (err) {
+        throw toHttpsError(err, name);
+      }
+    },
+  );
+}

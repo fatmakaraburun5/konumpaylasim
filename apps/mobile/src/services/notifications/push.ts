@@ -9,8 +9,12 @@
  *  - Token yenilenince eski token'ın belgesi silinir.
  *  - Bu cihazda en son hangi hesabın token kaydettiği saklanır; başka hesap girerse token önce döndürülür
  *    (çevrimdışı çıkışta eski token silinememiş olabilir: aynı token iki hesapta kayıtlı kalmasın).
+ *
+ * Faz 6: `quick_share_started` (widget'tan başlatılan paylaşım, gönderene görünür) önde yerel bildirimle gösterilir;
+ * `widget_refresh` (yalnızca veri) widget'ı yeniler. Arka planda (başsız) widget paylaşımı kalıcı hedeflere alınır
+ * (widgetBackground.ts) ve takip `resume_tracking` ile başlar.
  */
-import { lowBatteryPushText, type PushData, type UserId } from '@konum/core';
+import { QUICK_SHARE_NOTIFICATION, lowBatteryPushText, type PushData, type UserId } from '@konum/core';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   deleteToken,
@@ -29,6 +33,8 @@ import { resumeTracking } from '../location/resume';
 import * as Notifications from './expoNotifications';
 import { f4ForegroundContent, routeF4Open } from './f4Push';
 import { f5ForegroundContent, isF5PushType, routeF5Open, routeF5Received } from './f5Push';
+import { f6ForegroundContent, isF6PushType, routeF6Received } from './f6Push';
+import { handleWidgetBackgroundPush } from '../widgets/widgetBackground';
 
 const OWNER_KEY = 'konum.push.owner.v1';
 /** [Varsayım] Çıkışta token silme en çok bu kadar bekletir (çevrimdışıysa çıkış yine yapılır). */
@@ -133,6 +139,26 @@ async function handleForegroundMessage(msg: RemoteMessage): Promise<void> {
     }
     return;
   }
+  // Faz 6: widget paylaşımı onayı yerel bildirimle; widget yenileme sessiz (f6Services → requestWidgetSync).
+  if (isF6PushType(m.data?.type)) {
+    routeF6Received(m.data);
+    const f6 = f6ForegroundContent(m);
+    if (f6) {
+      await Notifications.scheduleNotificationAsync({
+        content: {
+          title: f6.title,
+          body: f6.body,
+          data: f6.data,
+          sound: f6.sound ? 'default' : false,
+          interruptionLevel: f6.interruptionLevel,
+          // iOS: uzaktan gelenle aynı kategori → "Durdur" eylemi (f6Services.handleQuickShareResponse).
+          categoryIdentifier: QUICK_SHARE_NOTIFICATION.category,
+        },
+        trigger: Platform.OS === 'android' ? { channelId: f6.channelId } : null,
+      });
+    }
+    return;
+  }
   const f4 = f4ForegroundContent(m, { includePing: false });
   if (f4) {
     await Notifications.scheduleNotificationAsync({
@@ -162,7 +188,15 @@ export function registerBackgroundMessageHandler(): void {
     setBackgroundMessageHandler(getMessaging(), async (m) => {
       // Bildirim yükü (düşük pil, duraksadı) sistem tarafından gösterilir.
       // Faz 3: `resume_tracking` sessiz uyandırma → takibi yeniden ayağa kaldır (iOS ~30 sn, Android ~10 sn süre).
-      if (pushType(m as unknown as PushLike) === 'resume_tracking') await resumeTracking('push').catch(() => undefined);
+      // Faz 6: widget'tan başlatılan paylaşım kalıcı hedeflerde yoksa önce sunucudan alınır (widgetBackground).
+      const p = m as unknown as PushLike;
+      const type = pushType(p);
+      if (type === 'resume_tracking') {
+        await handleWidgetBackgroundPush(p.data).catch(() => undefined);
+        await resumeTracking('push').catch(() => undefined);
+        return;
+      }
+      if (isF6PushType(type)) await handleWidgetBackgroundPush(p.data).catch(() => undefined);
     });
   } catch {
     // Firebase yapılandırılmamışsa (ör. test) sessizce geç.

@@ -5,6 +5,7 @@
  * Faz 2: `s/[token]` (QR / paylaşım bağlantısı) kök düzeydedir, kimlik kapısının DIŞINDA: uygulama kuruluysa
  * `https://<LINK_DOMAIN>/s/<token>` (Universal Links / App Links, bkz. app.config.ts) ve `konum://s/<token>`
  * oturum açmadan da salt okunur canlı haritayı açar. Uygulama kurulu değilse aynı URL web haritasında açılır.
+ * Faz 6: `quick-share` (widget'ın uygulamayı açtığı bağlantı) da kök düzeydedir; isteği kaydedip ana ekrana döner.
  */
 import { BottomSheetModalProvider } from '@gorhom/bottom-sheet';
 import { Stack } from 'expo-router';
@@ -42,6 +43,8 @@ export default function RootLayout() {
             <Stack.Screen name="(main)" />
             <Stack.Screen name="(auth)" />
             <Stack.Screen name="s/[token]" options={{ animation: 'fade' }} />
+            {/* Faz 6: widget derin bağlantısı; isteği bırakıp hemen geri döner (bkz. app/quick-share.tsx). */}
+            <Stack.Screen name="quick-share" options={{ animation: 'none' }} />
           </Stack>
         </BottomSheetModalProvider>
       </SafeAreaProvider>

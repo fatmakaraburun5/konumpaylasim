@@ -34,13 +34,22 @@ describe('user_bootstrap', () => {
   it('idempotent: profil, gizli telefon, telefon indeksi ve davet kodu', async () => {
     const phone = randomPhone();
     const auth = await signInWithPhone(phone);
-    const first = await call('user_bootstrap', { display_name: 'Zeynep' }, auth);
+    const first = await call('user_bootstrap', { display_name: 'Zeynep', gender: 'female' }, auth);
     const second = await call('user_bootstrap', {}, auth);
     expect(first.created).toBe(true);
     expect(second.created).toBe(false);
     expect(second.user).toEqual(first.user);
     expect(first.user.invite_code).toMatch(INVITE_CODE_RE);
-    expect(first.user).toMatchObject({ user_id: auth.uid, display_name: 'Zeynep', avatar_url: null, rtdb_instance: 0 });
+    expect(first.user).toMatchObject({
+      user_id: auth.uid,
+      display_name: 'Zeynep',
+      avatar_url: null,
+      rtdb_instance: 0,
+      gender: 'female',
+      avatar_thumb_url: null,
+      avatar_version: null,
+      favorite_ids: [],
+    });
     expect((await db().doc(`users_private/${auth.uid}`).get()).data()).toMatchObject({ phone_e164: phone });
     expect((await db().doc(`phone_index/${phone}`).get()).data()).toMatchObject({ user_id: auth.uid });
     expect((await db().doc(`invite_codes/${first.user.invite_code}`).get()).data()).toMatchObject({ user_id: auth.uid });
@@ -87,7 +96,8 @@ describe('friend_request_send', () => {
     // Kayıtlıda bekleyen istek oluşur; hedefin adı kabul edilene kadar kopyalanmaz; avatar kopyalanmaz.
     const f = await fDoc(X, Y);
     expect(f).toMatchObject({ status: 'pending', requested_by: X.uid, target_id: Y.uid, via: 'phone' });
-    expect(f?.member_profiles).toEqual({ [X.uid]: { display_name: 'X', avatar_url: null } });
+    // Faz 6: bekleyen istekte cinsiyet de kopyalanmaz (gri çerçeve).
+    expect(f?.member_profiles).toEqual({ [X.uid]: { display_name: 'X', avatar_url: null, gender: null, avatar_thumb_url: null } });
     // İsteyenin görünümü: iki istek için de aynı biçimde maskeli giden kayıt; hedef uid'i yok.
     const out = await outgoing(X);
     expect(out).toHaveLength(2);
@@ -170,8 +180,8 @@ describe('friend_request_respond / cancel', () => {
     expect(ok).toMatchObject({ friendship_id: id, status: 'accepted' });
     const f = await fDoc(X, Y);
     expect(f?.member_profiles).toEqual({
-      [X.uid]: { display_name: 'Xavier', avatar_url: null },
-      [Y.uid]: { display_name: 'Yasemin', avatar_url: null },
+      [X.uid]: { display_name: 'Xavier', avatar_url: null, gender: 'female', avatar_thumb_url: null },
+      [Y.uid]: { display_name: 'Yasemin', avatar_url: null, gender: 'female', avatar_thumb_url: null },
     });
     // Kabul ile iptal yarışında kaybeden failed-precondition + güncel durum alır.
     const late = await callError('friend_request_cancel', { op_id: opId(), friendship_id: id }, X);

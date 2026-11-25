@@ -1,4 +1,4 @@
-# Konum — mobil uygulama (Faz 1 + Faz 2)
+# Konum — mobil uygulama (Faz 1–6)
 
 Arkadaşlarla süreli canlı konum paylaşımı. Expo SDK 58, React Native 0.88, TypeScript (strict),
 Firebase (Auth, Firestore, Realtime Database, Functions, App Check, Messaging), Google Haritalar.
@@ -143,6 +143,23 @@ Faz 5 (ayrıntı: `docs/PHASE5.md`):
 - **Buluşma noktası:** Ayşe'ye dokun → "📍 Buluşma noktası öner" → kategori, 3 öneri (her iki tarafın ETA'sı),
   haritada numaralı pinler → "Paylaş". Panel "Ayşe buluşma noktası önersin" → alıcı kartı (Geliyorum / Uyamam).
 
+Faz 6 (ayrıntı: `docs/PHASE6.md`):
+
+- **Cinsiyet:** kayıtta ad ekranında "Kadın / Erkek" seçilmeden "Devam" pasiftir; seçim halkanın rengini belirler
+  (pembe / mavi). Fotoğrafsız kişide baş harfler ("CÖ") aynı renkte halkayla görünür.
+- **Profil fotoğrafı:** Hesap menüsü → "Profil ve widget" → "Galeri" (tarayıcının dosya seçicisi; kare kırpma ve
+  512 / 160 px sıkıştırma gerçek hattan geçer) ya da "Fotoğrafı kaldır". Fotoğraf arkadaş listesinde, haritadaki
+  pinde ve üst çubukta çerçeveli görünür.
+- **Favoriler:** Arkadaşlar'da yıldıza dokun (en çok 4; beşincide "En fazla 4 favori seçebilirsin"). İlk favori tek
+  dokunuşla paylaşım hedefidir.
+- **Widget'lar:** panel **"FAZ 6 · WIDGET'LAR"** → iOS ana ekran (systemSmall / systemMedium), kilit ekranı (satır
+  içi, yuvarlak, dikdörtgen; "Kilit ekranında ayrıntı göster" anahtarı uygulama ayarıyla aynıdır) ve Android 2x2 /
+  4x2 + Hızlı Ayar kutucuğu; widget'ların okuduğu gerçek anlık görüntü (boyutu, yazma / yenileme sayısı).
+  "1 sa paylaş" → "✓ Başladı", bildirim ve uygulamada geri sayım.
+- **Düşüşler:** "Widget oturumu sunucuda dolsun" (derin bağlantı → uygulamada aynı adım, token yenilenir), "'Her
+  Zaman' konum izni kapansın", "Bağlantı kesilsin", "Hız sınırı dolsun (saatte 6)", "Favorileri boşalt",
+  "iOS 16 gibi (etkileşimsiz)".
+
 Tek dosyalık statik derleme (sunucu gerektirmez, dış istek atmaz):
 
 ```bash
@@ -167,6 +184,8 @@ erişilemezse (korumalı iframe, gizli pencere) demo verileri yalnızca bellekte
 | GPS ve arka plan konum görevi | Moda'da simüle yürüyüş (5 sn'de bir örnek); arka plan görevi ve pil yönetimi yok |
 | Gerçek bildirimler (FCM, yerel bildirim) | Uygulama içi "telefon bildirimi" kartı (+30 dk / +1 saat / Durdur) |
 | `Alert.alert` iletişim kutuları | Telefon çerçevesi içinde açılan uygulama içi iletişim kutusu |
+| Kamera / galeri, Cloud Storage | Tarayıcı dosya seçicisi (expo-image-picker web); kare kırpma ve JPEG sıkıştırma gerçek hattan (canvas) geçer; görüntü tarayıcıda tutulur, Firebase biçiminde indirme adresi üretilir |
+| iOS WidgetKit, Android AppWidget, widget token'ı | Paneldeki widget çizimleri core anlık görüntüsünden çizilir; `widget_quick_share` demo sunucusunda core kurallarıyla (token özeti, saatte 6, süre) |
 
 Web'e özgü kod yalnızca Metro platform uzantılarıyla (`*.web.ts(x)`) seçilir; native dosyalar aynıdır.
 Tek istisna `metro.config.js`'teki `platform === 'web'` dalıdır (AsyncStorage → güvenli depo).
@@ -470,3 +489,24 @@ gömülü op_id ile `link_share_extend` çağırır (uygulama açıksa depo üze
   yazılan URL web haritasında kalır. Android App Links doğrulaması assetlinks.json imza parmak izine bağlı.
 - Bağlantı "+30 dk" bildirim eylemi iOS'ta uygulamayı öne getirir (Faz 1 ile aynı gerekçe).
 - iOS'ta uygulama kapatılınca (app switcher) bağlantı yayını da arkadaş yayını gibi seyrekleşir.
+
+## 10. Faz 6 — widget'lar, tek dokunuşla 1 saat, profil fotoğrafı
+
+Ayrıntı ve gerekçeler: [`docs/PHASE6.md`](../../docs/PHASE6.md). Yayın öncesi liste:
+[`docs/RELEASE_CHECKLIST.md`](../../docs/RELEASE_CHECKLIST.md).
+
+- **Native kod:** `targets/widgets/` (iOS WidgetKit uzantısı, Swift, `@bacons/apple-targets`; iOS 17.0) ve
+  `modules/konum-widgets/` (Expo modülü: iOS App Group / anahtarlık köprüsü, Android `AppWidgetProvider` + RemoteViews,
+  `QuickShareReceiver`, `QuickShareTileService`, WorkManager; config plugin). App Group `group.${BUNDLE_ID}`, uzantı
+  kimliği `${BUNDLE_ID}.widgets`; ikisi de `app.config.ts`'teki paket kimliğinden türetilir, sabit yazılmaz.
+- **JS tarafı:** `src/services/widgets/` (`widgetSync` anlık görüntü yazma / yenileme kısıtı, `widgetBridge` yerel modül
+  köprüsü; web'de no-op), `src/services/profile/avatarPipeline.ts` (kırp → 512 px q0,8 + 160 px q0,7 JPEG),
+  `src/features/{profile,quickShare}/`, `app/(main)/profile.tsx`, `app/quick-share.tsx` (widget düşüşlerinin derin
+  bağlantısı), `src/services/f6Services.ts` (eşitleme, push, "Durdur" bildirim eylemi).
+- **Yeni bağımlılıklar:** `@bacons/apple-targets`, `@react-native-firebase/storage`, `expo-image`,
+  `expo-image-picker`, `expo-image-manipulator`, `expo-file-system`. Yeni development build gerektirir.
+- **Testler:** `__tests__/faz6App.test.ts`, `widgetBridge.test.ts` (Swift + Kotlin anahtar sözleşmesi dahil),
+  `demoFaz6.test.ts`.
+- **Sınırlar** [Varsayım: cihazda doğrulanmalı]: Swift / Kotlin kodu bu ortamda derlenmedi; Android'de widget başına
+  favori seçici yok; iOS 16'da widget yok; uygulama kapalıyken widget'tan başlayan paylaşımın takibe dönmesi
+  sessiz push'a bağlı.

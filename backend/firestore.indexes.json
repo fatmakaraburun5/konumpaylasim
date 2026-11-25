@@ -372,6 +372,12 @@
       "fieldPath": "expire_at",
       "ttl": true,
       "indexes": []
+    },
+    {
+      "collectionGroup": "widget_tokens",
+      "fieldPath": "purge_at",
+      "ttl": true,
+      "indexes": []
     }
   ]
 }

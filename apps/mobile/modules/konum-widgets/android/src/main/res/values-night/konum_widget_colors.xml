@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Faz 6: widget renkleri (koyu tema). -->
+<resources>
+  <color name="konum_w_bg">#111827</color>
+  <color name="konum_w_text">#F9FAFB</color>
+  <color name="konum_w_text2">#9CA3AF</color>
+  <color name="konum_w_accent">#3B82F6</color>
+  <color name="konum_w_on_accent">#FFFFFF</color>
+  <color name="konum_w_live">#22C55E</color>
+  <color name="konum_w_danger">#F87171</color>
+</resources>

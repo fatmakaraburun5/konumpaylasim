@@ -3,7 +3,15 @@
  * Aynı kurallar: alanlar yalnızca eklenir, her komut `op_id` (UUID v4) taşır.
  * Bunların core'a taşınması `core_requests` olarak raporlandı.
  */
-import type { EpochMs, OutgoingShareView, RequestId, SessionId, ShareId, UserProfile } from '@konum/core';
+import {
+  type EpochMs,
+  type OutgoingShareView,
+  ProfileFieldsF6Schema,
+  type RequestId,
+  type SessionId,
+  type ShareId,
+  type UserProfile,
+} from '@konum/core';
 import { z } from 'zod';
 import { SERVER_UID_RE } from './util';
 
@@ -24,6 +32,11 @@ export const UserBootstrapSchema = z.object({
    * Serbest https adresi kabul edilmez: arkadaşın uygulaması resmi yüklerken üçüncü bir sunucuya IP sızardı.
    */
   avatar_url: z.url({ protocol: /^https$/ }).max(2048).nullable().optional(),
+  /**
+   * Faz 6 (core `ProfileFieldsF6Schema`): `gender` profil OLUŞTURULURKEN zorunlu (`gender_required`), sonra isteğe
+   * bağlı; `null` kabul edilmez (seçilen cinsiyet temizlenemez). `avatar_thumb_url` aynı sürümün `_160` kardeşi.
+   */
+  ...ProfileFieldsF6Schema.shape,
 });
 
 export const InviteCodeRegenerateSchema = z.object({ op_id: opId });

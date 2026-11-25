@@ -1,8 +1,14 @@
-/** İlk girişte görünen ad (arkadaşlar bunu görür). `user_bootstrap` ile kaydedilir. */
+/**
+ * İlk girişte görünen ad (arkadaşlar bunu görür) ve Faz 6: ZORUNLU cinsiyet seçimi (iki büyük çip; seçilmeden
+ * "Devam" pasif). Cinsiyet harita pininde / widget'ta / listede çerçeve rengini belirler (kadın pembe, erkek mavi).
+ * İkisi birlikte `user_bootstrap` ile kaydedilir (profil bu çağrıda oluşur).
+ */
+import type { Gender } from '@konum/core';
 import { useState } from 'react';
 import { ActivityIndicator, StyleSheet, TextInput, View } from 'react-native';
 import { useAuthStore } from '../../state/authStore';
 import { Button, MIN_TOUCH, Text, useTheme } from '../../ui';
+import { GenderPicker } from '../profile/GenderPicker';
 import { AuthScaffold } from './AuthScaffold';
 
 export function ProfileNameScreen() {
@@ -13,6 +19,7 @@ export function ProfileNameScreen() {
   const completeProfile = useAuthStore((s) => s.completeProfile);
   const retryBootstrap = useAuthStore((s) => s.retryBootstrap);
   const signOut = useAuthStore((s) => s.signOut);
+  const [gender, setGender] = useState<Gender | null>(null);
   const [name, setName] = useState('');
 
   if (status === 'bootstrapping') {
@@ -40,7 +47,18 @@ export function ProfileNameScreen() {
     <AuthScaffold
       title="Adın ne?"
       subtitle="Arkadaşların seni bu adla görür. Daha sonra değiştirebilirsin."
-      footer={<Button title="Devam" size="lg" onPress={() => void completeProfile(trimmed)} loading={busy} disabled={trimmed.length < 1} />}
+      footer={
+        <Button
+          title="Devam"
+          size="lg"
+          onPress={() => {
+            if (gender) void completeProfile(trimmed, gender);
+          }}
+          loading={busy}
+          disabled={trimmed.length < 1 || gender === null}
+          accessibilityHint={gender === null ? 'Devam etmek için cinsiyet seç' : undefined}
+        />
+      }
     >
       <TextInput
         value={name}
@@ -55,6 +73,13 @@ export function ProfileNameScreen() {
         autoFocus
         style={[typography.heading, styles.input, { color: colors.text, backgroundColor: colors.surface, borderColor: colors.border, borderRadius: radius.md, paddingHorizontal: spacing.md }]}
       />
+      <View style={{ gap: spacing.xs, marginTop: spacing.sm }}>
+        <Text variant="heading">Cinsiyet</Text>
+        <Text variant="label" color="textSecondary">
+          Profil fotoğrafının çerçevesi buna göre renklenir: kadın pembe, erkek mavi.
+        </Text>
+        <GenderPicker value={gender} onChange={setGender} disabled={busy} />
+      </View>
       {error ? (
         <Text variant="label" color="danger">
           {error}

@@ -5,10 +5,14 @@
  *   initializing  → oturum durumu henüz bilinmiyor (açılış ekranı)
  *   signedOut     → telefon / SMS kodu ekranları
  *   bootstrapping → giriş yapıldı, profil bekleniyor (user_bootstrap)
- *   needsProfile  → profil var ama görünen ad boş (ad ekranı)
- *   ready         → ana uygulama
+ *   needsProfile  → profil yok (Faz 6: sunucu `gender_required` döndü) ya da görünen ad boş (ad + cinsiyet ekranı)
+ *   ready         → ana uygulama (Faz 6: `profile.gender == null` ise (main) yerleşimi engelleyici GenderGate gösterir)
+ *
+ * Faz 6: profil OLUŞTURMA artık cinsiyet ister. Girişte ad/cinsiyet olmadan yapılan `user_bootstrap` yeni hesapta
+ * `gender_required` ile reddedilir → `needsProfile`; ad ekranı ad + cinsiyetle profili oluşturur. Mevcut hesapta
+ * çağrı her zamanki gibi idempotent kalp atışıdır.
  */
-import { type UserId, type UserProfile } from '@konum/core';
+import { type Gender, type UserId, type UserProfile } from '@konum/core';
 import { useStore } from 'zustand';
 import { createStore } from 'zustand/vanilla';
 import { toKonumError } from '../lib/errors';
@@ -34,9 +38,20 @@ interface AuthState {
   init: () => () => void;
   sendCode: (e164: string) => Promise<boolean>;
   confirmCode: (code: string) => Promise<boolean>;
-  completeProfile: (displayName: string) => Promise<boolean>;
+  /** Faz 6: ad + cinsiyet (yeni hesapta ikisi de zorunlu). */
+  completeProfile: (displayName: string, gender: Gender) => Promise<boolean>;
+  /** Faz 6: profil alanlarını günceller (ad, cinsiyet, fotoğraf); verilmeyen alan değişmez. */
+  updateProfile: (patch: ProfilePatch) => Promise<{ ok: true } | { ok: false; message: string; code: string }>;
   retryBootstrap: () => Promise<void>;
   signOut: () => Promise<void>;
+}
+
+export interface ProfilePatch {
+  display_name?: string;
+  gender?: Gender;
+  /** `null` fotoğrafı kaldırır (küçük boy da). */
+  avatar_url?: string | null;
+  avatar_thumb_url?: string | null;
 }
 
 type SignOutListener = () => void | Promise<void>;
@@ -49,6 +64,19 @@ export function onSignedOut(l: SignOutListener): () => void {
 }
 
 let profileUnsub: (() => void) | null = null;
+/** Faz 6: sunucu profili oluşturmak için cinsiyet istedi; profil dinleyicisinin `null`'u ad ekranını geri almasın. */
+let awaitingCreate = false;
+
+type BeforeSignOutListener = () => void | Promise<void>;
+const beforeSignOutListeners = new Set<BeforeSignOutListener>();
+/** [Varsayım] Çıkış öncesi işlerin (widget token iptali) toplam bekleme sınırı; çevrimdışı çıkışı engellemez. */
+const BEFORE_SIGN_OUT_TIMEOUT_MS = 5_000;
+
+/** Faz 6: oturum HÂLÂ açıkken çalışacak çıkış öncesi işler (ör. `widget_token_revoke` kimlik ister). */
+export function onBeforeSignOut(l: BeforeSignOutListener): () => void {
+  beforeSignOutListeners.add(l);
+  return () => beforeSignOutListeners.delete(l);
+}
 
 const authErrorText = (e: unknown): string => {
   const code = (e as { code?: string })?.code ?? '';
@@ -61,29 +89,40 @@ const authErrorText = (e: unknown): string => {
 };
 
 export const authStore = createStore<AuthState>()((set, get) => {
-  async function bootstrap(displayName?: string): Promise<boolean> {
+  async function bootstrap(fields: ProfilePatch = {}): Promise<{ ok: true } | { ok: false; message: string; code: string }> {
     try {
-      const res = await userBootstrap({ time_zone: deviceTimeZone(), ...(displayName ? { display_name: displayName } : {}) });
-      if (res.profile) applyProfile(res.profile);
-      return true;
+      const res = await userBootstrap({ time_zone: deviceTimeZone(), ...fields });
+      const p = res.profile ?? res.user;
+      if (p) applyProfile(p);
+      return { ok: true };
     } catch (e) {
-      set({ error: toKonumError(e).message });
-      return false;
+      const err = toKonumError(e);
+      if (err.code === 'gender_required' && !get().profile) {
+        // Yeni hesap: profil ad + cinsiyetle ad ekranında oluşturulur (hata metni gösterilmez).
+        awaitingCreate = true;
+        if (get().uid) set({ status: 'needsProfile', error: null });
+        return { ok: false, message: err.message, code: err.code };
+      }
+      set({ error: err.message });
+      return { ok: false, message: err.message, code: err.code };
     }
   }
 
   function applyProfile(p: UserProfile | null) {
     if (!get().uid) return;
     if (!p) {
+      if (awaitingCreate) return;
       if (get().status !== 'bootstrapping') set({ status: 'bootstrapping' });
       return;
     }
+    awaitingCreate = false;
     set({ profile: p, status: p.display_name.trim() ? 'ready' : 'needsProfile', error: null });
   }
 
   async function handleUser(user: { uid: string; phoneNumber: string | null } | null) {
     profileUnsub?.();
     profileUnsub = null;
+    awaitingCreate = false;
     if (!user) {
       const wasSignedIn = get().uid !== null;
       set({ status: 'signedOut', uid: null, phoneE164: null, profile: null, busy: false });
@@ -149,11 +188,22 @@ export const authStore = createStore<AuthState>()((set, get) => {
       }
     },
 
-    completeProfile: async (displayName) => {
+    completeProfile: async (displayName, gender) => {
       set({ busy: true, error: null });
-      const ok = await bootstrap(displayName.trim());
+      const r = await bootstrap({ display_name: displayName.trim(), gender });
+      // Yeni hesapta yine gender_required dönerse (ör. eski sunucu) hata metni gösterilsin.
+      if (!r.ok && r.code === 'gender_required') set({ error: r.message });
       set({ busy: false });
-      return ok;
+      return r.ok;
+    },
+
+    updateProfile: async (patch) => {
+      const fields: ProfilePatch = { ...patch };
+      if (fields.display_name !== undefined) fields.display_name = fields.display_name.trim();
+      const r = await bootstrap(fields);
+      // Profil ekranı hatayı kendi gösterir: genel (ad ekranı) hata alanı kirlenmesin.
+      if (!r.ok && get().status === 'ready') set({ error: null });
+      return r;
     },
 
     retryBootstrap: async () => {
@@ -164,7 +214,12 @@ export const authStore = createStore<AuthState>()((set, get) => {
     signOut: async () => {
       // Oturum hâlâ açıkken: bu cihazın push token'ı hesaptan kaldırılır (çıkış yapan cihaz bildirim almasın).
       const uid = get().uid;
-      if (uid) await unregisterPushToken(uid);
+      if (uid) {
+        // Faz 6: widget token'ı iptal (kimlik ister). Zaman aşımı / hata çıkışı engellemez.
+        const before = Promise.all([...beforeSignOutListeners].map((l) => Promise.resolve().then(l).catch(() => undefined)));
+        await Promise.race([before, new Promise<void>((r) => setTimeout(r, BEFORE_SIGN_OUT_TIMEOUT_MS))]);
+        await unregisterPushToken(uid);
+      }
       await signOutAuth();
     },
   };

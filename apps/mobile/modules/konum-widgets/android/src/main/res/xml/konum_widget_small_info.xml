@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Faz 6: 2x2 — tek favori (anlık görüntüdeki default_uid = ilk favori). updatePeriodMillis = 30 dk (sistem alt
+     sınırı): WorkManager periyodik işine ek, bayat "N dk önce" metinlerini yeniler. -->
+<appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
+  android:minWidth="110dp"
+  android:minHeight="110dp"
+  android:minResizeWidth="110dp"
+  android:minResizeHeight="110dp"
+  android:targetCellWidth="2"
+  android:targetCellHeight="2"
+  android:updatePeriodMillis="1800000"
+  android:initialLayout="@layout/konum_widget_small"
+  android:previewLayout="@layout/konum_widget_small"
+  android:resizeMode="horizontal|vertical"
+  android:widgetCategory="home_screen"
+  android:description="@string/konum_w_small_desc" />

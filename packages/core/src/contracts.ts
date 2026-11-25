@@ -57,6 +57,12 @@ export const CALLABLES = {
   meetupShare: 'meetup_share',
   meetupRespond: 'meetup_respond',
   meetupCancel: 'meetup_cancel',
+  // Faz 6
+  favoritesSet: 'favorites_set',
+  widgetTokenIssue: 'widget_token_issue',
+  widgetTokenRevoke: 'widget_token_revoke',
+  /** Oturumsuz / App Check'siz; yetki = widget token'ı (bkz. `quickShare.ts`). */
+  widgetQuickShare: 'widget_quick_share',
 } as const;
 
 export type CallableName = (typeof CALLABLES)[keyof typeof CALLABLES];
@@ -117,6 +123,12 @@ export const PATHS = {
   meetup: (id: string) => `meetups/${id}`,
   /** Firestore: buluşma önerisi sunucu önbelleği (yalnızca sunucu), anahtar `meetupCacheKey`. */
   meetupCache: (key: string) => `meetup_cache/${key}`,
+  // --- Faz 6 ---
+  /** Firestore: widget token kaydı, anahtar sha256Hex(token) (istemciye TAMAMEN kapalı). */
+  widgetTokens: 'widget_tokens',
+  widgetToken: (tokenHash: string) => `widget_tokens/${tokenHash}`,
+  /** Storage: kullanıcının avatar klasörü (`avatarObjectPaths`). */
+  avatarFolder: (uid: UserId) => `avatars/${uid}`,
 } as const;
 
 const opId = z.uuid();
@@ -452,6 +464,14 @@ export const ERROR_CODES = {
   zone_not_found: { retryable: false, message: 'Bölge bulunamadı' },
   zone_limit_reached: { retryable: false, message: 'En fazla 15 bölge kaydedebilirsin' },
   meetup_not_found: { retryable: false, message: 'Buluşma önerisi bulunamadı ya da süresi doldu' },
+  // Faz 6
+  gender_required: { retryable: false, message: 'Devam etmek için cinsiyet seçmelisin' },
+  /** Widget hızlı paylaşımı (`QuickShareError`): token bilinmiyor / iptal edilmiş. */
+  token_invalid: { retryable: false, message: 'Widget oturumu geçersiz, uygulamayı açıp tekrar dene' },
+  token_expired: { retryable: false, message: 'Widget oturumunun süresi doldu, uygulamayı aç' },
+  not_favorite: { retryable: false, message: 'Bu kişi favorilerinde değil' },
+  /** Widget çağrısındaki tekil biçim (`not_friends` ile aynı anlam; token sahibi zaten kimliği doğrulanmış kişidir). */
+  not_friend: { retryable: false, message: 'Bu kişiyle artık arkadaş değilsiniz' },
 } as const;
 export type ErrorCode = keyof typeof ERROR_CODES;
 
@@ -500,7 +520,18 @@ export type PushData =
   /** Alıcıya, görünür: buluşma noktası önerisi. Yer adı gövdede; konum `meetups`'tan okunur. */
   | { type: 'meetup'; meetup_id: string; from: string }
   /** Önerene, görünür: alıcı yanıt verdi. `response` = accepted | declined. */
-  | { type: 'meetup_response'; meetup_id: string; by: string; response: string };
+  | { type: 'meetup_response'; meetup_id: string; by: string; response: string }
+  // Faz 6
+  /**
+   * Gönderenin KENDİ cihazlarına, görünür: "Ayşe ile 1 saatlik paylaşım başladı" (widget'tan başlatılınca).
+   * `expires_at` epoch ms metni (süresiz paylaşım zaten açıksa boş metin). Koordinat YOK.
+   */
+  | { type: 'quick_share_started'; share_id: string; to_name: string; expires_at: string }
+  /**
+   * Yalnızca veri (content-available): bir FAVORİM bana paylaşımı başlattı / durdurdu / bitti → widget yenilenir.
+   * `from` = paylaşanın uid'i (alıcı onu zaten arkadaş olarak tanır).
+   */
+  | { type: 'widget_refresh'; from: string };
 
 /** Faz 3 FCM veri türleri (istemci işleyicileri ve sözleşme testi için). */
 export const PUSH_TYPES_F3 = ['battery_low', 'resume_tracking', 'tracking_stalled'] as const satisfies readonly PushData['type'][];
@@ -518,3 +549,6 @@ export const NOTIFICATION_CHANNELS_F4 = { sos: 'sos', ping: 'ping' } as const;
 
 /** Faz 5 FCM veri türleri. */
 export const PUSH_TYPES_F5 = ['zone_event', 'meetup', 'meetup_response'] as const satisfies readonly PushData['type'][];
+
+/** Faz 6 FCM veri türleri. */
+export const PUSH_TYPES_F6 = ['quick_share_started', 'widget_refresh'] as const satisfies readonly PushData['type'][];

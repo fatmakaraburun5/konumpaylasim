@@ -28,6 +28,9 @@ import {
   meetupPushText,
   meetupResponsePushText,
   zoneEventPushText,
+  type QuickShareStatus,
+  QUICK_SHARE_NOTIFICATION,
+  quickSharePushText,
 } from '@konum/core';
 import type { DocumentReference, Timestamp } from 'firebase-admin/firestore';
 import type { MulticastMessage } from 'firebase-admin/messaging';
@@ -376,6 +379,74 @@ export function buildMeetupResponsePush(
     apns: {
       headers: { 'apns-priority': '10', 'apns-push-type': 'alert', 'apns-collapse-id': collapseId(tag) },
       payload: { aps: { category: NOTIFICATION_CHANNELS_F4.ping, 'interruption-level': 'active' } },
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Faz 6: widget hızlı paylaşımı ve widget yenileme (koordinat YOK)
+// ---------------------------------------------------------------------------
+
+/**
+ * iOS bildirim kategorisi (`aps.category`; core `QUICK_SHARE_NOTIFICATION`). Uygulama bu kategoriyi "Durdur"
+ * eylemiyle kaydeder (f6Services: eylem yalnızca o kişiye açık oturumu `share_stop` ile durdurur).
+ */
+export const QUICK_SHARE_CATEGORY = QUICK_SHARE_NOTIFICATION.category;
+
+/**
+ * Gönderenin KENDİ cihazlarına, görünür: "Ayşe ile 1 saatlik paylaşım başladı" (metin core `quickSharePushText`).
+ * Aynı alıcıya yeni hızlı paylaşım bildirimi eskisinin yerine geçer (`tag` / `apns-collapse-id` = share_id).
+ * TTL = paylaşımın kalan süresi (süresiz paylaşımda varsayılan). Android `share_status` kanalı (Faz 3).
+ */
+export function buildQuickShareStartedPush(
+  toName: string,
+  r: { share_id: string; status: QuickShareStatus; expires_at: number | null },
+  now: number = Date.now(),
+): PushMessage {
+  const tag = `quick_share_${r.share_id}`;
+  const ttl = r.expires_at === null ? undefined : Math.max(0, r.expires_at - now);
+  return {
+    notification: quickSharePushText(toName, r.status),
+    data: { type: 'quick_share_started', share_id: r.share_id, to_name: toName, expires_at: r.expires_at === null ? '' : String(r.expires_at) },
+    android: {
+      priority: 'high',
+      ...(ttl === undefined ? {} : { ttl }),
+      collapseKey: tag,
+      notification: { channelId: 'share_status', tag },
+    },
+    apns: {
+      headers: {
+        'apns-priority': '10',
+        'apns-push-type': 'alert',
+        'apns-collapse-id': collapseId(tag),
+        ...(r.expires_at === null ? {} : { 'apns-expiration': String(Math.floor(r.expires_at / 1000)) }),
+      },
+      payload: { aps: { category: QUICK_SHARE_CATEGORY, 'interruption-level': 'active' } },
+    },
+  };
+}
+
+/** Widget yenileme uyandırması geç gelirse anlamsız: 15 dk. [Varsayım] */
+export const WIDGET_REFRESH_TTL_MS = 15 * 60 * 1000;
+
+/**
+ * YALNIZCA veri (`widget_refresh`, content-available): bir favorim bana paylaşımı başlattı / durdurdu / bitti.
+ * Uygulama arka planda snapshot'ı yeniden kurar ve widget'ı yeniler. Acil değildir: Android `normal` öncelik
+ * (görünür bildirime dönüşmeyen yüksek öncelikli mesajlar zamanla düşürülür), iOS arka plan push'u (öncelik 5;
+ * sistem kısıtlayabilir, widget kendi zaman çizelgesiyle de eskir). Aynı kullanıcıya birikenler tek mesaja iner.
+ */
+export function buildWidgetRefreshPush(from: UserId, now: number = Date.now()): PushMessage {
+  return {
+    data: { type: 'widget_refresh', from },
+    android: { priority: 'normal', ttl: WIDGET_REFRESH_TTL_MS, collapseKey: 'widget_refresh' },
+    apns: {
+      headers: {
+        'apns-push-type': 'background',
+        'apns-priority': '5',
+        'apns-collapse-id': 'widget_refresh',
+        'apns-expiration': String(Math.floor((now + WIDGET_REFRESH_TTL_MS) / 1000)),
+      },
+      payload: { aps: { contentAvailable: true } },
     },
   };
 }

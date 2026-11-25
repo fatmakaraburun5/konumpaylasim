@@ -2,8 +2,9 @@
  * Arkadaşlar: Firestore `friendships` (kabul edilmiş + bana gelen bekleyen) ve `users/{ben}/outgoing_requests`
  * (gönderdiğim istekler, maskeli etiketle). Yalnızca `accepted` olanlar
  * paylaşım alıcısı olabilir. Görünen adlar `member_profiles` kopyasından gelir (users/{uid} yalnızca sahibine açık).
+ * Faz 6: aynı kopyada cinsiyet (çerçeve rengi) ve fotoğrafın iki boyu da vardır; bekleyen istekte yalnızca ad.
  */
-import { normalizeInviteCode, type Friendship, type FriendshipId, type UserId } from '@konum/core';
+import { avatarObjectPathFromUrl, normalizeInviteCode, parseAvatarObjectPath, type Friendship, type FriendshipId, type Gender, type UserId } from '@konum/core';
 import { useMemo } from 'react';
 import { useStore } from 'zustand';
 import { createStore } from 'zustand/vanilla';
@@ -21,6 +22,10 @@ export interface Friend {
   friendshipId: FriendshipId;
   displayName: string;
   avatarUrl: string | null;
+  /** Faz 6: 160 px küçük boy (pin / liste / widget); yoksa `avatarUrl`. */
+  avatarThumbUrl: string | null;
+  /** Faz 6: çerçeve rengi; eski hesap / bekleyen istek → null (gri). */
+  gender: Gender | null;
 }
 
 /** Bana gelen bekleyen istek. */
@@ -84,7 +89,36 @@ async function run(fn: () => Promise<unknown>): Promise<FriendOpResult> {
 function otherOf(f: Friendship, me: UserId): Friend {
   const uid = f.member_ids[0] === me ? f.member_ids[1] : f.member_ids[0];
   const p = f.member_profiles[uid];
-  return { uid, friendshipId: f.id, displayName: p?.display_name || 'Arkadaş', avatarUrl: p?.avatar_url ?? null };
+  const accepted = f.status === 'accepted';
+  return {
+    uid,
+    friendshipId: f.id,
+    displayName: p?.display_name || 'Arkadaş',
+    // Bekleyen istekte fotoğraf / cinsiyet gösterilmez (sözleşme: istek profili yalnızca ad taşır).
+    avatarUrl: accepted ? (p?.avatar_url ?? null) : null,
+    avatarThumbUrl: accepted ? (p?.avatar_thumb_url ?? null) : null,
+    gender: accepted ? (p?.gender ?? null) : null,
+  };
+}
+
+/** Avatar bileşeni için görünüm: küçük boy önce (pin / liste), önbellek anahtarı = Storage sürümü. */
+export interface FriendAvatarProps {
+  name: string;
+  photoUrl: string | null;
+  gender: Gender | null;
+  recyclingKey: string | null;
+}
+
+/** İndirme adresinden sürüm (`avatars/{uid}/{sürüm}_160.jpg`) — önbellek anahtarı; çözülemezse adresin kendisi. */
+export function avatarRecyclingKey(url: string | null): string | null {
+  if (!url) return null;
+  const ref = parseAvatarObjectPath(avatarObjectPathFromUrl(url) ?? '');
+  return ref ? `${ref.uid}:${ref.version}` : url;
+}
+
+export function friendAvatarProps(f: Pick<Friend, 'displayName' | 'avatarUrl' | 'avatarThumbUrl' | 'gender'>, prefer: 'thumb' | 'main' = 'thumb'): FriendAvatarProps {
+  const photoUrl = prefer === 'thumb' ? (f.avatarThumbUrl ?? f.avatarUrl) : (f.avatarUrl ?? f.avatarThumbUrl);
+  return { name: f.displayName, photoUrl, gender: f.gender, recyclingKey: avatarRecyclingKey(photoUrl) };
 }
 
 export function selectFriends(s: Pick<FriendsState, 'myUid' | 'friendships'>): Friend[] {
@@ -127,6 +161,12 @@ export function useFriendRequests(): FriendRequestView[] {
 export function useOutgoingRequests(): OutgoingRequestView[] {
   const outgoing = useFriendsStore((s) => s.outgoing);
   return useMemo(() => selectOutgoing({ outgoing }, Date.now()), [outgoing]);
+}
+
+/** Faz 6: uid → arkadaş (fotoğraf + cinsiyet; pin / liste / kart avatarları için). */
+export function useFriendsById(): Record<UserId, Friend> {
+  const friends = useFriends();
+  return useMemo(() => Object.fromEntries(friends.map((f) => [f.uid, f])), [friends]);
 }
 
 /** uid → görünen ad (alıcı avatarları için). */

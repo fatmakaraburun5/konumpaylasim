@@ -92,6 +92,43 @@ export function buildActiveShare(
   };
 }
 
+/** Ortak başlatma adımının sonucu. */
+export interface ShareStartWrite {
+  session_id: string;
+  started: ShareDoc[];
+  /** `canShare` olmayan (arkadaş değil / engelli) adaylar. */
+  skipped: UserId[];
+}
+
+/**
+ * `share_start` ve Faz 6 widget hızlı paylaşımının (`widget_quick_share`, "started" dalı) ORTAK iç fonksiyonu:
+ * okuma aşamasında `readStartCandidates` ile okunan adaylardan paylaşabilenlere yeni aktif paylaşım yazar (yeni
+ * oturum kimliği), diğerlerini `skipped` olarak döndürür. Transaction YAZMA aşamasında çağrılır.
+ */
+export function writeShareStarts(
+  tx: Transaction,
+  sender: UserId,
+  cands: readonly StartCandidate[],
+  resolved: ResolvedDuration,
+  now: EpochMs,
+  aclVersions: ReadonlyMap<string, number>,
+  inResponseTo: (receiver: UserId) => string | null = () => null,
+): ShareStartWrite {
+  const sessionId = newSessionId();
+  const started: ShareDoc[] = [];
+  const skipped: UserId[] = [];
+  for (const c of cands) {
+    if (!canShare(c.pair)) {
+      skipped.push(c.receiver_id);
+      continue;
+    }
+    const doc = buildActiveShare(sender, c, resolved, sessionId, now, aclVersions.get(shareId(sender, c.receiver_id)) ?? 0, inResponseTo(c.receiver_id));
+    tx.set(refs.shareById(doc.share_id), doc);
+    started.push(doc);
+  }
+  return { session_id: sessionId, started, skipped };
+}
+
 // ---------------------------------------------------------------------------
 // share_start
 // ---------------------------------------------------------------------------
@@ -118,19 +155,11 @@ export async function shareStart(ctx: CallCtx, data: z.output<typeof ShareStartR
     }
 
     // --- yazmalar ---
-    const sessionId = newSessionId();
-    const started: ShareDoc[] = [];
-    const skipped: UserId[] = requested.filter((r) => r === ctx.uid);
-    for (const c of cands) {
-      if (!canShare(c.pair)) {
-        skipped.push(c.receiver_id);
-        continue;
-      }
-      const linked = request && request.requester_id === c.receiver_id ? request.request_id : null;
-      const doc = buildActiveShare(ctx.uid, c, resolved, sessionId, ctx.now, aclVersions.get(shareId(ctx.uid, c.receiver_id)) ?? 0, linked);
-      tx.set(refs.shareById(doc.share_id), doc);
-      started.push(doc);
-    }
+    const w = writeShareStarts(tx, ctx.uid, cands, resolved, ctx.now, aclVersions, (receiver) =>
+      request && request.requester_id === receiver ? request.request_id : null,
+    );
+    const started = w.started;
+    const skipped: UserId[] = [...requested.filter((r) => r === ctx.uid), ...w.skipped];
     if (request && started.some((s) => s.receiver_id === request.requester_id)) {
       tx.update(refs.requestById(request.request_id), {
         status: 'accepted',
@@ -142,7 +171,7 @@ export async function shareStart(ctx: CallCtx, data: z.output<typeof ShareStartR
     }
 
     const response: ShareStartResponse = {
-      session_id: sessionId,
+      session_id: w.session_id,
       shares: started.map(toView),
       skipped_receiver_ids: skipped,
       server_now: ctx.now,

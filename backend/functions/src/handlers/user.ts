@@ -7,20 +7,28 @@
  * kalp atışıdır (`users.last_active_at`).
  */
 import {
+  AVATAR_FILE_RE,
   CALLABLES,
   DAY,
   E164_RE,
   type EpochMs,
   PATHS,
+  type UserProfile,
+  avatarObjectPathFromUrl,
+  avatarObjectPaths,
+  checkAvatarPair,
   generateInviteCode,
+  isGender,
+  parseAvatarObjectPath,
+  resolveProfileGender,
 } from '@konum/core';
 import { type Query, Timestamp } from 'firebase-admin/firestore';
 import * as logger from 'firebase-functions/logger';
 import type { z } from 'zod';
 import { applyShareEffects, deleteAclNode, reconcileShare } from '../acl';
-import { adminAuth, db, rtdb } from '../admin';
+import { adminAuth, adminStorage, db, rtdb } from '../admin';
 import type { CallCtx } from '../callable';
-import { DEFAULT_DISPLAY_NAME, LIMITS, avatarBuckets } from '../config';
+import { DEFAULT_DISPLAY_NAME, IS_EMULATOR, IS_LOCAL_TEST, LIMITS, avatarBuckets } from '../config';
 import {
   COL,
   type DeletedUserDoc,
@@ -29,6 +37,7 @@ import {
   type InactivityState,
   type UserDoc,
   type UserPrivateDoc,
+  favoriteIdsOf,
   isUsableProfile,
   publicProfile,
   purgeAt,
@@ -44,6 +53,8 @@ import { deletePingsOf } from './ping';
 import { closeSosForDeletedAccount, removeFromEmergencyContacts } from './sos';
 import { deleteMeetupsOf } from './meetup';
 import { deleteZonesOf } from './zones';
+import { removeFromFavorites } from './favorites';
+import { deleteWidgetTokensOf } from './widget';
 import { readRateLimit, runOp, writeRateLimit } from '../ops';
 import type {
   AccountDeleteResponse,
@@ -62,11 +73,16 @@ import { isAlreadyExists, nodeRandom } from '../util';
 /**
  * Yalnızca projenin Storage kovasındaki `avatars/{uid}/...` nesnesi:
  * `https://firebasestorage.googleapis.com/v0/b/{kova}/o/avatars%2F{uid}%2F{dosya}?alt=media&token=...`.
- * [Varsayım: doğrulanmalı] Storage kuralları `avatars/{uid}/**` yazmasını yalnızca sahibine açmalı (Faz 1'de
- * istemci avatar yüklemiyor; bu kapı sonraki sürüm için).
+ * Faz 6: dosya adı core `AVATAR_FILE_RE` (`{13 hane}.jpg` ana, `{13 hane}_160.jpg` küçük); storage.rules yalnızca
+ * sahibinin bu adlarla JPEG yüklemesine izin verir. `kind` ana / küçük boyu ayırır. Dönüş: kova + nesne yolu.
  */
-export function assertAvatarUrl(url: string, uid: string): void {
-  const bad = () => fail('invalid_argument', { message: 'Avatar adresi geçersiz', extra: { field: 'avatar_url' } });
+export function assertAvatarUrl(
+  url: string,
+  uid: string,
+  kind: 'main' | 'thumb' = 'main',
+): { bucket: string; object: string; version: number } {
+  const field = kind === 'main' ? 'avatar_url' : 'avatar_thumb_url';
+  const bad = () => fail('invalid_argument', { message: 'Avatar adresi geçersiz', extra: { field } });
   let u: URL;
   try {
     u = new URL(url);
@@ -87,7 +103,45 @@ export function assertAvatarUrl(url: string, uid: string): void {
   if (!avatarBuckets().includes(bucket)) throw bad();
   const prefix = `avatars/${uid}/`;
   const file = object.slice(prefix.length);
-  if (!object.startsWith(prefix) || !/^[A-Za-z0-9._-]{1,100}$/.test(file) || file.includes('..')) throw bad();
+  if (!object.startsWith(prefix) || !AVATAR_FILE_RE.test(file)) throw bad();
+  const ref = parseAvatarObjectPath(object);
+  if (!ref || ref.uid !== uid || ref.thumb !== (kind === 'thumb')) throw bad();
+  return { bucket, object, version: ref.version };
+}
+
+/**
+ * Faz 6: önceki fotoğraf sürümünün iki Storage nesnesini siler. [Varsayım: en iyi çaba] Hata loglanır, profil
+ * güncellemesi geri alınmaz (artık hiçbir profil kopyası eski adrese işaret etmez; indirme token'ı kendi başına
+ * yetkidir, bu yüzden silme gizlilik için önemlidir). Emülatörde Storage emülatörü yoksa atlanır.
+ */
+export async function deleteAvatarObjects(uid: string, oldUrl: string | null, oldVersion: number | null): Promise<void> {
+  if (!oldUrl) return;
+  if ((IS_EMULATOR || IS_LOCAL_TEST) && !process.env.FIREBASE_STORAGE_EMULATOR_HOST) return;
+  const parsed = /^https:\/\/[^/]+\/v0\/b\/([^/?#]+)\/o\//.exec(oldUrl);
+  const bucket = parsed?.[1] ? decodeURIComponent(parsed[1]) : null;
+  const ref = parseAvatarObjectPath(avatarObjectPathFromUrl(oldUrl) ?? '');
+  const version = oldVersion ?? ref?.version ?? null;
+  if (!bucket || !avatarBuckets().includes(bucket) || version === null || (ref && ref.uid !== uid)) return;
+  try {
+    const { main, thumb } = avatarObjectPaths(uid, version);
+    const b = adminStorage().bucket(bucket);
+    await Promise.all([main, thumb].map((p) => b.file(p).delete({ ignoreNotFound: true })));
+  } catch (err) {
+    logger.warn('eski avatar nesneleri silinemedi', { uid, err: String(err) });
+  }
+}
+
+/** Hesap silme: `avatars/{uid}/` altındaki her şey (en iyi çaba, tüm olası kovalarda). */
+async function deleteAllAvatarsOf(uid: string): Promise<void> {
+  if ((IS_EMULATOR || IS_LOCAL_TEST) && !process.env.FIREBASE_STORAGE_EMULATOR_HOST) return;
+  for (const bucket of avatarBuckets()) {
+    try {
+      await adminStorage().bucket(bucket).deleteFiles({ prefix: `${PATHS.avatarFolder(uid)}/`, force: true });
+    } catch (err) {
+      // Kova yoksa (ör. eski appspot adı) 404: önemsiz.
+      if ((err as { code?: number }).code !== 404) logger.warn('avatar klasörü silinemedi', { uid, bucket, err: String(err) });
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -99,11 +153,34 @@ export function assertAvatarUrl(url: string, uid: string): void {
  * `phone_index/{e164}` ve `invite_codes/{code}` tek transaction'da. Kod tekilliğini `create()` garanti eder;
  * `ALREADY_EXISTS` olursa yeni kodla yeniden denenir.
  * Silinmiş hesabın (hâlâ geçerli ID token'ı ile) profili yeniden oluşturulamaz (`deleted_users`).
+ *
+ * Faz 6:
+ *  - `gender` profil oluşturulurken zorunlu (`gender_required`); sonraki çağrılarda verilmezse mevcut değer kalır
+ *    (eski hesapta `null`), `null` şemada reddedilir (core `resolveProfileGender`).
+ *  - `avatar_url` + `avatar_thumb_url`: ikisi de projenin kovasındaki `avatars/{uid}/{sürüm}.jpg` /
+ *    `{sürüm}_160.jpg`; küçük boy AYNI sürümün kardeşi olmalı (core `checkAvatarPair`). `avatar_url: null` fotoğrafı
+ *    kaldırır (küçük boy ve sürüm de null). [Varsayım] Eski istemci yalnızca `avatar_url` gönderirse küçük boy null.
+ *  - Ad / fotoğraf / cinsiyet değişince kabul edilmiş arkadaşlıklardaki `member_profiles` kopyası güncellenir;
+ *    fotoğraf değiştiyse önceki sürümün iki nesnesi Storage'dan silinir (en iyi çaba).
  */
 export async function userBootstrap(ctx: CallCtx, data: z.output<typeof UserBootstrapSchema>): Promise<UserBootstrapResponse> {
   const phone = ctx.phone_e164;
   if (!phone || !E164_RE.test(phone)) throw fail('unauthenticated', { message: 'Telefon doğrulaması gerekli' });
-  if (data.avatar_url) assertAvatarUrl(data.avatar_url, ctx.uid);
+  const main = data.avatar_url ? assertAvatarUrl(data.avatar_url, ctx.uid, 'main') : null;
+  if (data.avatar_thumb_url) assertAvatarUrl(data.avatar_thumb_url, ctx.uid, 'thumb');
+  const pair = checkAvatarPair(data.avatar_url, data.avatar_thumb_url, ctx.uid);
+  if (pair !== 'ok') {
+    throw fail('invalid_argument', { message: 'Küçük avatar ana avatarla eşleşmiyor', extra: { field: 'avatar_thumb_url', reason: pair } });
+  }
+  /** Fotoğraf alanları (undefined = istekte yok, değişmez). */
+  const avatar =
+    data.avatar_url === undefined
+      ? undefined
+      : {
+          avatar_url: data.avatar_url,
+          avatar_thumb_url: data.avatar_url ? (data.avatar_thumb_url ?? null) : null,
+          avatar_version: main?.version ?? null,
+        };
 
   // Geri dönüştürülmüş numara savunması: uzun süre pasif kalmış hesaba girişte önce sosyal grafik / gelen
   // paylaşımlar kesilir (zamanlanmış iş henüz çalışmadıysa). Ayrıntı: `sweepInactive`.
@@ -126,18 +203,25 @@ export async function userBootstrap(ctx: CallCtx, data: z.output<typeof UserBoot
         let user = userSnap?.data() as UserDoc | undefined;
         if (user?.deleting) throw fail('unauthenticated', { message: 'Hesap silindi' });
         const needsCode = !user?.invite_code;
+        const g = resolveProfileGender(isGender(user?.gender) ? user.gender : null, data.gender, !user);
+        if (!g.ok) throw fail('gender_required', { extra: { field: 'gender' } });
 
         // --- yazmalar ---
         let created = false;
         let profileChanged = false;
+        let replacedAvatar: { url: string | null; version: number | null } | null = null;
         if (!user) {
           user = {
             user_id: ctx.uid,
             display_name: data.display_name ?? DEFAULT_DISPLAY_NAME,
-            avatar_url: data.avatar_url ?? null,
+            avatar_url: avatar?.avatar_url ?? null,
             invite_code: code,
             created_at: ctx.now,
             rtdb_instance: 0,
+            gender: g.gender,
+            avatar_thumb_url: avatar?.avatar_thumb_url ?? null,
+            avatar_version: avatar?.avatar_version ?? null,
+            favorite_ids: [],
             last_active_at: ctx.now,
             inactivity_state: 'active',
           };
@@ -146,7 +230,16 @@ export async function userBootstrap(ctx: CallCtx, data: z.output<typeof UserBoot
         } else {
           const patch: Partial<UserDoc> = {};
           if (data.display_name !== undefined && data.display_name !== user.display_name) patch.display_name = data.display_name;
-          if (data.avatar_url !== undefined && data.avatar_url !== user.avatar_url) patch.avatar_url = data.avatar_url;
+          if (g.changed) patch.gender = g.gender;
+          if (avatar) {
+            if (avatar.avatar_url !== user.avatar_url) patch.avatar_url = avatar.avatar_url;
+            if (avatar.avatar_thumb_url !== (user.avatar_thumb_url ?? null)) patch.avatar_thumb_url = avatar.avatar_thumb_url;
+            if (avatar.avatar_version !== (user.avatar_version ?? null)) patch.avatar_version = avatar.avatar_version;
+            const oldVersion = user.avatar_version ?? null;
+            if (user.avatar_url && patch.avatar_url !== undefined && (oldVersion === null || oldVersion !== avatar.avatar_version)) {
+              replacedAvatar = { url: user.avatar_url, version: oldVersion };
+            }
+          }
           if (needsCode) patch.invite_code = code;
           // Kalp atışı: en çok saatte bir yazılır. [Varsayım]
           if (user.inactivity_state !== 'active' || !user.last_active_at || ctx.now - user.last_active_at >= LIMITS.lastActiveWriteEveryMs) {
@@ -156,7 +249,11 @@ export async function userBootstrap(ctx: CallCtx, data: z.output<typeof UserBoot
           if (Object.keys(patch).length > 0) {
             tx.update(refs.user(ctx.uid), patch);
             user = { ...user, ...patch };
-            profileChanged = patch.display_name !== undefined || patch.avatar_url !== undefined;
+            profileChanged =
+              patch.display_name !== undefined ||
+              patch.avatar_url !== undefined ||
+              patch.avatar_thumb_url !== undefined ||
+              patch.gender !== undefined;
           }
         }
         if (needsCode) tx.create(refs.inviteCode(code), { user_id: ctx.uid, created_at: ctx.now } satisfies IndexDoc);
@@ -173,9 +270,11 @@ export async function userBootstrap(ctx: CallCtx, data: z.output<typeof UserBoot
         // Firebase Auth'ta bir numara aynı anda tek hesaptadır.
         if (!idx || idx.user_id !== ctx.uid) tx.set(refs.phoneIndex(phone), { user_id: ctx.uid, created_at: ctx.now } satisfies IndexDoc);
 
-        return { user, created, profileChanged };
+        return { user: user as UserDoc, created, profileChanged, replacedAvatar };
       });
       if (res.profileChanged) await propagateProfile(ctx.uid, res.user);
+      const replaced = res.replacedAvatar as { url: string | null; version: number | null } | null;
+      if (replaced) await deleteAvatarObjects(ctx.uid, replaced.url, replaced.version);
       return { user: toProfile(res.user), created: res.created, server_now: ctx.now };
     } catch (err) {
       if (isAlreadyExists(err) && attempt < LIMITS.inviteCodeAttempts) continue;
@@ -185,7 +284,7 @@ export async function userBootstrap(ctx: CallCtx, data: z.output<typeof UserBoot
 }
 
 /** Yanıttaki profil: core UserProfile alanları (sunucu alanları istemci sözleşmesine sızmaz). */
-function toProfile(u: UserDoc) {
+function toProfile(u: UserDoc): UserProfile {
   return {
     user_id: u.user_id,
     display_name: u.display_name,
@@ -193,10 +292,17 @@ function toProfile(u: UserDoc) {
     invite_code: u.invite_code,
     created_at: u.created_at,
     rtdb_instance: u.rtdb_instance,
+    gender: isGender(u.gender) ? u.gender : null,
+    avatar_thumb_url: u.avatar_url ? (u.avatar_thumb_url ?? null) : null,
+    avatar_version: u.avatar_url ? (u.avatar_version ?? null) : null,
+    favorite_ids: favoriteIdsOf(u),
   };
 }
 
-/** Görünen ad değişince KABUL EDİLMİŞ arkadaşlık belgelerindeki kopya güncellenir (en iyi çaba). */
+/**
+ * Görünen ad / fotoğraf / (Faz 6) cinsiyet değişince KABUL EDİLMİŞ arkadaşlık belgelerindeki kopya güncellenir
+ * (en iyi çaba). Bekleyen istekte yalnızca isteyenin adı güncellenir.
+ */
 async function propagateProfile(uid: string, user: UserDoc): Promise<void> {
   try {
     const snap = await db().collection(COL.friendships).where('member_ids', 'array-contains', uid).get();
@@ -279,7 +385,18 @@ export async function resetSocialGraph(uid: string, now: EpochMs): Promise<void>
     void writer.update(d.ref, { status: 'cancelled', updated_at: now, purge_at: purgeAt(now) });
   }
   await writer.close();
+  // Faz 6: favoriler arkadaşlıkla birlikte gider (iki yönde).
+  await Promise.all([removeFromFavorites(uid), clearOwnFavorites(uid)]);
   await setInactivityState(uid, 'graph_reset');
+}
+
+/** Faz 6: kendi favori listesini boşaltır (profil yoksa sessiz). */
+async function clearOwnFavorites(uid: string): Promise<void> {
+  try {
+    await refs.user(uid).update({ favorite_ids: [] });
+  } catch (err) {
+    if ((err as { code?: number }).code !== 5) throw err; // 5 = NOT_FOUND
+  }
 }
 
 /**
@@ -398,6 +515,10 @@ export async function inviteCodeRegenerate(
  * işaretleri silinir (karşı taraf yok, geçmiş tutulmaz); `maps_quota` sayaçları ve kullanıcıya özel `route_cache`
  * kayıtları da silinir. Ortak `geocode_cache` hücre kayıtları kimseye bağlı değildir ve kalır.
  *
+ * Faz 6: 1. adımdaki çitle (`deleting`) widget hızlı paylaşımı hemen `token_invalid` olur; 4. adımda widget
+ * token'ları silinir, hesap başkalarının `favorite_ids` listesinden çıkarılır ve Storage `avatars/{uid}/` klasörü
+ * silinir (en iyi çaba).
+ *
  * Bilerek KALANLAR [Varsayım: hukuki onay gerekli]:
  *  - Biten paylaşım belgeleri karşı tarafın geçmişi için TTL'e (7 gün) kadar kalır.
  *  - BAŞKALARININ bu hesap hakkındaki engelleri (`blocks/{diğer}_{uid}` ve telefon HMAC'i): engelleyenin
@@ -469,6 +590,10 @@ export async function accountDelete(ctx: CallCtx, _data: z.output<typeof Account
     // aldığı önerilerin alıcı listesinden çıkar.
     deleteZonesOf(uid),
     deleteMeetupsOf(uid),
+    // Faz 6: widget token'ları, başkalarının favori listeleri, profil fotoğrafları.
+    deleteWidgetTokensOf(uid),
+    removeFromFavorites(uid),
+    deleteAllAvatarsOf(uid),
   ]);
 
   // 5. ACL düğümleri (mezar taşları dahil): uid çifti RTDB'de kalmaz.
@@ -508,7 +633,7 @@ export async function accountDelete(ctx: CallCtx, _data: z.output<typeof Account
     if (phoneSnap?.exists && (phoneSnap.data() as IndexDoc).user_id === uid) tx.delete(phoneSnap.ref);
     tx.delete(refs.user(uid));
     tx.delete(refs.userPrivate(uid));
-    for (const key of ['friend_request', 'location_request', 'invite_regenerate', 'link_create', 'battery_low', 'ping', 'sos_send', 'zone_event', 'meetup_share', 'meetup_respond']) tx.delete(refs.rateLimit(uid, key));
+    for (const key of ['friend_request', 'location_request', 'invite_regenerate', 'link_create', 'battery_low', 'ping', 'sos_send', 'zone_event', 'meetup_share', 'meetup_respond', 'widget_token']) tx.delete(refs.rateLimit(uid, key));
   });
 
   try {

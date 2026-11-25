@@ -1,0 +1,306 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Faz 6: 4x2 widget — en çok 4 favori hücresi (kimlikler Kotlin'de WidgetRenderer.CELL_* dizilerinde). -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+  android:id="@+id/konum_w_root"
+  android:layout_width="match_parent"
+  android:layout_height="match_parent"
+  android:background="@drawable/konum_w_bg"
+  android:padding="8dp">
+
+  <LinearLayout
+    android:id="@+id/konum_w_content"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="horizontal">
+
+    <LinearLayout
+      android:id="@+id/konum_w_fav0"
+      android:layout_width="0dp"
+      android:layout_height="match_parent"
+      android:layout_weight="1"
+      android:gravity="center_horizontal"
+      android:orientation="vertical"
+      android:paddingLeft="2dp"
+      android:paddingRight="2dp"
+      android:visibility="gone">
+
+      <ImageView
+        android:id="@+id/konum_w_fav0_avatar"
+        android:layout_width="40dp"
+        android:layout_height="40dp"
+        android:contentDescription="@null"
+        android:scaleType="fitCenter" />
+
+      <TextView
+        android:id="@+id/konum_w_fav0_name"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="3dp"
+        android:ellipsize="end"
+        android:gravity="center"
+        android:maxLines="1"
+        android:textColor="@color/konum_w_text"
+        android:textSize="12sp"
+        android:textStyle="bold" />
+
+      <TextView
+        android:id="@+id/konum_w_fav0_status"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:ellipsize="end"
+        android:gravity="center"
+        android:maxLines="2"
+        android:textColor="@color/konum_w_text2"
+        android:textSize="10sp" />
+
+      <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1" />
+
+      <TextView
+        android:id="@+id/konum_w_fav0_button"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:background="@drawable/konum_w_btn"
+        android:gravity="center"
+        android:maxLines="1"
+        android:paddingLeft="8dp"
+        android:paddingTop="3dp"
+        android:paddingRight="8dp"
+        android:paddingBottom="3dp"
+        android:text="@string/konum_w_quick_short"
+        android:textColor="@color/konum_w_on_accent"
+        android:textSize="11sp"
+        android:textStyle="bold" />
+
+      <Chronometer
+        android:id="@+id/konum_w_fav0_timer"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:textColor="@color/konum_w_accent"
+        android:textSize="12sp"
+        android:textStyle="bold"
+        android:visibility="gone" />
+    </LinearLayout>
+    <LinearLayout
+      android:id="@+id/konum_w_fav1"
+      android:layout_width="0dp"
+      android:layout_height="match_parent"
+      android:layout_weight="1"
+      android:gravity="center_horizontal"
+      android:orientation="vertical"
+      android:paddingLeft="2dp"
+      android:paddingRight="2dp"
+      android:visibility="gone">
+
+      <ImageView
+        android:id="@+id/konum_w_fav1_avatar"
+        android:layout_width="40dp"
+        android:layout_height="40dp"
+        android:contentDescription="@null"
+        android:scaleType="fitCenter" />
+
+      <TextView
+        android:id="@+id/konum_w_fav1_name"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="3dp"
+        android:ellipsize="end"
+        android:gravity="center"
+        android:maxLines="1"
+        android:textColor="@color/konum_w_text"
+        android:textSize="12sp"
+        android:textStyle="bold" />
+
+      <TextView
+        android:id="@+id/konum_w_fav1_status"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:ellipsize="end"
+        android:gravity="center"
+        android:maxLines="2"
+        android:textColor="@color/konum_w_text2"
+        android:textSize="10sp" />
+
+      <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1" />
+
+      <TextView
+        android:id="@+id/konum_w_fav1_button"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:background="@drawable/konum_w_btn"
+        android:gravity="center"
+        android:maxLines="1"
+        android:paddingLeft="8dp"
+        android:paddingTop="3dp"
+        android:paddingRight="8dp"
+        android:paddingBottom="3dp"
+        android:text="@string/konum_w_quick_short"
+        android:textColor="@color/konum_w_on_accent"
+        android:textSize="11sp"
+        android:textStyle="bold" />
+
+      <Chronometer
+        android:id="@+id/konum_w_fav1_timer"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:textColor="@color/konum_w_accent"
+        android:textSize="12sp"
+        android:textStyle="bold"
+        android:visibility="gone" />
+    </LinearLayout>
+    <LinearLayout
+      android:id="@+id/konum_w_fav2"
+      android:layout_width="0dp"
+      android:layout_height="match_parent"
+      android:layout_weight="1"
+      android:gravity="center_horizontal"
+      android:orientation="vertical"
+      android:paddingLeft="2dp"
+      android:paddingRight="2dp"
+      android:visibility="gone">
+
+      <ImageView
+        android:id="@+id/konum_w_fav2_avatar"
+        android:layout_width="40dp"
+        android:layout_height="40dp"
+        android:contentDescription="@null"
+        android:scaleType="fitCenter" />
+
+      <TextView
+        android:id="@+id/konum_w_fav2_name"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="3dp"
+        android:ellipsize="end"
+        android:gravity="center"
+        android:maxLines="1"
+        android:textColor="@color/konum_w_text"
+        android:textSize="12sp"
+        android:textStyle="bold" />
+
+      <TextView
+        android:id="@+id/konum_w_fav2_status"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:ellipsize="end"
+        android:gravity="center"
+        android:maxLines="2"
+        android:textColor="@color/konum_w_text2"
+        android:textSize="10sp" />
+
+      <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1" />
+
+      <TextView
+        android:id="@+id/konum_w_fav2_button"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:background="@drawable/konum_w_btn"
+        android:gravity="center"
+        android:maxLines="1"
+        android:paddingLeft="8dp"
+        android:paddingTop="3dp"
+        android:paddingRight="8dp"
+        android:paddingBottom="3dp"
+        android:text="@string/konum_w_quick_short"
+        android:textColor="@color/konum_w_on_accent"
+        android:textSize="11sp"
+        android:textStyle="bold" />
+
+      <Chronometer
+        android:id="@+id/konum_w_fav2_timer"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:textColor="@color/konum_w_accent"
+        android:textSize="12sp"
+        android:textStyle="bold"
+        android:visibility="gone" />
+    </LinearLayout>
+    <LinearLayout
+      android:id="@+id/konum_w_fav3"
+      android:layout_width="0dp"
+      android:layout_height="match_parent"
+      android:layout_weight="1"
+      android:gravity="center_horizontal"
+      android:orientation="vertical"
+      android:paddingLeft="2dp"
+      android:paddingRight="2dp"
+      android:visibility="gone">
+
+      <ImageView
+        android:id="@+id/konum_w_fav3_avatar"
+        android:layout_width="40dp"
+        android:layout_height="40dp"
+        android:contentDescription="@null"
+        android:scaleType="fitCenter" />
+
+      <TextView
+        android:id="@+id/konum_w_fav3_name"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="3dp"
+        android:ellipsize="end"
+        android:gravity="center"
+        android:maxLines="1"
+        android:textColor="@color/konum_w_text"
+        android:textSize="12sp"
+        android:textStyle="bold" />
+
+      <TextView
+        android:id="@+id/konum_w_fav3_status"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:ellipsize="end"
+        android:gravity="center"
+        android:maxLines="2"
+        android:textColor="@color/konum_w_text2"
+        android:textSize="10sp" />
+
+      <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1" />
+
+      <TextView
+        android:id="@+id/konum_w_fav3_button"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:background="@drawable/konum_w_btn"
+        android:gravity="center"
+        android:maxLines="1"
+        android:paddingLeft="8dp"
+        android:paddingTop="3dp"
+        android:paddingRight="8dp"
+        android:paddingBottom="3dp"
+        android:text="@string/konum_w_quick_short"
+        android:textColor="@color/konum_w_on_accent"
+        android:textSize="11sp"
+        android:textStyle="bold" />
+
+      <Chronometer
+        android:id="@+id/konum_w_fav3_timer"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:textColor="@color/konum_w_accent"
+        android:textSize="12sp"
+        android:textStyle="bold"
+        android:visibility="gone" />
+    </LinearLayout>
+  </LinearLayout>
+
+  <TextView
+    android:id="@+id/konum_w_empty"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:gravity="center"
+    android:textColor="@color/konum_w_text2"
+    android:textSize="13sp"
+    android:visibility="gone" />
+</FrameLayout>

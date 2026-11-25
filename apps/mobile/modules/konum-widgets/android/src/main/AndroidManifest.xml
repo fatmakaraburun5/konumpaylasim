@@ -1,0 +1,9 @@
+<!--
+  Faz 6: widget sağlayıcıları (KonumWidgetSmallProvider / KonumWidgetLargeProvider), hızlı paylaşım alıcısı
+  (QuickShareReceiver) ve Hızlı Ayarlar kutucuğu (QuickShareTileService) BURADA değil, modülün config eklentisinde
+  (modules/konum-widgets/app.plugin.js) uygulama manifestine eklenir: `expo prebuild` çıktısında doğrulanabilir olsun
+  ve iki manifestte aynı bileşen birleştirme çakışması yaratmasın. Yeni çalışma zamanı izni YOK (INTERNET ve
+  POST_NOTIFICATIONS zaten uygulamada; WorkManager kendi manifestini getirir).
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+</manifest>

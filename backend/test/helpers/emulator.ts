@@ -20,6 +20,8 @@ import { DB_HOST, FUNCTIONS_URL, HOST, PROJECT_ID, RTDB_NS, RTDB_URL } from './e
 const root = new URL('../../', import.meta.url);
 export const FIRESTORE_RULES = readFileSync(new URL('firestore.rules', root), 'utf8');
 export const DATABASE_RULES = readFileSync(new URL('database.rules.json', root), 'utf8');
+/** Faz 6: Storage kuralları (avatarlar). */
+export const STORAGE_RULES = readFileSync(new URL('storage.rules', root), 'utf8');
 
 let env: RulesTestEnvironment | undefined;
 
@@ -140,11 +142,11 @@ export async function signInWithPhone(phone: string): Promise<{ uid: string; idT
   return { uid: r.localId, idToken: r.idToken };
 }
 
-/** Telefonla giriş + user_bootstrap. */
-export async function newUser(displayName = 'Test'): Promise<TestUser> {
+/** Telefonla giriş + user_bootstrap. Faz 6: profil oluşturulurken cinsiyet zorunlu (varsayılan 'female'). */
+export async function newUser(displayName = 'Test', gender: 'female' | 'male' = 'female'): Promise<TestUser> {
   const phone = randomPhone();
   const auth = await signInWithPhone(phone);
-  const boot = await call<{ user: { invite_code: string } }>('user_bootstrap', { display_name: displayName }, auth);
+  const boot = await call<{ user: { invite_code: string } }>('user_bootstrap', { display_name: displayName, gender }, auth);
   return { ...auth, phone, invite_code: boot.user.invite_code, display_name: displayName };
 }
 

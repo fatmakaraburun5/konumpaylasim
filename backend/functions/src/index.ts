@@ -1,5 +1,5 @@
 /**
- * Konum Cloud Functions giriş noktası (Faz 1 + Faz 2 + Faz 3 + Faz 4 + Faz 5). Dışa aktarılan adlar core `CALLABLES` ile birebir aynıdır
+ * Konum Cloud Functions giriş noktası (Faz 1 + Faz 2 + Faz 3 + Faz 4 + Faz 5 + Faz 6). Dışa aktarılan adlar core `CALLABLES` ile birebir aynıdır
  * (istemci `httpsCallable(functions, 'share_start')` çağırır, bölge europe-west1).
  *
  * Burada YALNIZCA fonksiyon tanımları dışa aktarılır; saf mantık `handlers/*` içindedir.
@@ -35,6 +35,11 @@ import {
   ZoneDeleteRequestSchema,
   ZoneEventReportRequestSchema,
   ZoneUpsertRequestSchema,
+  // Faz 6
+  FavoritesSetRequestSchema,
+  WidgetQuickShareRequestSchema,
+  WidgetTokenIssueRequestSchema,
+  WidgetTokenRevokeRequestSchema,
 } from '@konum/core';
 import { setGlobalOptions } from 'firebase-functions';
 import { onDocumentWritten } from 'firebase-functions/firestore';
@@ -42,7 +47,7 @@ import * as logger from 'firebase-functions/logger';
 import { onSchedule } from 'firebase-functions/scheduler';
 import { onTaskDispatched } from 'firebase-functions/tasks';
 import { reconcileShare } from './acl';
-import { callable } from './callable';
+import { callable, tokenCallable } from './callable';
 import { MAPS_CALLABLE_SECRETS, MAX_INSTANCES, REGION } from './config';
 import type { LinkShareDoc, ShareDoc } from './docs';
 import {
@@ -66,6 +71,8 @@ import { pingSend } from './handlers/ping';
 import { emergencyContactsSet, sosAck, sosResolve, sosSend, sosUpdate } from './handlers/sos';
 import { meetupCancel, meetupRespond, meetupShare, meetupSuggest } from './handlers/meetup';
 import { zoneDelete, zoneEventReport, zoneUpsert } from './handlers/zones';
+import { favoritesSet } from './handlers/favorites';
+import { notifyWidgetRefresh, widgetQuickShare, widgetTokenIssue, widgetTokenRevoke } from './handlers/widget';
 import {
   AccountDeleteSchema,
   BatteryLowNotifySchema,
@@ -142,6 +149,13 @@ export const meetup_suggest = callable('meetup_suggest', MeetupSuggestRequestSch
 export const meetup_share = callable('meetup_share', MeetupShareRequestSchema, (ctx, data) => meetupShare(ctx, data));
 export const meetup_respond = callable('meetup_respond', MeetupRespondRequestSchema, (ctx, data) => meetupRespond(ctx, data));
 export const meetup_cancel = callable('meetup_cancel', MeetupCancelRequestSchema, meetupCancel);
+
+// --- Faz 6: favoriler ve widget'tan tek tuşla 1 saatlik paylaşım ---
+export const favorites_set = callable('favorites_set', FavoritesSetRequestSchema, favoritesSet);
+export const widget_token_issue = callable('widget_token_issue', WidgetTokenIssueRequestSchema, widgetTokenIssue);
+export const widget_token_revoke = callable('widget_token_revoke', WidgetTokenRevokeRequestSchema, widgetTokenRevoke);
+/** Oturumsuz + App Check'siz: widget uzantısı / AppWidget alıcısı token ile çağırır (bkz. handlers/widget.ts). */
+export const widget_quick_share = tokenCallable('widget_quick_share', WidgetQuickShareRequestSchema, (data) => widgetQuickShare(data));
 
 // --- arka plan ---
 
@@ -244,6 +258,10 @@ export const inactive_account_sweeper = onSchedule(
 export const share_acl_reconciler = onDocumentWritten({ document: 'location_shares/{shareId}', retry: true }, async (event) => {
   const before = (event.data?.before?.data() as ShareDoc | undefined) ?? null;
   await reconcileShare(event.params.shareId, before);
+  // Faz 6: paylaşım başladı / bitti ve alıcı paylaşanı favorilerinde tutuyor → yalnızca veri `widget_refresh`.
+  // En iyi çaba; hata fırlatmaz (yeniden deneme yalnızca ACL içindir). Aynı karar her yazma yolunu kapsar.
+  const after = (event.data?.after?.data() as ShareDoc | undefined) ?? null;
+  await notifyWidgetRefresh(before, after);
 });
 
 /**

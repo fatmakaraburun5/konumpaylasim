@@ -54,6 +54,25 @@
  *    `rankMeetupCandidates`; boş hücre `fallbackEta` (estimated). `meetup_share / respond / cancel`: `meetups` + push.
  *  - Demo paneli: Ayşe eve vardı (bot kuralı → bana zone_event), Ayşe buluşma noktası önersin (bana meetup → kart).
  *
+ * Faz 6 (backend `handlers/user.ts`, `favorites.ts`, `widget.ts` ile aynı anlam; SPEC §1–2):
+ *  - Profiller `gender` (bot: Ayşe / Zeynep / Elif kadın, Mehmet / Can erkek) ve çizim avatar taşır (`avatars.ts`;
+ *    gerçek kişi fotoğrafı YOK, Can fotoğrafsız → baş harfler). Arkadaş kopyası (`member_profiles`) ad + fotoğraf +
+ *    cinsiyet; bekleyen istek kopyası yalnızca ad. Okumada Storage adresleri yerel `blob:` / `data:` adresine çözülür.
+ *  - `user_bootstrap`: profil OLUŞTURULURKEN (demo: ilk kez ad verilirken) `gender` zorunlu → `gender_required`;
+ *    sonra verilmezse kalır, `null` reddedilir. `avatar_url` + `avatar_thumb_url` üretim biçimli Storage adresi, aynı
+ *    sürümün `_160` kardeşi (core `checkAvatarPair`); fotoğraf değişince eski sürümün iki nesnesi silinir.
+ *  - `storageUpload / storageDelete`: `storage.rules` (yalnızca sahibi, `AVATAR_FILE_RE`, image/jpeg, boyut sınırları).
+ *  - `favorites_set`: kabul edilmiş arkadaş olmayanlar sessizce düşer (core `sanitizeFavorites`); arkadaşlık
+ *    kaldırılınca iki tarafın listesinden de çıkar.
+ *  - `widget_token_issue / revoke`: token yalnızca yanıtta (op kaydına girmez, her çağrı aynı cihazın eskisini iptal
+ *    edip YENİSİNİ verir), sunucu sha256 özetini saklar; günde 20 üretim, en çok 5 aktif cihaz.
+ *  - `widget_quick_share` (OTURUMSUZ, yetki = token): token_invalid → token_expired → not_favorite → not_friend →
+ *    rate_limited (token başına saatte 6 başarılı çağrı) → core `quickShareExpiry` (started / extended /
+ *    already_active). `op_id` token başına tekilleştirilir. Sonra gönderene `resume_tracking` + görünür
+ *    `quick_share_started` push'u (koordinat YOK).
+ *  - `widget_refresh` (yalnızca veri): bir paylaşımın aktifliği değişince, alıcı göndereni favorilerinde tutuyorsa.
+ *  - Demo paneli: token'ın sunucuda süresi dolsun, hız sınırı dolsun, favorileri boşalt / geri yükle.
+ *
  * Durum tarayıcıda `localStorage`'a yazılır (erişilemezse yalnızca bellekte kalır). Sunucu saati = cihaz saati.
  */
 import {
@@ -212,19 +231,49 @@ import {
   type ZoneTrigger,
   type ZoneUpsertResponse,
 } from '@konum/core';
+import {
+  avatarObjectPathFromUrl,
+  avatarObjectPaths,
+  checkAvatarPair,
+  FavoritesSetRequestSchema,
+  generateWidgetToken,
+  isGender,
+  parseAvatarObjectPath,
+  ProfileFieldsF6Schema,
+  QUICK_SHARE_LIMITS,
+  quickShareExpiry,
+  quickSharePushText,
+  resolveProfileGender,
+  sanitizeFavorites,
+  WIDGET_QUICK_SHARE_ENDPOINT,
+  WidgetQuickShareRequestSchema,
+  WidgetTokenIssueRequestSchema,
+  widgetTokenHash,
+  WidgetTokenRevokeRequestSchema,
+  type FavoritesSetResponse,
+  type Gender,
+  type PublicProfile,
+  type WidgetQuickShareResponse,
+  type WidgetTokenIssueResponse,
+  type WidgetTokenRevokeResponse,
+} from '@konum/core';
 import { z } from 'zod';
+import { botAvatarUrls, DEMO_STORAGE_BUCKET, DEMO_STORAGE_HOST, DemoAvatarStore, DemoStorageError, uriToDataUrl } from './avatars';
 import { fakeComputeRoutes, fakeReverseGeocode } from './fakeGoogle';
 import { fakePlacesNearby, fakeRouteMatrix } from './fakePlaces';
+import { demoCurrentUid } from '../web/session';
 import { safeStorage } from './storage';
 import {
   AYSE_PATH,
   DEMO_ME,
+  DEMO_ME_FAVORITES,
   DEMO_ME_INVITE,
   DEMO_ME_NAME,
   EXTRA_SPOTS,
   jitter,
   MEHMET_SPOT,
   NAME_POOL,
+  NAME_POOL_GENDER,
   PEOPLE,
   pointAlong,
   ZEYNEP_SPOT,
@@ -241,6 +290,27 @@ interface UserRec {
   invite_code: string;
   created_at: EpochMs;
   time_zone: string;
+  // --- Faz 6 (eski kayıtlarda yok: `withPhase6` tamamlar) ---
+  /** `null` yalnızca Faz 6 öncesi (eski) hesap ya da henüz adı verilmemiş demo hesabı. */
+  gender: Gender | null;
+  /** Üretim biçimli Storage adresleri (okumada yerel adrese çözülür). */
+  avatar_url: string | null;
+  avatar_thumb_url: string | null;
+  avatar_version: number | null;
+  /** Sıralı favoriler (yalnızca sahibi okur). */
+  favorite_ids: UserId[];
+}
+
+/** Firestore `widget_tokens/{sha256(token)}` (istemciye tamamen kapalı; düz token SAKLANMAZ). */
+interface WidgetTokenRec {
+  uid: UserId;
+  device_id: string;
+  created_at: EpochMs;
+  expires_at: EpochMs;
+  last_used_at: EpochMs | null;
+  uses: { window_start: EpochMs; count: number };
+  revoked: boolean;
+  revoked_at: EpochMs | null;
 }
 
 interface FriendshipRec extends Friendship {
@@ -457,6 +527,14 @@ interface Db {
   meetup_cache: Record<string, { response: MeetupSuggestResponse; expire_at: EpochMs }>;
   /** Demo: bot alıcının otomatik "Geliyorum" anı (`{meetup_id}|{uid}` → an). */
   meetup_auto: Record<string, EpochMs>;
+  // --- Faz 6 (eski kayıtlarda yok: `withPhase6` tamamlar) ---
+  phase6: boolean;
+  /** Firestore `widget_tokens/{sha256Hex(token)}`. */
+  widget_tokens: Record<string, WidgetTokenRec>;
+  /** Günlük token üretim sayacı `{uid}_{gün}` (backend `rate_limits/..._widget_token`). */
+  widget_issue: Record<string, number>;
+  /** `widget_quick_share` op kaydı `{token_hash}:{op_id}` (token başına tekilleştirme). */
+  widget_ops: Record<string, { at: EpochMs; response: WidgetQuickShareResponse }>;
 }
 
 /** Faz 1'de kaydedilmiş demo durumuna Faz 2 alanlarını ekler (demo verisi silinmeden). */
@@ -502,6 +580,53 @@ function withPhase5(db: Db): Db {
   db.meetups ??= {};
   db.meetup_cache ??= {};
   db.meetup_auto ??= {};
+  return db;
+}
+
+/** Kişinin demo cinsiyeti (bot / isim havuzu); bilinmiyorsa null. */
+function demoGenderOf(uid: UserId, name: string): Gender | null {
+  const p = Object.values(PEOPLE).find((x) => x.uid === uid);
+  return p?.gender ?? NAME_POOL_GENDER[name] ?? null;
+}
+
+/**
+ * Faz 5 kaydına Faz 6 alanlarını ekler (demo verisi silinmeden): botlara cinsiyet + çizim avatar, benim favorilerim
+ * (Ayşe, Mehmet, Zeynep). Benim cinsiyetim eski kayıtta `null` kalır (eski hesap: uygulama cinsiyet seçimi ister).
+ */
+function withPhase6(db: Db): Db {
+  db.widget_tokens ??= {};
+  db.widget_issue ??= {};
+  db.widget_ops ??= {};
+  for (const u of Object.values(db.users)) {
+    u.gender ??= u.uid === DEMO_ME ? null : demoGenderOf(u.uid, u.display_name);
+    u.avatar_url ??= null;
+    u.avatar_thumb_url ??= null;
+    u.avatar_version ??= null;
+    u.favorite_ids ??= [];
+  }
+  if (!db.phase6) {
+    db.phase6 = true;
+    for (const u of Object.values(db.users)) {
+      if (u.uid === DEMO_ME || u.avatar_url) continue;
+      const a = botAvatarUrls(u.uid);
+      if (a) Object.assign(u, a);
+    }
+    const me = db.users[DEMO_ME];
+    if (me && me.favorite_ids.length === 0) {
+      me.favorite_ids = DEMO_ME_FAVORITES.filter((id) => db.friendships[friendshipId(DEMO_ME, id)]?.status === 'accepted');
+    }
+    // Kabul edilmiş arkadaşlıklardaki profil kopyaları yeni alanlarla tazelenir (bekleyenler yalnızca ad).
+    for (const f of Object.values(db.friendships)) {
+      for (const m of Object.keys(f.member_profiles)) {
+        const u = db.users[m];
+        const cur = f.member_profiles[m] as Partial<PublicProfile> & { display_name: string };
+        f.member_profiles[m] =
+          f.status === 'accepted' && u
+            ? { display_name: cur.display_name || u.display_name, avatar_url: u.avatar_url, gender: u.gender, avatar_thumb_url: u.avatar_thumb_url }
+            : { display_name: cur.display_name, avatar_url: null, gender: null, avatar_thumb_url: null };
+      }
+    }
+  }
   return db;
 }
 
@@ -557,6 +682,12 @@ const TRANSPORT: Record<ErrorCode, string> = {
   zone_not_found: 'not-found',
   zone_limit_reached: 'resource-exhausted',
   meetup_not_found: 'not-found',
+  // Faz 6
+  gender_required: 'invalid-argument',
+  token_invalid: 'unauthenticated',
+  token_expired: 'unauthenticated',
+  not_favorite: 'failed-precondition',
+  not_friend: 'failed-precondition',
 };
 
 /** RTDB kural reddi (RNFB `database/permission-denied` ile aynı biçim). */
@@ -598,6 +729,9 @@ const otherMember = (f: Friendship, uid: UserId): UserId => (f.member_ids[0] ===
 const DEFAULT_TZ = 'Europe/Istanbul';
 /** Backend `LIMITS.linkCreatePerHour` ile aynı. [Varsayım] */
 const LINK_CREATE_PER_HOUR = 20;
+/** Faz 6: backend `WIDGET_TOKEN_LIMITS` ile aynı (günlük üretim, aynı anda aktif cihaz). [Varsayım] */
+const WIDGET_TOKEN_ISSUE_PER_DAY = 20;
+const WIDGET_TOKEN_MAX_ACTIVE = 5;
 
 /** `ops` kaydındaki create yanıtı: düz token ve URL olmadan (backend `storedCreate`). */
 function storedLinkCreate(r: LinkShareCreateResponse): Record<string, unknown> {
@@ -674,6 +808,30 @@ export interface DemoSnapshot {
     meetupHits: number;
     meetupLimit: number;
   };
+  /** Faz 6: cinsiyetim / fotoğrafım, favorilerim (adlar, widget sırası), aktif widget token'ım ve bu saatteki kullanım. */
+  f6: {
+    myGender: Gender | null;
+    myPhoto: boolean;
+    favorites: string[];
+    activeWidgetTokens: number;
+    quickSharesThisHour: number;
+  };
+}
+
+/** Faz 6: widget önizlemesinin ham kaynağı (`widgetSource`). Avatar adresi yerel (gösterilebilir) adrestir. */
+export interface DemoWidgetSource {
+  profile: { display_name: string; gender: Gender | null } | null;
+  favorite_ids: UserId[];
+  friends: {
+    uid: UserId;
+    display_name: string;
+    gender: Gender | null;
+    avatar_thumb_url: string | null;
+    avatar_version: number | null;
+    incoming: { active: boolean; last_seen_at: EpochMs | null; battery_pct: number | null; position: LatLng | null } | null;
+  }[];
+  outgoing: { receiver_id: UserId; status: 'active' | 'ended'; expires_at: EpochMs | null }[];
+  tokens: { device_id: string; expires_at: EpochMs; revoked: boolean; uses: { window_start: EpochMs; count: number } }[];
 }
 
 export class DemoServer {
@@ -689,6 +847,8 @@ export class DemoServer {
   private linkListeners = 0;
   /** Faz 3: FCM benzeri push dinleyicileri (uygulama `registerPushToken` ile abone olur). */
   private pushListeners = new Map<UserId, Set<(m: DemoPushMessage) => void>>();
+  /** Faz 6: sahte Storage (yüklenen avatarlar; ana durumdan ayrı anahtarda). */
+  private avatars = new DemoAvatarStore();
 
   constructor() {
     this.db = this.load() ?? this.seed(Date.now());
@@ -710,7 +870,7 @@ export class DemoServer {
       if (!db || db.v !== DB_VERSION || !db.users || !db.users[DEMO_ME]) return null;
       const cutoff = Date.now() - DAY;
       for (const [k, op] of Object.entries(db.ops)) if (op.at < cutoff) delete db.ops[k];
-      return withPhase5(withPhase4(withPhase3(withPhase2(db))));
+      return withPhase6(withPhase5(withPhase4(withPhase3(withPhase2(db)))));
     } catch {
       return null;
     }
@@ -805,6 +965,10 @@ export class DemoServer {
       meetups: {},
       meetup_cache: {},
       meetup_auto: {},
+      phase6: false,
+      widget_tokens: {},
+      widget_issue: {},
+      widget_ops: {},
     };
     this.db = db;
     withPhase4(db);
@@ -821,6 +985,8 @@ export class DemoServer {
     for (const [uid, daysAgo] of friendsOf) this.makeFriends(DEMO_ME, uid, now - daysAgo * DAY, DEMO_ME_NAME);
     // Bekleyen istek: Elif beni davet koduyla eklemek istiyor.
     this.addPendingRequest(PEOPLE.elif.uid, DEMO_ME, now - 25 * MINUTE);
+    // Faz 6: bot cinsiyetleri + çizim avatarlar, benim favorilerim (Ayşe, Mehmet, Zeynep).
+    withPhase6(db);
 
     db.bots[PEOPLE.ayse.uid] = { uid: PEOPLE.ayse.uid, kind: 'walker', battery: 64, charging: false, walk_origin: now - 9 * MINUTE, next_at: now, spot: AYSE_PATH[0] as LatLng };
     db.bots[PEOPLE.mehmet.uid] = { uid: PEOPLE.mehmet.uid, kind: 'heartbeat', battery: MEHMET_BATTERY, charging: false, walk_origin: now, next_at: now + 8 * MINUTE, spot: MEHMET_SPOT };
@@ -856,15 +1022,43 @@ export class DemoServer {
   }
 
   private addUser(uid: UserId, name: string, invite: string, createdAt: EpochMs): UserRec {
-    const u: UserRec = { uid, display_name: name, invite_code: invite, created_at: createdAt, time_zone: DEFAULT_TZ };
+    const u: UserRec = {
+      uid,
+      display_name: name,
+      invite_code: invite,
+      created_at: createdAt,
+      time_zone: DEFAULT_TZ,
+      gender: uid === DEMO_ME ? null : demoGenderOf(uid, name),
+      avatar_url: null,
+      avatar_thumb_url: null,
+      avatar_version: null,
+      favorite_ids: [],
+    };
     this.db.users[uid] = u;
     this.db.invites[invite] = uid;
     return u;
   }
 
-  private publicProfile(uid: UserId, fallbackName?: string) {
-    const name = this.db.users[uid]?.display_name || fallbackName || '';
-    return { display_name: name, avatar_url: null };
+  /** Kabul edilmiş arkadaşlıktaki profil kopyası (Faz 6: fotoğraf + cinsiyet; adresler saklanan üretim biçimi). */
+  private publicProfile(uid: UserId, fallbackName?: string): PublicProfile {
+    const u = this.db.users[uid];
+    return {
+      display_name: u?.display_name || fallbackName || '',
+      avatar_url: u?.avatar_url ?? null,
+      gender: u?.gender ?? null,
+      avatar_thumb_url: u?.avatar_url ? (u.avatar_thumb_url ?? null) : null,
+    };
+  }
+
+  /** Bekleyen istek kopyası: YALNIZCA ad (SPEC §1.1; fotoğraf ve cinsiyet kabulden sonra yayılır). */
+  private pendingProfile(uid: UserId): PublicProfile {
+    return { display_name: this.db.users[uid]?.display_name ?? '', avatar_url: null, gender: null, avatar_thumb_url: null };
+  }
+
+  /** Okuma: Storage adreslerini tarayıcının gösterebileceği yerel adrese çevirir (bkz. `avatars.ts`). */
+  private resolvedProfile(p: PublicProfile): PublicProfile {
+    const main = this.avatars.resolve(p.avatar_url);
+    return { ...p, avatar_url: main, avatar_thumb_url: main ? (this.avatars.resolve(p.avatar_thumb_url) ?? main) : null };
   }
 
   private makeFriends(a: UserId, b: UserId, at: EpochMs, nameForA?: string): FriendshipRec {
@@ -893,7 +1087,7 @@ export class DemoServer {
       status: 'pending',
       requested_by: from,
       via: 'invite_code',
-      member_profiles: { [from]: this.publicProfile(from) },
+      member_profiles: { [from]: this.pendingProfile(from) },
       created_at: at,
       updated_at: at,
       target_id: to,
@@ -1008,12 +1202,25 @@ export class DemoServer {
     s.version += 1;
     s.updated_at = now;
     this.mirrorAcl(s);
+    this.widgetRefresh(s);
     return true;
+  }
+
+  /**
+   * Faz 6 (backend `notifyWidgetRefresh`): paylaşımın AKTİFLİĞİ değişti → alıcı göndereni favorilerinde tutuyorsa
+   * yalnızca veri `widget_refresh` push'u (widget yenilenir). Koordinat yok.
+   */
+  private widgetRefresh(s: ShareRec): void {
+    const receiver = this.db.users[s.receiver_id];
+    if (!receiver || !(receiver.favorite_ids ?? []).includes(s.sender_id)) return;
+    const data: Extract<PushData, { type: 'widget_refresh' }> = { type: 'widget_refresh', from: s.sender_id };
+    this.push(s.receiver_id, { data });
   }
 
   private startShare(sender: UserId, receiver: UserId, sessionId: string, mode: ShareMode, expiresAt: EpochMs | null, now: EpochMs): ShareRec {
     const id = shareId(sender, receiver);
     const prev = this.db.shares[id];
+    const wasActive = prev?.status === 'active';
     const version = Math.max(prev?.version ?? 0, this.db.acl[id]?.version ?? 0) + 1;
     const s: ShareRec = {
       share_id: id,
@@ -1034,6 +1241,7 @@ export class DemoServer {
     };
     this.db.shares[id] = s;
     this.mirrorAcl(s);
+    if (!wasActive) this.widgetRefresh(s);
     return s;
   }
 
@@ -1193,6 +1401,7 @@ export class DemoServer {
     if (now - this.lastPrune > MINUTE) {
       this.lastPrune = now;
       if (this.prunePhase2(now)) changed = true;
+      if (this.prunePhase6(now)) changed = true;
     }
     if (changed) this.commit();
   }
@@ -1502,16 +1711,33 @@ export class DemoServer {
 
   // --- okuma (dinleyiciler) ----------------------------------------------------------------------
 
-  profileOf(uid: UserId): (Omit<UserProfile, 'user_id'> & { user_id: UserId }) | null {
+  /** `users/{uid}` (yalnızca sahibi okur). Faz 6: cinsiyet, avatar (yerel adrese çözülmüş), sürüm, favoriler. */
+  profileOf(uid: UserId): UserProfile | null {
     const u = this.db.users[uid];
     if (!u) return null;
-    return { user_id: uid, display_name: u.display_name, avatar_url: null, invite_code: u.invite_code, created_at: u.created_at, rtdb_instance: 0 };
+    const main = this.avatars.resolve(u.avatar_url);
+    return {
+      user_id: uid,
+      display_name: u.display_name,
+      avatar_url: main,
+      invite_code: u.invite_code,
+      created_at: u.created_at,
+      rtdb_instance: 0,
+      gender: u.gender ?? null,
+      avatar_thumb_url: main ? (this.avatars.resolve(u.avatar_thumb_url) ?? main) : null,
+      avatar_version: main ? (u.avatar_version ?? null) : null,
+      favorite_ids: [...(u.favorite_ids ?? [])],
+    };
   }
 
   friendshipsOf(uid: UserId): FriendshipRec[] {
     return Object.values(this.db.friendships)
       .filter((f) => (f.status === 'accepted' && f.member_ids.includes(uid)) || (f.status === 'pending' && f.target_id === uid))
-      .sort((a, b) => a.id.localeCompare(b.id));
+      .sort((a, b) => a.id.localeCompare(b.id))
+      .map((f) => ({
+        ...f,
+        member_profiles: Object.fromEntries(Object.entries(f.member_profiles).map(([m, p]) => [m, this.resolvedProfile(p)])),
+      }));
   }
 
   outgoingRequestsOf(uid: UserId): { id: string; via: 'invite_code' | 'phone'; label: string; created_at: EpochMs; expires_at: EpochMs }[] {
@@ -1605,12 +1831,24 @@ export class DemoServer {
 
   async call(name: string, payload: unknown, authUid: UserId | null): Promise<unknown> {
     await new Promise((r) => setTimeout(r, randomBetween(150, 400)));
+    // Faz 6: widget uzantısı / AppWidget alıcısı oturumsuz çağırır; yetki = token (op_id token başına).
+    if (name === 'widget_quick_share') {
+      const r = this.widgetQuickShareCall(payload, Date.now());
+      this.commit();
+      return clone(r);
+    }
     if (!authUid) fail('unauthenticated');
     const uid = authUid as UserId;
     const opId = (payload as { op_id?: unknown } | null)?.op_id;
     const opKey = typeof opId === 'string' ? `${uid}:${name}:${opId}` : null;
     const now = Date.now();
     const replay = opKey ? this.db.ops[opKey] : undefined;
+    // Faz 6: token üretimi op kaydına girmez; her çağrı (aynı op_id dahil) yeni token verir (backend ile aynı).
+    if (name === 'widget_token_issue') {
+      const r = this.widgetTokenIssueCall(payload, uid, now);
+      this.commit();
+      return clone(r);
+    }
     if (opKey && replay) {
       if (name !== 'link_share_create') return clone(replay.response);
       // Yanıtı kaybolan create: düz token saklanmadığı için token YENİLENİR (backend ile aynı).
@@ -1692,6 +1930,11 @@ export class DemoServer {
         return this.meetupRespondCall(payload, uid, now);
       case 'meetup_cancel':
         return this.meetupCancelCall(payload, uid, now);
+      // Faz 6
+      case 'favorites_set':
+        return this.favoritesSetCall(payload, uid, now);
+      case 'widget_token_revoke':
+        return this.widgetTokenRevokeCall(payload, uid, now);
       default:
         return fail('invalid_argument', `Demo sunucusunda yok: ${name}`);
     }
@@ -1703,21 +1946,77 @@ export class DemoServer {
     return (r as { data: z.output<S> }).data;
   }
 
+  /**
+   * Faz 6 (backend `userBootstrap`): `gender` profil OLUŞTURULURKEN zorunlu. Demo hesabı tohumda adsız hazır
+   * bekler; bu yüzden "oluşturma" = kayıt yok YA DA ilk kez ad veriliyor (ad ekranı). Sonraki çağrılarda verilmezse
+   * mevcut değer kalır (eski hesapta `null` → uygulama cinsiyet seçimi ister), `null` şemada reddedilir.
+   * `avatar_url` / `avatar_thumb_url`: demo kovasındaki `avatars/{uid}/...` adresi, küçük boy aynı sürümün `_160`
+   * kardeşi; `avatar_url: null` fotoğrafı kaldırır. Değişen ad / fotoğraf / cinsiyet arkadaş kopyalarına yayılır.
+   */
   private userBootstrap(payload: unknown, uid: UserId, now: EpochMs) {
     const data = this.parse(
-      z.object({ op_id: z.uuid(), display_name: z.string().trim().min(1).max(40).optional(), time_zone: z.string().min(1).max(64) }),
+      z
+        .object({
+          op_id: z.uuid().optional(),
+          display_name: z.string().trim().min(1).max(40).optional(),
+          time_zone: z.string().min(1).max(64),
+          avatar_url: z.url({ protocol: /^https$/ }).max(2048).nullable().optional(),
+        })
+        .extend(ProfileFieldsF6Schema.shape),
       payload,
     );
+    if (data.avatar_url) this.assertAvatarUrl(data.avatar_url, uid, 'main');
+    if (data.avatar_thumb_url) this.assertAvatarUrl(data.avatar_thumb_url, uid, 'thumb');
+    if (checkAvatarPair(data.avatar_url, data.avatar_thumb_url, uid) !== 'ok') fail('invalid_argument', 'Küçük avatar ana avatarla eşleşmiyor');
     let u = this.db.users[uid];
+    const creating = !u || (data.display_name !== undefined && !u.display_name.trim() && u.gender === null);
+    const g = resolveProfileGender(isGender(u?.gender) ? (u?.gender ?? null) : null, data.gender, creating);
+    if (!g.ok) return fail('gender_required');
     const created = !u;
     if (!u) u = this.addUser(uid, '', this.randomInviteCode(), now);
     u.time_zone = data.time_zone;
+    let changed = false;
     if (data.display_name && data.display_name !== u.display_name) {
       u.display_name = data.display_name;
-      // Arkadaşların gördüğü profil kopyaları da güncellenir.
-      for (const f of Object.values(this.db.friendships)) if (f.member_profiles[uid]) f.member_profiles[uid] = this.publicProfile(uid);
+      changed = true;
+    }
+    if (g.changed) {
+      u.gender = g.gender;
+      changed = true;
+    }
+    if (data.avatar_url !== undefined) {
+      const thumb = data.avatar_url ? (data.avatar_thumb_url ?? null) : null;
+      const version = data.avatar_url ? (parseAvatarObjectPath(avatarObjectPathFromUrl(data.avatar_url) ?? '')?.version ?? null) : null;
+      if (data.avatar_url !== u.avatar_url || thumb !== u.avatar_thumb_url) {
+        const oldVersion = u.avatar_version;
+        u.avatar_url = data.avatar_url;
+        u.avatar_thumb_url = thumb;
+        u.avatar_version = version;
+        changed = true;
+        // Önceki sürümün iki nesnesi silinir (en iyi çaba; backend `deleteAvatarObjects`).
+        if (oldVersion !== null && oldVersion !== version) {
+          const old = avatarObjectPaths(uid, oldVersion);
+          this.avatars.remove(old.main, 'server');
+          this.avatars.remove(old.thumb, 'server');
+        }
+      }
+    }
+    if (changed) {
+      // Kabul edilmiş arkadaşlıklardaki profil kopyaları güncellenir (bekleyen istek kopyası yalnızca ad).
+      for (const f of Object.values(this.db.friendships)) {
+        if (!f.member_profiles[uid]) continue;
+        f.member_profiles[uid] = f.status === 'accepted' ? this.publicProfile(uid) : this.pendingProfile(uid);
+      }
     }
     return { user: this.profileOf(uid), created, server_now: now };
+  }
+
+  /** Backend `assertAvatarUrl`: yalnızca demo kovasındaki `avatars/{uid}/{sürüm}(_160).jpg` (serbest https yok). */
+  private assertAvatarUrl(url: string, uid: UserId, kind: 'main' | 'thumb'): void {
+    const m = /^https:\/\/([^/?#:@]+)\/v0\/b\/([^/?#]+)\/o\/([^/?#]+)(?:\?[^#]*)?$/.exec(url);
+    if (!m || m[1] !== DEMO_STORAGE_HOST || decodeURIComponent(m[2] ?? '') !== DEMO_STORAGE_BUCKET) fail('invalid_argument', 'Avatar adresi geçersiz');
+    const ref = parseAvatarObjectPath(avatarObjectPathFromUrl(url) ?? '');
+    if (!ref || ref.uid !== uid || ref.thumb !== (kind === 'thumb')) fail('invalid_argument', 'Avatar adresi geçersiz');
   }
 
   private shareStartCall(payload: unknown, uid: UserId, now: EpochMs) {
@@ -1823,7 +2122,7 @@ export class DemoServer {
         status: 'pending',
         requested_by: uid,
         via: data.via,
-        member_profiles: { [uid]: this.publicProfile(uid) },
+        member_profiles: { [uid]: this.pendingProfile(uid) },
         created_at: now,
         updated_at: now,
         target_id: target.uid,
@@ -1880,6 +2179,9 @@ export class DemoServer {
     for (const [a, b] of [[uid, other], [other, uid]] as const) {
       const list = this.db.emergency[a];
       if (list) this.db.emergency[a] = list.filter((x) => x !== b);
+      // Faz 6: iki tarafın favori listesinden de çıkar.
+      const ua = this.db.users[a];
+      if (ua) ua.favorite_ids = (ua.favorite_ids ?? []).filter((x) => x !== b);
       // Faz 5: iki tarafın bölge kurallarından karşı taraf çıkarılır (alıcısız kural silinir).
       this.dropZoneRecipient(a, b, now);
     }
@@ -2544,6 +2846,304 @@ export class DemoServer {
     // [Varsayım] Alıcılara push yok; kart dinleyiciyle kapanır.
     m.status = 'cancelled';
     return { meetup: m, server_now: now };
+  }
+
+  // --- Faz 6: favoriler, widget token'ları, tek tuşla paylaşım, avatar Storage ------------------------
+
+  private acceptedFriendIds(uid: UserId): Set<UserId> {
+    const out = new Set<UserId>();
+    for (const f of Object.values(this.db.friendships)) if (f.status === 'accepted' && f.member_ids.includes(uid)) out.add(otherMember(f, uid));
+    return out;
+  }
+
+  /** `favorites_set`: tüm liste; kabul edilmiş arkadaş olmayanlar SESSİZCE düşer (core `sanitizeFavorites`). */
+  private favoritesSetCall(payload: unknown, uid: UserId, _now: EpochMs): FavoritesSetResponse {
+    const req = this.parse(FavoritesSetRequestSchema, payload);
+    const u = this.db.users[uid];
+    if (!u) return fail('unauthenticated');
+    u.favorite_ids = sanitizeFavorites(req.favorite_ids, this.acceptedFriendIds(uid));
+    return { favorite_ids: [...u.favorite_ids] };
+  }
+
+  private newWidgetToken(): string {
+    const c = (globalThis as { crypto?: { getRandomValues?: (a: Uint8Array) => Uint8Array } }).crypto;
+    if (!c?.getRandomValues) return fail('internal', 'Güvenli rastgele sayı üreteci yok');
+    return generateWidgetToken((n) => c.getRandomValues!(new Uint8Array(n)));
+  }
+
+  /**
+   * `widget_token_issue` (oturum): aynı cihazın eski token'ları + 5 aktif cihaz sınırını aşan en eskiler iptal, yeni
+   * token (30 gün). Düz token yalnızca yanıtta; sunucuda `widgetTokenHash(token)` anahtarı. Günde en çok 20 üretim.
+   */
+  private widgetTokenIssueCall(payload: unknown, uid: UserId, now: EpochMs): WidgetTokenIssueResponse {
+    const req = this.parse(WidgetTokenIssueRequestSchema, payload);
+    if (!this.db.users[uid]) return fail('unauthenticated');
+    const dayKey = `${uid}_${quotaDay(now)}`;
+    const issued = this.db.widget_issue[dayKey] ?? 0;
+    if (issued >= WIDGET_TOKEN_ISSUE_PER_DAY) fail('rate_limited');
+    const live = Object.values(this.db.widget_tokens).filter((t) => t.uid === uid && !t.revoked && t.expires_at > now);
+    const same = live.filter((t) => t.device_id === req.device_id);
+    const others = live.filter((t) => t.device_id !== req.device_id).sort((a, b) => b.created_at - a.created_at);
+    for (const t of [...same, ...others.slice(Math.max(0, WIDGET_TOKEN_MAX_ACTIVE - 1))]) {
+      t.revoked = true;
+      t.revoked_at = now;
+    }
+    const token = this.newWidgetToken();
+    const expires_at = now + QUICK_SHARE_LIMITS.tokenTtlMs;
+    this.db.widget_tokens[widgetTokenHash(token)] = {
+      uid,
+      device_id: req.device_id,
+      created_at: now,
+      expires_at,
+      last_used_at: null,
+      uses: { window_start: now, count: 0 },
+      revoked: false,
+      revoked_at: null,
+    };
+    this.db.widget_issue[dayKey] = issued + 1;
+    return { token, expires_at, endpoint_path: WIDGET_QUICK_SHARE_ENDPOINT };
+  }
+
+  /** `widget_token_revoke` (oturum): `device_id` ya da `null` = tüm cihazlar (çıkış). */
+  private widgetTokenRevokeCall(payload: unknown, uid: UserId, now: EpochMs): WidgetTokenRevokeResponse {
+    const req = this.parse(WidgetTokenRevokeRequestSchema, payload);
+    let revoked = 0;
+    for (const t of Object.values(this.db.widget_tokens)) {
+      if (t.uid !== uid || t.revoked || (req.device_id !== null && t.device_id !== req.device_id)) continue;
+      t.revoked = true;
+      t.revoked_at = now;
+      revoked++;
+    }
+    return { revoked };
+  }
+
+  /**
+   * `widget_quick_share` (OTURUMSUZ; yetki = token). Sıra backend ile aynı: token yok / iptal → `token_invalid`;
+   * süresi dolmuş → `token_expired`; profil yok → `token_invalid`; hedef favori değil (ya da kendisi) →
+   * `not_favorite`; kabul edilmiş arkadaş değil → `not_friend`; token başına saatte 6 BAŞARILI çağrı →
+   * `rate_limited`. Karar core `quickShareExpiry`; yeni paylaşım `share_start` ile aynı iç fonksiyondan
+   * (`startShare`). Sonra gönderene sessiz `resume_tracking` + görünür `quick_share_started`.
+   */
+  private widgetQuickShareCall(payload: unknown, now: EpochMs): WidgetQuickShareResponse {
+    const req = this.parse(WidgetQuickShareRequestSchema, payload);
+    const hash = widgetTokenHash(req.token);
+    const tok = this.db.widget_tokens[hash];
+    if (!tok || tok.revoked) return fail('token_invalid');
+    if (tok.expires_at <= now) return fail('token_expired');
+    const opKey = `${hash}:${req.op_id}`;
+    const replay = this.db.widget_ops[opKey];
+    if (replay) return clone(replay.response);
+    const owner = tok.uid;
+    const user = this.db.users[owner];
+    if (!user) return fail('token_invalid');
+    const to = req.to_uid;
+    if (to === owner || !(user.favorite_ids ?? []).includes(to)) fail('not_favorite');
+    if (!this.areFriends(owner, to)) fail('not_friend');
+    const uses = now - tok.uses.window_start < HOUR ? { ...tok.uses } : { window_start: now, count: 0 };
+    if (uses.count >= QUICK_SHARE_LIMITS.perTokenPerHour) {
+      fail('rate_limited', `Tekrar denemek için ${Math.ceil((uses.window_start + HOUR - now) / MINUTE)} dk`);
+    }
+    const id = shareId(owner, to);
+    const current = this.db.shares[id] ?? null;
+    const decision = quickShareExpiry(current, now);
+
+    // --- yazmalar ---
+    tok.uses = { window_start: uses.window_start, count: uses.count + 1 };
+    tok.last_used_at = now;
+    let share: ShareRec;
+    if (decision.status === 'started') {
+      share = this.startShare(owner, to, uuidV4(), decision.share_mode, decision.expires_at, now);
+    } else {
+      share = current as ShareRec;
+      if (decision.status === 'extended') {
+        share.share_mode = decision.share_mode;
+        share.expires_at = decision.expires_at;
+        share.version += 1;
+        share.extended_count += 1;
+        share.updated_at = now;
+        this.mirrorAcl(share);
+      }
+    }
+    const toName = (this.db.friendships[friendshipId(owner, to)]?.member_profiles[to]?.display_name || this.nameOf(to)).slice(0, 80);
+    const res: WidgetQuickShareResponse = { status: decision.status, share_id: share.share_id, expires_at: share.expires_at, to_name: toName };
+    this.db.widget_ops[opKey] = { at: now, response: clone(res) };
+    const wake: Extract<PushData, { type: 'resume_tracking' }> = { type: 'resume_tracking', session_ids: share.session_id, level: '1' };
+    this.push(owner, { data: wake });
+    const visible: Extract<PushData, { type: 'quick_share_started' }> = {
+      type: 'quick_share_started',
+      share_id: share.share_id,
+      to_name: toName,
+      expires_at: share.expires_at === null ? '' : String(share.expires_at),
+    };
+    this.push(owner, { notification: quickSharePushText(toName, decision.status), data: visible });
+    return res;
+  }
+
+  /** Süpürücü (dakikada bir): 1 günden eski op kayıtları, iptal / süresi dolmuş token'lar (backend TTL `purge_at`). */
+  private prunePhase6(now: EpochMs): boolean {
+    let changed = false;
+    for (const [k, op] of Object.entries(this.db.widget_ops)) {
+      if (op.at < now - DAY) {
+        delete this.db.widget_ops[k];
+        changed = true;
+      }
+    }
+    for (const [k, t] of Object.entries(this.db.widget_tokens)) {
+      const deadAt = t.revoked ? (t.revoked_at ?? now) : t.expires_at;
+      if (deadAt + DAY < now) {
+        delete this.db.widget_tokens[k];
+        changed = true;
+      }
+    }
+    const today = quotaDay(now);
+    for (const k of Object.keys(this.db.widget_issue)) {
+      if (!k.endsWith(`_${today}`)) {
+        delete this.db.widget_issue[k];
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
+  /**
+   * Sahte Storage yüklemesi (RNFB `ref(path).putFile` / `putString` karşılığı): `storage.rules` uygulanır, dönen
+   * indirme adresi üretim biçimidir. `source`: base64 JPEG veri adresi ya da `blob:` adresi (web görüntü
+   * düzenleyicisinin çıktısı). Kural reddi `DemoStorageError` (`storage/unauthorized`).
+   */
+  async storageUpload(path: string, source: string, contentType: string, authUid: UserId | null): Promise<{ download_url: string; size: number }> {
+    await new Promise((r) => setTimeout(r, randomBetween(250, 700)));
+    const dataUrl = await uriToDataUrl(source);
+    return this.avatars.put(path, dataUrl, contentType, authUid, Date.now(), uuidV4());
+  }
+
+  /**
+   * Uygulamanın web yükleyicisinin (`services/profile/avatarUpload.web.ts`) beklediği kısa yol: oturumdaki demo
+   * kullanıcısı adına `storageUpload` (kurallar aynı). Dönen: indirme adresi.
+   */
+  async putAvatarObject(path: string, dataUri: string): Promise<string> {
+    return (await this.storageUpload(path, dataUri, 'image/jpeg', demoCurrentUid())).download_url;
+  }
+
+  /** Sahte Storage silme (yalnızca sahibi). Nesne yoksa sessizce geçer. */
+  async storageDelete(path: string, authUid: UserId | null): Promise<void> {
+    await new Promise((r) => setTimeout(r, randomBetween(80, 200)));
+    if (!authUid) throw new DemoStorageError('storage/unauthenticated');
+    this.avatars.remove(path, authUid);
+  }
+
+  /** Saklanan Storage adresi → tarayıcının gösterebileceği yerel adres (yoksa null). */
+  resolveAvatarUrl(url: string | null | undefined): string | null {
+    return this.avatars.resolve(url);
+  }
+
+  /** Demo paneli / test: Storage'da nesne var mı. */
+  storageHas(path: string): boolean {
+    return this.avatars.has(path);
+  }
+
+  /**
+   * Widget önizlemesinin ham kaynağı (demo paneli `buildWidgetSnapshot` girdisini bundan kurar): profil, favoriler,
+   * arkadaşlar (cinsiyet, yerel küçük avatar, bana paylaşımı + son paketi), giden paylaşımlarım, token'larım.
+   */
+  widgetSource(uid: UserId): DemoWidgetSource {
+    const now = Date.now();
+    const u = this.db.users[uid];
+    const friends: DemoWidgetSource['friends'] = [];
+    for (const f of Object.values(this.db.friendships)) {
+      if (f.status !== 'accepted' || !f.member_ids.includes(uid)) continue;
+      const other = otherMember(f, uid);
+      const p = this.resolvedProfile(f.member_profiles[other] ?? this.publicProfile(other));
+      const inc = this.db.shares[shareId(other, uid)];
+      const active = !!inc && inc.status === 'active' && (inc.expires_at === null || inc.expires_at > now);
+      const live = active && inc ? this.db.live[uid]?.[inc.share_id] : undefined;
+      friends.push({
+        uid: other,
+        display_name: p.display_name || this.nameOf(other),
+        gender: p.gender,
+        avatar_thumb_url: p.avatar_thumb_url,
+        avatar_version: this.db.users[other]?.avatar_version ?? null,
+        incoming: active
+          ? {
+              active: true,
+              last_seen_at: typeof live?.timestamp === 'number' ? live.timestamp : null,
+              battery_pct: typeof live?.battery_pct === 'number' ? live.battery_pct : null,
+              position: typeof live?.lat === 'number' && typeof live?.lng === 'number' ? { lat: live.lat, lng: live.lng } : null,
+            }
+          : null,
+      });
+    }
+    return {
+      profile: u ? { display_name: u.display_name, gender: u.gender ?? null } : null,
+      favorite_ids: [...(u?.favorite_ids ?? [])],
+      friends: friends.sort((a, b) => a.display_name.localeCompare(b.display_name, 'tr')),
+      outgoing: Object.values(this.db.shares)
+        .filter((s) => s.sender_id === uid)
+        .map((s) => ({ receiver_id: s.receiver_id, status: s.status, expires_at: s.expires_at })),
+      tokens: Object.values(this.db.widget_tokens)
+        .filter((t) => t.uid === uid)
+        .map((t) => ({ device_id: t.device_id, expires_at: t.expires_at, revoked: t.revoked, uses: { ...t.uses } })),
+    };
+  }
+
+  /** Widget yer etiketi: hücre önbelleği ya da sahte Google (kota dışı, sunucu içi); ilk virgüle kadar kısa adres. */
+  placeLabelAt(p: LatLng): string | null {
+    const cell = geocodeCell(p);
+    const hit = this.db.geocode_cache[cell];
+    let label: string | null;
+    if (hit) label = hit.label;
+    else {
+      const parsed = parseReverseGeocodeResponse(fakeReverseGeocode(geocodeQueryPoint(cell)));
+      label = parsed.ok ? parsed.label : null;
+    }
+    return label ? (label.split(',')[0]?.trim() || null) : null;
+  }
+
+  /** Demo paneli "Widget oturumu sunucuda dolsun": token'larımın süresi sunucuda dolar (istemci bilmez). */
+  expireWidgetTokens(uid: UserId, deviceId: string | null): number {
+    const now = Date.now();
+    let n = 0;
+    for (const t of Object.values(this.db.widget_tokens)) {
+      if (t.uid !== uid || t.revoked || t.expires_at <= now || (deviceId !== null && t.device_id !== deviceId)) continue;
+      t.expires_at = now - 1;
+      n++;
+    }
+    if (n) this.commit();
+    return n;
+  }
+
+  /** Demo paneli "Hız sınırı dolsun": token'larımın bu saatlik penceresi 6/6 olur. */
+  exhaustWidgetTokens(uid: UserId, deviceId: string | null): number {
+    const now = Date.now();
+    let n = 0;
+    for (const t of Object.values(this.db.widget_tokens)) {
+      if (t.uid !== uid || t.revoked || t.expires_at <= now || (deviceId !== null && t.device_id !== deviceId)) continue;
+      t.uses = { window_start: now, count: QUICK_SHARE_LIMITS.perTokenPerHour };
+      n++;
+    }
+    if (n) this.commit();
+    return n;
+  }
+
+  /** Demo paneli: favorilerimi sunucu adına ayarlar (`favorites_set` ile aynı temizlik). Dönen: saklanan liste. */
+  setFavoritesOf(uid: UserId, ids: readonly UserId[]): UserId[] {
+    const u = this.db.users[uid];
+    if (!u) return [];
+    u.favorite_ids = sanitizeFavorites(ids, this.acceptedFriendIds(uid));
+    this.commit();
+    return [...u.favorite_ids];
+  }
+
+  private f6View(): DemoSnapshot['f6'] {
+    const now = Date.now();
+    const me = this.db.users[DEMO_ME];
+    const mine = Object.values(this.db.widget_tokens).filter((t) => t.uid === DEMO_ME && !t.revoked && t.expires_at > now);
+    return {
+      myGender: me?.gender ?? null,
+      myPhoto: !!me?.avatar_url,
+      favorites: (me?.favorite_ids ?? []).map((id) => this.nameOf(id)),
+      activeWidgetTokens: mine.length,
+      quickSharesThisHour: mine.reduce((n, t) => n + (now - t.uses.window_start < HOUR ? t.uses.count : 0), 0),
+    };
   }
 
   // --- Faz 2: bağlantı (QR) paylaşımı -------------------------------------------------------------
@@ -3220,6 +3820,7 @@ export class DemoServer {
       receiverView: this.receiverView(),
       f4: this.f4View(),
       f5: this.f5View(),
+      f6: this.f6View(),
       mapsDown: this.db.maps_down,
       maps: {
         route: q?.route ?? 0,
@@ -3244,5 +3845,6 @@ export class DemoServer {
     for (const s of this.subs) s.live = false;
     this.subs.clear();
     safeStorage.remove(DEMO_STORAGE_KEY);
+    this.avatars.reset();
   }
 }

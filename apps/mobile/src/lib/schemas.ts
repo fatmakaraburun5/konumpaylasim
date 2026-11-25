@@ -7,6 +7,9 @@
  * gelirse de epoch ms'e çevrilir; bozuk belge sessizce atlanır.
  */
 import {
+  FAVORITES_LIMIT,
+  GenderSchema,
+  ProfileFieldsF6Schema,
   SHARE_MODES,
   type Friendship,
   type OutgoingShareView,
@@ -76,18 +79,38 @@ export const ShareDocSchema: z.ZodType<ShareDoc> = z.object({
   version: z.number().int().nonnegative(),
 });
 
+/** Faz 6: bilinmeyen / bozuk cinsiyet değeri eski hesap gibi `null` sayılır (çerçeve gri). */
+const genderOrNull = GenderSchema.nullable().default(null).catch(null);
+const urlOrNull = z.string().nullable().default(null).catch(null);
+
+/** Faz 6: sıralı favoriler; bozuk kimlikler ve tekrarlar atılır, en çok `FAVORITES_LIMIT`. */
+const favoriteIds = z.preprocess((v) => {
+  if (!Array.isArray(v)) return [];
+  const out: string[] = [];
+  for (const x of v) if (typeof x === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(x) && !out.includes(x)) out.push(x);
+  return out.slice(0, FAVORITES_LIMIT);
+}, z.array(z.string()));
+
 export const UserProfileSchema: z.ZodType<UserProfile> = z.object({
   user_id: uid,
   display_name: z.string().default(''),
-  avatar_url: z.string().nullable().default(null),
+  avatar_url: urlOrNull,
   invite_code: z.string().default(''),
   created_at: epochMs,
   rtdb_instance: z.number().int().nonnegative().default(0),
+  // --- Faz 6 (eski belgede yoksa varsayılan) ---
+  gender: genderOrNull,
+  avatar_thumb_url: urlOrNull,
+  avatar_version: z.number().int().positive().nullable().default(null).catch(null),
+  favorite_ids: favoriteIds,
 });
 
 const PublicProfileSchema = z.object({
   display_name: z.string().default(''),
-  avatar_url: z.string().nullable().default(null),
+  avatar_url: urlOrNull,
+  // Faz 6: kabul edilmiş arkadaşlık kopyasında var; bekleyen istekte yok (gri çerçeve, baş harfler).
+  gender: genderOrNull,
+  avatar_thumb_url: urlOrNull,
 });
 
 export const FriendshipSchema: z.ZodType<Friendship> = z.object({
@@ -150,10 +173,19 @@ export const UserBootstrapRequestSchema = z.object({
   op_id: z.uuid(),
   display_name: z.string().trim().min(1).max(40).optional(),
   time_zone: z.string().min(1).max(64),
+  /** Faz 6: Storage indirme adresi; `null` fotoğrafı kaldırır (küçük boy da). */
+  avatar_url: z.url({ protocol: /^https$/ }).max(2048).nullable().optional(),
+  /** Faz 6 (core `ProfileFieldsF6Schema`): `gender` oluşturmada zorunlu (sunucu `gender_required`), `avatar_thumb_url`. */
+  ...ProfileFieldsF6Schema.shape,
 });
 export type UserBootstrapRequest = z.input<typeof UserBootstrapRequestSchema>;
 
 /** [Varsayım] Yanıt profil içerebilir; içermezse `users/{uid}` dinleyicisi doğrudur. */
 export const UserBootstrapResponseSchema = z
-  .object({ profile: UserProfileSchema.optional(), server_now: z.number().optional() })
+  .object({
+    profile: UserProfileSchema.optional().catch(undefined),
+    /** Backend `UserBootstrapResponse.user` (Faz 1 sözleşmesi). Bozuksa yok sayılır: dinleyici doğrudur. */
+    user: UserProfileSchema.optional().catch(undefined),
+    server_now: z.number().optional(),
+  })
   .loose();

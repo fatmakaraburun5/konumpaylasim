@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Faz 6: widget / kutucuk metinleri (Türkçe; uygulama yalnızca Türkçe). -->
+<resources>
+  <string name="konum_w_small_label">Konum · Favori</string>
+  <string name="konum_w_large_label">Konum · Favoriler</string>
+  <string name="konum_w_small_desc">Favori kişinin durumu ve tek dokunuşla 1 saatlik konum paylaşımı</string>
+  <string name="konum_w_large_desc">En çok 4 favori kişinin durumu ve tek dokunuşla 1 saatlik paylaşım</string>
+  <string name="konum_w_tile_label">Konum: 1 sa paylaş</string>
+  <string name="konum_w_quick">1 sa paylaş</string>
+  <string name="konum_w_quick_short">1 sa</string>
+  <string name="konum_w_open">Uygulamada aç</string>
+  <string name="konum_w_open_short">Aç</string>
+  <string name="konum_w_pending">Başlatılıyor…</string>
+  <string name="konum_w_sharing">Paylaşımın</string>
+  <string name="konum_w_sharing_now">Paylaşıyorsun</string>
+  <string name="konum_w_channel_name">Hızlı paylaşım</string>
+  <string name="konum_w_failed_title">Hızlı paylaşım başlatılamadı</string>
+  <string name="konum_w_failed_body">%1$s. Uygulamada denemek için dokun.</string>
+</resources>

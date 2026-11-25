@@ -476,7 +476,7 @@ export function MapHome() {
         }}
       />
 
-      <TopBar profile={profile} onFriends={() => router.push('/friends')} onZones={() => router.push('/zones')} onSignOut={signOut} />
+      <TopBar profile={profile} onFriends={() => router.push('/friends')} onZones={() => router.push('/zones')} onProfile={() => router.push('/profile')} onSignOut={signOut} />
       <View style={[styles.strip, { top: insets.top + 72, gap: spacing.xs }]} pointerEvents="box-none">
         <SosIncomingBanner alerts={incomingSos} now={incomingNow} />
         <IncomingStrip items={incoming} names={names} now={incomingNow} onFocus={focusFriend} />

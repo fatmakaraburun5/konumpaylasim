@@ -17,7 +17,15 @@ export type IconName =
   | 'battery'
   | 'qr'
   | 'copy'
-  | 'route';
+  | 'route'
+  // Faz 6
+  | 'star'
+  | 'starFilled'
+  | 'chevronUp'
+  | 'chevronDown'
+  | 'camera'
+  | 'image'
+  | 'user';
 
 export interface IconProps {
   name: IconName;
@@ -84,6 +92,34 @@ export function Icon({ name, size = 22, color, strokeWidth = 2 }: IconProps) {
           <Circle cx={6} cy={18} r={2.5} {...common} />
           <Circle cx={18} cy={6} r={2.5} {...common} />
           <Path d="M8.5 18H15a3 3 0 000-6H9a3 3 0 010-6h6.5" {...common} />
+        </>
+      )}
+      {(name === 'star' || name === 'starFilled') && (
+        <Path
+          d="M12 3.5l2.6 5.3 5.9.9-4.25 4.1 1 5.85L12 16.9l-5.25 2.75 1-5.85L3.5 9.7l5.9-.9z"
+          {...common}
+          fill={name === 'starFilled' ? color : 'none'}
+        />
+      )}
+      {name === 'chevronUp' && <Path d="M5 15l7-7 7 7" {...common} />}
+      {name === 'chevronDown' && <Path d="M5 9l7 7 7-7" {...common} />}
+      {name === 'camera' && (
+        <>
+          <Path d="M4 8h3l1.5-2.5h7L17 8h3a1 1 0 011 1v9a1 1 0 01-1 1H4a1 1 0 01-1-1V9a1 1 0 011-1z" {...common} />
+          <Circle cx={12} cy={13} r={3.5} {...common} />
+        </>
+      )}
+      {name === 'image' && (
+        <>
+          <Path d="M4 4h16a1 1 0 011 1v14a1 1 0 01-1 1H4a1 1 0 01-1-1V5a1 1 0 011-1z" {...common} />
+          <Circle cx={9} cy={9.5} r={1.8} {...common} />
+          <Path d="M3.5 17l5-5 4 4 2.5-2.5 5.5 5.5" {...common} />
+        </>
+      )}
+      {name === 'user' && (
+        <>
+          <Circle cx={12} cy={8.5} r={4} {...common} />
+          <Path d="M4 20.5c1-4 4.2-6 8-6s7 2 8 6" {...common} />
         </>
       )}
       {name === 'battery' && (

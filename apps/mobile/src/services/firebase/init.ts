@@ -93,5 +93,10 @@ async function init(): Promise<void> {
     connectFirestoreEmulator(getFirestore(app), host, 8080);
     connectDatabaseEmulator(getDatabase(app), host, 9000);
     connectFunctionsEmulator(getFunctions(app, FUNCTIONS_REGION), host, 5001);
+    // Faz 6: profil fotoğrafları (backend/firebase.json emulators.storage). Geç yükleme: Storage modülü yalnızca
+    // fotoğraf yüklenirken gerekir (arka plan görevleri ve testler bu modülü yüklemez).
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const storage = require('@react-native-firebase/storage') as typeof import('@react-native-firebase/storage');
+    storage.connectStorageEmulator(storage.getStorage(app), host, 9199);
   }
 }

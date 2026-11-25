@@ -33,6 +33,13 @@ const HTTPS_CODE: Record<ErrorCode, FunctionsErrorCode> = {
   zone_not_found: 'not-found',
   zone_limit_reached: 'resource-exhausted',
   meetup_not_found: 'not-found',
+  // Faz 6
+  gender_required: 'invalid-argument',
+  /** Widget hızlı paylaşımı: istemci `details.code` okur; durum kodu yalnızca genel sınıf. */
+  token_invalid: 'unauthenticated',
+  token_expired: 'unauthenticated',
+  not_favorite: 'failed-precondition',
+  not_friend: 'failed-precondition',
 };
 
 export interface ErrorDetails {

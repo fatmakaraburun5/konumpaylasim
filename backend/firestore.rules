@@ -1,6 +1,6 @@
 rules_version = '2';
 
-// Konum Firestore kuralları (Faz 1 + Faz 2 + Faz 4 + Faz 5).
+// Konum Firestore kuralları (Faz 1 + Faz 2 + Faz 4 + Faz 5 + Faz 6).
 //  - Varsayılan: her şey kapalı.
 //  - İstemci sosyal grafiğe ve paylaşımlara YAZMAZ; tüm geçişler Cloud Functions callable'larıyla.
 //  - Okuma yalnızca ilgili taraflara. Kurallar filtre değildir: istemci sorgusu kısıtı taşımalıdır
@@ -10,6 +10,9 @@ rules_version = '2';
 //  - Faz 2: link_acl_pending, route_cache, geocode_cache, maps_quota, maps_budget, config: istemciye tamamen
 //    kapalı (yalnızca Functions). Google yanıtları yalnızca callable üzerinden döner.
 //  - Faz 5: zone_cooldowns, meetup_cache: istemciye tamamen kapalı (yalnızca Functions).
+//  - Faz 6: widget_tokens istemciye tamamen kapalı (yalnızca Functions; düz token yok, sha256 özeti kimliktir).
+//    users/{uid} içindeki gender / favorite_ids / avatar_* yalnızca sahibine görünür; arkadaşlar cinsiyeti ve
+//    fotoğrafı friendships.member_profiles kopyasından görür.
 service cloud.firestore {
   match /databases/{database}/documents {
 
@@ -130,6 +133,12 @@ service cloud.firestore {
       allow read: if signedIn()
         && (resource.data.from == request.auth.uid || request.auth.uid in resource.data.to);
       allow write: if false;
+    }
+
+    // Faz 6: widget hızlı paylaşım token'ları. Hiçbir istemci okuyamaz / yazamaz (widget uzantısı bile:
+    // widget_quick_share callable'ı token'ı sunucuda doğrular).
+    match /widget_tokens/{tokenHash} {
+      allow read, write: if false;
     }
 
     // Açıkça: geri kalan her şey kapalı.

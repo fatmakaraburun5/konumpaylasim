@@ -110,13 +110,16 @@ describe('database.rules.json ↔ core sözleşmesi', () => {
 describe('functions ↔ core', () => {
   it('dışa aktarılan fonksiyon adları core CALLABLES ile aynı', () => {
     const src = readFileSync(new URL('../../functions/src/index.ts', import.meta.url), 'utf8');
-    const exported = [...src.matchAll(/export const (\w+) = callable\('(\w+)'/g)].map((m) => {
+    // Faz 6: `tokenCallable` = oturumsuz callable (widget_quick_share).
+    const exported = [...src.matchAll(/export const (\w+) = (?:callable|tokenCallable)\('(\w+)'/g)].map((m) => {
       expect(m[1]).toBe(m[2]);
       return m[1];
     });
     // Faz 3: battery_low_notify artık core CALLABLES içinde (backend'e özel ad kalmadı).
     expect(new Set(exported)).toEqual(new Set(Object.values(CALLABLES)));
     expect(exported).toContain(CALLABLES.batteryLowNotify);
+    // Yalnızca widget_quick_share oturumsuzdur.
+    expect([...src.matchAll(/export const (\w+) = tokenCallable\(/g)].map((m) => m[1])).toEqual([CALLABLES.widgetQuickShare]);
   });
 
   it('süre dolumu görevi config EXPIRY_TASK_FUNCTION adıyla dışa aktarılır', () => {
@@ -483,5 +486,57 @@ describe('Faz 5: bildirimler koordinat taşımaz', () => {
       expect(JSON.stringify(m)).not.toMatch(/40\.98|29\.02|"lat"|"lng"/);
       for (const v of Object.values(m.data)) expect(typeof v).toBe('string');
     }
+  });
+});
+
+describe('Faz 6: Storage kuralları, push yükleri, widget yenileme kararı', () => {
+  it('storage.rules dosya adı ve boyut sınırları core AVATAR_LIMITS / AVATAR_FILE_RE ile aynı', async () => {
+    const { AVATAR_FILE_RE, AVATAR_LIMITS } = await import('@konum/core');
+    const storage = readFileSync(new URL('../../storage.rules', import.meta.url), 'utf8');
+    expect(storage).toContain(`request.resource.size <= ${AVATAR_LIMITS.mainMaxBytes}`);
+    expect(storage).toContain(`request.resource.size <= ${AVATAR_LIMITS.thumbMaxBytes}`);
+    expect(storage).toContain("request.resource.contentType == 'image/jpeg'");
+    expect(storage).toContain('match /avatars/{uid}/{file}');
+    // Kuraldaki iki desen birlikte core düzenli ifadesiyle aynı dili tanır.
+    const main = /^[0-9]{13}[.]jpg$/;
+    const thumb = /^[0-9]{13}_160[.]jpg$/;
+    for (const f of ['1732500000000.jpg', '1732500000000_160.jpg', 'a.jpg', '1732500000000.png', '173250000000.jpg', '1732500000000_80.jpg']) {
+      expect(main.test(f) || thumb.test(f)).toBe(AVATAR_FILE_RE.test(f));
+    }
+    const fb = JSON.parse(readFileSync(new URL('../../firebase.json', import.meta.url), 'utf8'));
+    expect(fb.storage).toEqual({ rules: 'storage.rules' });
+    expect(fb.emulators.storage.port).toBe(9199);
+  });
+
+  it('quick_share_started görünür (QUICK_SHARE kategorisi), widget_refresh yalnızca veri; koordinat yok, değerler string', async () => {
+    const { PUSH_TYPES_F6 } = await import('@konum/core');
+    const { QUICK_SHARE_CATEGORY, buildQuickShareStartedPush, buildWidgetRefreshPush } = await import('../../functions/src/push');
+    const now = Date.now();
+    const started = buildQuickShareStartedPush('Ayşe', { share_id: 's_1', status: 'started', expires_at: now + 3_600_000 }, now);
+    const refresh = buildWidgetRefreshPush('u1', now);
+    expect([started.data.type, refresh.data.type]).toEqual([...PUSH_TYPES_F6]);
+    expect(started.notification).toEqual({ title: 'Konum paylaşımı başladı', body: 'Ayşe ile 1 saatlik paylaşım başladı' });
+    expect(started.data).toEqual({ type: 'quick_share_started', share_id: 's_1', to_name: 'Ayşe', expires_at: String(now + 3_600_000) });
+    expect(started.apns?.payload?.aps?.category).toBe(QUICK_SHARE_CATEGORY);
+    expect(refresh.notification).toBeUndefined();
+    expect(refresh.apns?.headers?.['apns-push-type']).toBe('background');
+    expect(refresh.apns?.payload?.aps?.contentAvailable).toBe(true);
+    const indefinite = buildQuickShareStartedPush('Ayşe', { share_id: 's_1', status: 'already_active', expires_at: null }, now);
+    expect(indefinite.data.expires_at).toBe('');
+    for (const m of [started, refresh, indefinite]) {
+      expect(JSON.stringify(m)).not.toMatch(/"lat"|"lng"/);
+      for (const v of Object.values(m.data)) expect(typeof v).toBe('string');
+    }
+  });
+
+  it('widget_refresh kararı: yalnızca aktiflik değişince alıcıya (uzatma / duraksama kaydı → yok)', async () => {
+    const { widgetRefreshFor } = await import('../../functions/src/handlers/widget');
+    const s = (status: 'active' | 'ended') => ({ sender_id: 'a1', receiver_id: 'b1', status, audience: 'friend' as const });
+    expect(widgetRefreshFor(null, s('active'))).toEqual({ receiver: 'b1', from: 'a1' });
+    expect(widgetRefreshFor(s('active'), s('ended'))).toEqual({ receiver: 'b1', from: 'a1' });
+    expect(widgetRefreshFor(s('ended'), s('active'))).toEqual({ receiver: 'b1', from: 'a1' });
+    expect(widgetRefreshFor(s('active'), s('active'))).toBeNull();
+    expect(widgetRefreshFor(s('ended'), null)).toBeNull();
+    expect(widgetRefreshFor(s('active'), null)).toEqual({ receiver: 'b1', from: 'a1' });
   });
 });

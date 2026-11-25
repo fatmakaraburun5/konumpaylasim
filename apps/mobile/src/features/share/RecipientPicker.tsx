@@ -2,7 +2,7 @@ import type { UserId } from '@konum/core';
 import { BottomSheetTextInput } from '@gorhom/bottom-sheet';
 import { useMemo, useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
-import type { Friend } from '../../state/friendsStore';
+import { friendAvatarProps, type Friend } from '../../state/friendsStore';
 import { Avatar, Button, Icon, MIN_TOUCH, Text, useTheme } from '../../ui';
 
 export interface RecipientPickerProps {
@@ -59,7 +59,7 @@ export function RecipientPicker({ friends, selected, onToggle, onAddFriend }: Re
             onPress={() => onToggle(f.uid)}
             style={({ pressed }) => [styles.row, { paddingHorizontal: spacing.md, minHeight: MIN_TOUCH + 12, backgroundColor: pressed ? colors.surfaceAlt : 'transparent' }]}
           >
-            <Avatar name={f.displayName} size={36} />
+            <Avatar {...friendAvatarProps(f)} size={36} />
             <Text variant="body" style={styles.name} numberOfLines={1}>
               {f.displayName}
             </Text>

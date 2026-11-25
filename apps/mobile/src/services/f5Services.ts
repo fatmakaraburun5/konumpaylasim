@@ -28,9 +28,17 @@ import { resilientListener, type ResilientListener } from './resilientListener';
 
 const TICK_MS = 5_000;
 
+/** Faz 6: önde alınan bölge olayı → widget yer etiketi (f6Services kurar; bağımlılık yönü f6 → f5). */
+type ZoneEventTap = (ev: Extract<F5PushEvent, { type: 'zone_event' }>) => void;
+let zoneEventTap: ZoneEventTap | null = null;
+export function setF5ZoneEventTap(t: ZoneEventTap | null): void {
+  zoneEventTap = t;
+}
+
 /** Push önde alındı (saf; testlerde de kullanılır). */
 export function handleF5Received(ev: F5PushEvent): void {
   if (ev.type === 'meetup') meetupStore.getState().focus(ev.meetup_id);
+  else if (ev.type === 'zone_event') zoneEventTap?.(ev);
 }
 
 /** Bildirime dokunma → depo. Bölge olayında koordinat yoktur: gönderen canlı paylaşıyorsa pini vurgulanır. */

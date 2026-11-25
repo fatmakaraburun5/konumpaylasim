@@ -1,12 +1,15 @@
-import type { EpochMs, Freshness, ReceiverStatus } from '@konum/core';
+import { genderRingColor, type EpochMs, type Freshness, type ReceiverStatus, type UserId } from '@konum/core';
 import { useEffect, useState, type ComponentType, type ReactNode } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { MarkerAnimated, type AnimatedRegion, type MapMarkerProps } from 'react-native-maps';
-import { Avatar, lightColors, PulseRing, Text, useTheme } from '../../ui';
+import { friendAvatarProps, useFriendsById } from '../../state/friendsStore';
+import { Avatar, avatarOuterSize, lightColors, PulseRing, Text, useTheme } from '../../ui';
 import { useMarkerMotion } from './useMarkerMotion';
 
 export interface FriendMarkerProps {
   id: string;
+  /** Faz 6: paylaşanın uid'i → fotoğraf (160 px) ve cinsiyet çerçevesi (arkadaş listesi kopyasından). */
+  uid?: UserId;
   name: string;
   lat: number;
   lng: number;
@@ -31,30 +34,75 @@ const DIM: ReadonlySet<ReceiverStatus> = new Set(['offline_suspected', 'stale'])
 type AnimatedMarkerProps = Omit<MapMarkerProps, 'coordinate'> & { coordinate: AnimatedRegion; children?: ReactNode };
 export const AnimatedMarker = MarkerAnimated as unknown as ComponentType<AnimatedMarkerProps>;
 
+// --- Pin geometrisi (çapa = kuyruğun ucu) -------------------------------------------------------------
+const AVATAR = 36;
+/** Avatar + cinsiyet şeridi + beyaz boşluk. */
+const FRAMED = avatarOuterSize(AVATAR);
+/** Dış kontur (seçili: birincil, SOS: kırmızı, aksi halde yüzey) kalınlığı. */
+const OUTLINE = 2;
+const BUBBLE = FRAMED + OUTLINE * 2;
+const TAIL_H = 7;
+const PULSE_BOX = 72;
+/** Etiket: marginTop 2 + dikey dolgu 2 + caption satırı 16 (yazı ölçeği 1'e sabit). */
+const LABEL_H = 20;
+/** Not balonu: marginTop 2 + dolgu 2 + satır 14 + kenarlık 2. */
+const NOTE_H = 20;
+/** [Varsayım] Fotoğraf yüklenmezse bit eşlem izlemesi en geç bu sürede kapanır (harita yavaşlamasın). */
+const PHOTO_WAIT_MAX_MS = 5_000;
+const SETTLE_MS = 600;
+
+/** Çapa: kuyruk ucu (konum) / toplam yükseklik. Saf; testte de kullanılır. */
+export function friendMarkerAnchor(opts: { pulse: boolean; note: boolean }): { x: number; y: number } {
+  const box = opts.pulse ? PULSE_BOX : BUBBLE + TAIL_H;
+  const bubbleTop = opts.pulse ? (PULSE_BOX - BUBBLE) / 2 : 0;
+  const tip = bubbleTop + BUBBLE + TAIL_H - 1;
+  const total = box + LABEL_H + (opts.note ? NOTE_H : 0);
+  return { x: 0.5, y: Math.min(1, tip / total) };
+}
+
 /**
- * Arkadaş işaretçisi = Avatar + tazelik halkası + pil rozeti.
- * Özel görünümlü işaretçiler bit eşlem olarak çizilir; `tracksViewChanges` yalnızca görünüm
- * değiştikten sonra kısa süre açık tutulur (sürekli açık olması haritayı yavaşlatır).
+ * Arkadaş işaretçisi (Faz 6): çerçeveli avatar pini — cinsiyet şeridi (pembe / mavi / gri) + fotoğraf ya da baş
+ * harfler + küçük kuyruk (ucu konumu gösterir), altında ad etiketi; tazelik durum noktası, pil rozeti.
+ *
+ * Özel görünümlü işaretçiler bit eşlem olarak çizilir. `tracksViewChanges`:
+ *  - Fotoğraf varsa resim `onLoad` (ya da `onError` → baş harfler) olana kadar AÇIK; ardından 600 ms daha.
+ *  - Her görsel değişimden (seçim, tazelik, pil, not, nabız, fotoğraf) sonra 600 ms açık, sonra kapalı
+ *    (sürekli açık olması haritayı yavaşlatır). Nabız canlandığı sürece açık.
  * Konum değişimi bit eşlemi yeniden çizdirmez: pin `useMarkerMotion` ile yeni konuma kayar.
+ * Küçük boylar f6Services'te `Image.prefetch` ile önceden diske alınır: ilk çizim beklemesi kısalır.
  */
-export function FriendMarker({ id, name, lat, lng, freshness, batteryPct, onPress, timestamp, selected = false, status, note = null, pulse = null }: FriendMarkerProps) {
+export function FriendMarker({ id, uid, name, lat, lng, freshness, batteryPct, onPress, timestamp, selected = false, status, note = null, pulse = null }: FriendMarkerProps) {
   const dim = status !== undefined && DIM.has(status);
   const { colors, radius } = useTheme();
   const coordinate = useMarkerMotion(lat, lng, timestamp);
+  const friend = useFriendsById()[uid ?? ''];
+  const av = friend ? friendAvatarProps(friend) : { name, photoUrl: null, gender: null, recyclingKey: null };
+  const photoUrl = av.photoUrl;
+  const [photoReady, setPhotoReady] = useState(!photoUrl);
   const [tracks, setTracks] = useState(true);
+
+  useEffect(() => {
+    setPhotoReady(!photoUrl);
+  }, [photoUrl]);
+
   useEffect(() => {
     setTracks(true);
-    const t = setTimeout(() => setTracks(false), 600);
+    // Fotoğraf henüz çizilmediyse onLoad beklenir (en çok PHOTO_WAIT_MAX_MS).
+    const t = setTimeout(() => setTracks(false), photoReady ? SETTLE_MS : PHOTO_WAIT_MAX_MS);
     return () => clearTimeout(t);
-  }, [freshness, batteryPct, name, selected, colors, dim, note, pulse]);
+  }, [freshness, batteryPct, name, selected, colors, dim, note, pulse, photoUrl, av.gender, photoReady]);
+
   const sos = pulse === 'sos';
-  const ringColor = sos ? lightColors.danger : selected ? colors.primary : colors.surface;
+  const outline = sos ? lightColors.danger : selected ? colors.primary : colors.surface;
+  const ring = genderRingColor(av.gender);
+  const tailColor = sos ? lightColors.danger : selected ? colors.primary : ring;
+  const anchor = friendMarkerAnchor({ pulse: pulse !== null, note: !!note });
 
   return (
     <AnimatedMarker
       identifier={id}
       coordinate={coordinate}
-      anchor={{ x: 0.5, y: 0.5 }}
+      anchor={anchor}
       // Nabız halkası canlandığı sürece bit eşlem yeniden çizilmeli.
       tracksViewChanges={tracks || pulse !== null}
       onPress={onPress}
@@ -62,11 +110,22 @@ export function FriendMarker({ id, name, lat, lng, freshness, batteryPct, onPres
       zIndex={sos ? 4 : selected ? 2 : 1}
     >
       <View style={[styles.wrap, dim && !selected && !sos ? styles.dim : null]}>
-        <View style={pulse ? styles.ringBox : null}>
+        <View style={pulse ? styles.pulseBox : styles.box}>
           {pulse ? <PulseRing size={44} color={sos ? lightColors.danger : colors.primary} /> : null}
-          <View style={{ backgroundColor: ringColor, borderRadius: 999, padding: sos ? 3 : 2 }}>
-            <Avatar name={name} size={36} freshness={freshness} batteryPct={batteryPct} />
+          <View style={[styles.bubble, { backgroundColor: outline, marginTop: pulse ? (PULSE_BOX - BUBBLE) / 2 : 0 }]}>
+            <Avatar
+              name={name}
+              size={AVATAR}
+              photoUrl={photoUrl}
+              gender={av.gender}
+              recyclingKey={av.recyclingKey}
+              freshness={freshness}
+              batteryPct={batteryPct}
+              transition={0}
+              onPhotoSettled={() => setPhotoReady(true)}
+            />
           </View>
+          <View style={[styles.tail, { borderTopColor: tailColor }]} />
         </View>
         <View style={[styles.label, { backgroundColor: sos ? lightColors.danger : selected ? colors.primary : colors.surface, borderRadius: radius.sm }]}>
           <Text variant="caption" numberOfLines={1} maxFontSizeMultiplier={1} style={selected || sos ? { color: colors.onPrimary, fontWeight: sos ? '700' : undefined } : undefined}>
@@ -88,8 +147,20 @@ export function FriendMarker({ id, name, lat, lng, freshness, batteryPct, onPres
 const styles = StyleSheet.create({
   wrap: { alignItems: 'center' },
   dim: { opacity: 0.55 },
-  label: { marginTop: 2, paddingHorizontal: 6, paddingVertical: 1, maxWidth: 96 },
+  box: { width: BUBBLE + 8, height: BUBBLE + TAIL_H, alignItems: 'center' },
   // Nabız alanı simetrik büyür: avatar merkezinin çapaya göre konumu değişmez.
-  ringBox: { width: 72, height: 72, alignItems: 'center', justifyContent: 'center' },
+  pulseBox: { width: PULSE_BOX, height: PULSE_BOX, alignItems: 'center' },
+  bubble: { width: BUBBLE, height: BUBBLE, borderRadius: BUBBLE / 2, alignItems: 'center', justifyContent: 'center' },
+  tail: {
+    width: 0,
+    height: 0,
+    marginTop: -1,
+    borderLeftWidth: 6,
+    borderRightWidth: 6,
+    borderTopWidth: TAIL_H,
+    borderLeftColor: 'transparent',
+    borderRightColor: 'transparent',
+  },
+  label: { marginTop: 2, paddingHorizontal: 6, paddingVertical: 1, maxWidth: 96 },
   note: { marginTop: 2, paddingHorizontal: 5, paddingVertical: 1, maxWidth: 150, borderWidth: 1 },
 });

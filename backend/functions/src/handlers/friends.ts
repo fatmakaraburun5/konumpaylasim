@@ -14,7 +14,7 @@
  *  - friend_request_cancel / friendship_remove / friend_request_respond: "kayıt yok", "üye değilsin" ve
  *    (respond'da) "kendi bekleyen isteğin" AYNI sonucu verir: üçüncü kişi iki uid'in arkadaş olup olmadığını öğrenemez.
  *  - friendship_remove / user_block: iki yöndeki paylaşımlar biter (`friendship_removed`), bekleyen konum
- *    istekleri iptal olur. Engel ayrıca engellenen telefonun HMAC'ini tutar: engellenen hesabını silip aynı
+ *    istekleri iptal olur; Faz 6: karşı taraf iki yönde de `favorite_ids` listesinden çıkar. Engel ayrıca engellenen telefonun HMAC'ini tutar: engellenen hesabını silip aynı
  *    numarayla yeniden kayıt olsa da engelleyene istek gönderemez.
  */
 import {
@@ -345,7 +345,7 @@ export async function friendshipRemove(
     const other = f.member_ids[0] === ctx.uid ? f.member_ids[1] : f.member_ids[0];
     const cascade = await readPairCascade(tx, ctx.uid, other);
     const links = await readLinksFor(tx, f.id);
-    // Faz 4: karşı taraf iki yönde de acil kişi listesinden ve yer notu kitlesinden çıkar.
+    // Faz 4: karşı taraf iki yönde de acil kişi listesinden ve yer notu kitlesinden çıkar (Faz 6: favorilerden de).
     const f4 = await readPairF4Cleanup(tx, ctx.uid, other);
     // Faz 5: karşı taraf iki yönde de bölge kurallarının alıcılarından çıkar.
     const f5 = await readPairZoneCleanup(tx, ctx.uid, other);

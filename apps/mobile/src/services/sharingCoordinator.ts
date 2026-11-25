@@ -25,6 +25,9 @@
  *   Faz 5 (f5Services.ts): bölgeler + OS bölge kaydı, bölge olayları, buluşma önerileri, ön plan örnekleri → bölge
  *   filtresi; bağlantı gelince kuyruktaki bölge olayları gönderilir.
  *
+ *   Faz 6 (f6Services.ts): depolar → ana ekran / kilit ekranı widget snapshot'ı (kısıtlı yazma / yenileme), favori
+ *   fotoğrafları paylaşılan alana, widget token'ı, widget olayları, fotoğraf ön belleği.
+ *
  * Açılış sırası (yayın asla kullanıcının durdurduğu paylaşıma geri dönmez):
  *   1. Kalıcı durdurma niyetleri bu hesaba bağlanır ve reducer'a geri yüklenir (STOP_REQUESTED).
  *   2. Sunucu anlık görüntüsü henüz yoksa, kalıcı hedeflerdeki oturum özeti GEÇİCİ olarak gösterilir:
@@ -101,6 +104,7 @@ import { registerPushToken } from './notifications/push';
 import { resilientListener, type ListenerHandlers, type ResilientListener } from './resilientListener';
 import { resetF4Stores, startF4Services } from './f4Services';
 import { onF5Connected, resetF5State, startF5Services } from './f5Services';
+import { resetF6State, startF6Services } from './f6Services';
 import { linkTokenVault } from './security/linkTokenVault';
 
 /**
@@ -352,6 +356,8 @@ export function startSessionServices(uid: UserId): () => void {
 
   // Faz 5: bölgeler, bölge olayları, buluşma önerileri.
   unsubs.push(startF5Services(uid));
+  // Faz 6: widget eşitleme, favori fotoğrafları, widget token'ı.
+  unsubs.push(startF6Services(uid));
 
   unsubs.push(
     listenConnected((c) => {
@@ -679,4 +685,6 @@ onSignedOut(async () => {
   resetF4Stores();
   // Faz 5: OS bölge kaydı kalkar; bölge önbelleği / filtre / kuyruk (clearBackgroundState de siler) ve bellek durumu.
   await resetF5State();
+  // Faz 6: widget "Giriş yap" çizer; yerel widget kimlik bilgisi, avatar dosyaları ve bellek durumu silinir.
+  await resetF6State();
 });

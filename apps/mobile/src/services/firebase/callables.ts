@@ -100,6 +100,17 @@ import {
   type ZoneEventReportResponse,
   type ZoneUpsertRequest,
   type ZoneUpsertResponse,
+  // Faz 6
+  FavoritesSetRequestSchema,
+  FavoritesSetResponseSchema,
+  WidgetTokenIssueRequestSchema,
+  WidgetTokenIssueResponseSchema,
+  WidgetTokenRevokeRequestSchema,
+  WidgetTokenRevokeResponseSchema,
+  type FavoritesSetResponse,
+  type Gender,
+  type WidgetTokenIssueResponse,
+  type WidgetTokenRevokeResponse,
 } from '@konum/core';
 import { z } from 'zod';
 import { KonumError, toKonumError } from '../../lib/errors';
@@ -172,7 +183,18 @@ export function shareRevoke(input: { sender_id: UserId; op_id?: string }) {
 
 // --- kullanıcı / arkadaşlık ----------------------------------------------------------
 
-export function userBootstrap(input: { display_name?: string; time_zone: string; op_id?: string }) {
+/**
+ * Faz 6: `gender` profil OLUŞTURULURKEN zorunlu (yoksa `gender_required`), sonra isteğe bağlı; `avatar_url` +
+ * `avatar_thumb_url` aynı sürümün iki boyu (`null` fotoğrafı kaldırır). Verilmeyen alan sunucuda değişmez.
+ */
+export function userBootstrap(input: {
+  display_name?: string;
+  time_zone: string;
+  op_id?: string;
+  gender?: Gender;
+  avatar_url?: string | null;
+  avatar_thumb_url?: string | null;
+}) {
   return invoke(CALLABLES.userBootstrap, UserBootstrapRequestSchema, { ...input, op_id: input.op_id ?? uuidV4() }, UserBootstrapResponseSchema);
 }
 
@@ -384,3 +406,26 @@ export interface MeetupApi {
   meetupCancel: typeof meetupCancel;
 }
 export const meetupApi: MeetupApi = { meetupSuggest, meetupShare, meetupRespond, meetupCancel };
+
+// --- Faz 6: favoriler ve widget token'ı ---------------------------------------------------
+
+/** Sıralı favori listesini yazar (en çok 4; sunucu arkadaş olmayanları atar ve son listeyi döner). */
+export function favoritesSet(input: { favorite_ids: UserId[]; op_id?: string }): Promise<FavoritesSetResponse> {
+  return invoke(CALLABLES.favoritesSet, FavoritesSetRequestSchema, { ...input, op_id: input.op_id ?? uuidV4() }, FavoritesSetResponseSchema);
+}
+
+/** Cihaza özel widget token'ı (yalnızca bu yanıtta döner; snapshot'a girmez, yerel güvenli depoya yazılır). */
+export function widgetTokenIssue(input: { device_id: string; op_id?: string }): Promise<WidgetTokenIssueResponse> {
+  return invoke(CALLABLES.widgetTokenIssue, WidgetTokenIssueRequestSchema, { ...input, op_id: input.op_id ?? uuidV4() }, WidgetTokenIssueResponseSchema);
+}
+
+/** `device_id: null` = tüm cihazlar (hesap güvenliği). */
+export function widgetTokenRevoke(input: { device_id: string | null; op_id?: string }): Promise<WidgetTokenRevokeResponse> {
+  return invoke(CALLABLES.widgetTokenRevoke, WidgetTokenRevokeRequestSchema, { ...input, op_id: input.op_id ?? uuidV4() }, WidgetTokenRevokeResponseSchema);
+}
+
+export interface WidgetApi {
+  widgetTokenIssue: typeof widgetTokenIssue;
+  widgetTokenRevoke: typeof widgetTokenRevoke;
+}
+export const widgetApi: WidgetApi = { widgetTokenIssue, widgetTokenRevoke };

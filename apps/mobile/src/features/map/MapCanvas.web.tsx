@@ -134,6 +134,7 @@ export function MapCanvas({
         <FriendMarker
           key={f.shareId}
           id={f.shareId}
+          uid={f.senderId}
           name={names[f.senderId] ?? 'Arkadaş'}
           lat={f.location.lat}
           lng={f.location.lng}

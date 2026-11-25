@@ -1,4 +1,4 @@
-# Konum backend (Faz 1 – Faz 5)
+# Konum backend (Faz 1 – Faz 6)
 
 Firebase üzerinde Konum backend'i: Firestore ve Realtime Database (RTDB) güvenlik kuralları, Cloud Functions (2nd gen, Node 22) ve emülatörde çalışan testler.
 
@@ -13,6 +13,7 @@ backend/
   firestore.rules          Firestore kuralları (varsayılan: kapalı)
   firestore.indexes.json   bileşik dizinler, token collection-group dizini, TTL alanları
   database.rules.json      share_acl kapalı (sunucu dizinleri: status, ended_at); live_locations yazma/okuma kuralları
+  storage.rules            Faz 6: avatars/{uid}/{sürüm}.jpg + _160.jpg (yalnızca sahibi yazar / siler; JPEG, boyut sınırı)
   functions/
     build.mjs              esbuild paketleyici (core + zod gömülür)
     src/index.ts           tüm fonksiyonların dışa aktarımı (adlar = core CALLABLES)
@@ -31,6 +32,9 @@ backend/
     src/handlers/zones.ts    Faz 5: zone_upsert / zone_delete / zone_event_report (bölge tetikleri, soğuma, günlük tavan)
     src/handlers/meetup.ts   Faz 5: meetup_suggest (Places + Route Matrix vekili, önbellek, kota, yedekler) /
                              meetup_share / meetup_respond / meetup_cancel
+    src/handlers/favorites.ts Faz 6: favorites_set (sıralı ≤ 4 favori, yalnızca arkadaşlar)
+    src/handlers/widget.ts    Faz 6: widget_token_issue / revoke, widget_quick_share (oturumsuz, token'lı 1 sa
+                             paylaşım), widget_refresh kararı
   hosting/
     public/.well-known/    apple-app-site-association + assetlinks.json (Universal Links / App Links)
     assemble.mjs           yayın klasörü: ../apps/web/dist + public → hosting/dist (predeploy)
@@ -63,11 +67,13 @@ npm --prefix functions ci
 npm run build
 
 # Tüm testler (birim + kurallar + uçtan uca callable'lar)
-npx firebase emulators:exec --project demo-konum --only auth,firestore,database,functions "npx vitest run"
+npx firebase emulators:exec --project demo-konum --only auth,firestore,database,functions,storage "npx vitest run"
 # kısayol: npm test   (önce build eder)
+# HTTP(S) vekili arkasındaysan emülatör trafiği vekile gitmesin:
+#   env -u HTTPS_PROXY -u https_proxy -u HTTP_PROXY -u http_proxy npm test
 
 # Yalnızca kural ve birim testleri (Functions/Auth gerekmez, daha hızlı)
-npx firebase emulators:exec --project demo-konum --only firestore,database "npx vitest run test/rules test/unit"
+npx firebase emulators:exec --project demo-konum --only firestore,database,storage "npx vitest run test/rules test/unit"
 # kısayol: npm run test:rules
 
 # Elle denemek için emülatörleri açık bırak (UI kapalı)
@@ -77,7 +83,8 @@ npm run emulators
 npm run typecheck
 ```
 
-Portlar: Auth 9099, Firestore 8080, RTDB 9000, Functions 5001 (hepsi `127.0.0.1`). Callable adresi: `http://127.0.0.1:5001/demo-konum/europe-west1/<ad>`.
+Portlar: Auth 9099, Firestore 8080, RTDB 9000, Functions 5001, Storage 9199 (hepsi `127.0.0.1`). Storage emülatörü
+kural motoru için ilk çalıştırmada bir JAR indirir (`npx firebase setup:emulators:storage`). Callable adresi: `http://127.0.0.1:5001/demo-konum/europe-west1/<ad>`.
 
 Notlar:
 
@@ -268,6 +275,29 @@ aşan aktif SOS `resolved / timeout` olur. Hesap silme: kendi yer notları, ping
 **Dağıtım:** yeni dizinler `sos_alerts (sender_id, status)`, `(status, created_at)`, `place_notes (owner_id, visible_to
 CONTAINS)`; TTL `place_notes.purge_at`, `sos_alerts.purge_at`; `sos_send` / `sos_update` Maps secret'ını ister. iOS Critical
 Alerts Apple onayından sonra `SOS_CRITICAL_ALERTS=1` ile açılır [Varsayım].
+
+## Faz 6: favoriler, widget'tan tek tuşla 1 saat, profil fotoğrafı, cinsiyet
+
+Kod: `handlers/favorites.ts`, `handlers/widget.ts`, `handlers/user.ts` (cinsiyet + avatar), `handlers/shares.ts`
+(`writeShareStarts`: `share_start` ile hızlı paylaşımın ORTAK başlatma adımı), push yükleri `push.ts`
+(`buildQuickShareStartedPush`, `buildWidgetRefreshPush`). Şemalar ve kararlar core'da (`profile.ts`, `favorites.ts`,
+`quickShare.ts`).
+
+| Ad | Etki |
+|---|---|
+| `user_bootstrap` | Profil oluşturulurken `gender` (`female` / `male`) zorunlu → yoksa `gender_required`; sonra isteğe bağlı, `null` reddedilir. `avatar_url` + `avatar_thumb_url`: projenin kovasında `avatars/{uid}/{13 hane}.jpg` ve aynı sürümün `_160.jpg` kardeşi (`checkAvatarPair`); `avatar_url: null` üçünü (`avatar_thumb_url`, `avatar_version`) temizler. Ad / fotoğraf / cinsiyet değişince kabul edilmiş arkadaşlıkların `member_profiles` kopyasına yayılır (bekleyen istekte yalnızca ad). Fotoğraf değişince önceki sürümün iki nesnesi silinir (en iyi çaba). |
+| `favorites_set` | `users/{uid}.favorite_ids` (sıralı, ≤ 4, tekrarsız). Arkadaş olmayan / engelli / kendisi sessizce düşer. Arkadaşlık kaldırma, engel, pasif hesap sıfırlaması ve hesap silme karşı tarafın listesini de temizler. |
+| `widget_token_issue` | Oturum + App Check. Cihaza özel 43 karakterlik token (30 gün); yalnızca `widget_tokens/{sha256}` saklanır, `ops` kaydı TUTULMAZ (düz token yanıtta bir kez). Aynı cihazın eski token'ı iptal; kullanıcı başına ≤ 5 aktif, günde ≤ 20 üretim [Varsayım]. |
+| `widget_token_revoke` | `device_id` ya da `null` (tümü, çıkışta). `{revoked: n}`. |
+| `widget_quick_share` | **Oturumsuz, App Check'siz** (`tokenCallable`). Token → sahibi; hedef favori değilse `not_favorite`, arkadaş değilse `not_friend`, token yok / iptal `token_invalid`, süresi dolmuş `token_expired`, token başına saatte 6 başarılı çağrı `rate_limited`. Aktif paylaşım varsa bitiş = max(mevcut, şimdi + 60 dk) (`extended` / `already_active`), yoksa yeni 60 dk (`started`). Sonra gönderene sessiz `resume_tracking` + görünür `quick_share_started` (iOS kategori `QUICK_SHARE`, "Durdur" eylemi `QUICK_SHARE_STOP`; ikisi de core `QUICK_SHARE_NOTIFICATION`, uygulama aynı sabitle kaydeder). |
+
+`widget_refresh` (yalnızca veri, content-available): `share_acl_reconciler` tetikleyicisi paylaşımın aktifliği değişince
+(başladı / bitti, her yol) alıcı paylaşanı favorilerinde tutuyorsa gönderir. Storage: `storage.rules` yalnızca sahibine
+JPEG yazma (ana ≤ 400 KB, küçük ≤ 60 KB), meta veri okuma (`getDownloadURL` için) ve silme izni verir; arkadaşlar
+indirme token'lı URL'yi kullanır. Firestore: `widget_tokens` kapalı.
+
+**Dağıtım:** `firebase deploy --only storage` (yeni `storage.rules`), TTL `widget_tokens.purge_at`; Functions servis
+hesabının Storage nesnelerini silme yetkisi olmalı (varsayılan hesapta var).
 
 ## Varsayımlar ve açık noktalar
 

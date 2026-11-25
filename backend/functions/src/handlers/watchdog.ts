@@ -184,7 +184,11 @@ export async function sweepStalls(opts: StallSweepOptions = {}): Promise<StallSw
               perSender.set(s.sender_id, cur);
             }
           }
-          if (opts.pruneTrails ?? true) result.pruned_trail_points += await pruneTrail(s.receiver_id, s.share_id, now);
+          if (opts.pruneTrails ?? true) {
+            // Önce bekle, sonra topla: `x += await f()` eşzamanlı görevlerde x'i await'ten ÖNCE okur (kayıp güncelleme).
+            const pruned = await pruneTrail(s.receiver_id, s.share_id, now);
+            result.pruned_trail_points += pruned;
+          }
         } catch (err) {
           logger.error('bekçi: paylaşım denetlenemedi', { share_id: s.share_id, err: String(err) });
         }

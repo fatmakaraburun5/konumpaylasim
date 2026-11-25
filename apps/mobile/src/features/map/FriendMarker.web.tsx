@@ -7,12 +7,15 @@
  * ile kayar; `selected` (ETA kartı açık) iken avatar halkası ve etiket birincil renkte vurgulanır.
  * Faz 3 (native ile aynı): `status` "Bağlantısı kopmuş olabilir" / uzun sessizlikte pin soluklaşır; web etiketinde
  * durum cümlesi ve ikinci satırda son doğrulanmış konum ("Son doğrulanmış konum · 14:05 · %42") yazar.
+ * Faz 6 (native ile aynı): çerçeveli avatar pini — cinsiyet şeridi (kadın pembe, erkek mavi, bilinmiyorsa gri),
+ * fotoğraf (160 px küçük boy) ya da baş harfler, küçük kuyruk; kuyruğun ucu konumdur. Tazelik durum noktasıdır.
  */
-import { formatAgo, FRESHNESS_TEXT, RECEIVER_STATUS_TEXT, type EpochMs, type Freshness, type ReceiverStatus } from '@konum/core';
+import { formatAgo, FRESHNESS_TEXT, genderRingColor, RECEIVER_STATUS_TEXT, type EpochMs, type Freshness, type ReceiverStatus, type UserId } from '@konum/core';
 import { useContext } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 import { now as serverNow } from '../../lib/clock';
-import { Avatar, lightColors, PulseRing, Text, useTheme } from '../../ui';
+import { friendAvatarProps, useFriendsById } from '../../state/friendsStore';
+import { Avatar, avatarOuterSize, lightColors, PulseRing, Text, useTheme } from '../../ui';
 import { MapProjectionContext, MapSizeContext } from './PreviewMap.web';
 import { useAnimatedLatLng } from './useAnimatedLatLng.web';
 
@@ -20,6 +23,8 @@ export { MapProjectionContext, type ProjectFn } from './PreviewMap.web';
 
 export interface FriendMarkerProps {
   id: string;
+  /** Faz 6: paylaşanın uid'i → fotoğraf ve cinsiyet çerçevesi. */
+  uid?: UserId;
   name: string;
   lat: number;
   lng: number;
@@ -47,8 +52,11 @@ const WARN: ReadonlySet<ReceiverStatus> = new Set(['delayed', 'offline_suspected
 const WARN_WIDTH = 236;
 
 const AVATAR = 36;
-/** Avatar(36) + halka (3+2)*2 + beyaz kenar 2*2 */
-const BUBBLE = AVATAR + 10 + 4;
+/** Avatar(36) + cinsiyet şeridi ve beyaz boşluk (3+2)*2 + dış kontur 2*2 */
+const BUBBLE = avatarOuterSize(AVATAR) + 4;
+const TAIL_H = 7;
+/** Kuyruk ucu (konum) pinin tepesinden bu kadar aşağıda. */
+const TIP = BUBBLE + TAIL_H - 1;
 const WIDTH = 160;
 
 /** Üst şeritle (`IncomingStrip`) aynı metin: canlıysa "Canlı", değilse "4 dk önce" / "2 sa önce". */
@@ -59,6 +67,7 @@ function statusText(freshness: Freshness, updatedAt: EpochMs | undefined): strin
 
 export function FriendMarker({
   id,
+  uid,
   name,
   lat,
   lng,
@@ -77,7 +86,9 @@ export function FriendMarker({
   const project = useContext(MapProjectionContext);
   const view = useContext(MapSizeContext);
   const pos = useAnimatedLatLng(lat, lng, timestamp);
+  const friend = useFriendsById()[uid ?? ''];
   if (!project) return null;
+  const av = friend ? friendAvatarProps(friend) : { name, photoUrl: null, gender: null, recyclingKey: null };
   const { x, y } = project(pos.lat, pos.lng);
   const first = name.split(' ')[0] ?? name;
   const warn = receiverStatus !== undefined && WARN.has(receiverStatus);
@@ -87,6 +98,7 @@ export function FriendMarker({
   const width = warn ? WARN_WIDTH : WIDTH;
   const sos = pulse === 'sos';
   const ring = sos ? lightColors.danger : selected ? colors.primary : colors.surface;
+  const tailColor = sos ? lightColors.danger : selected ? colors.primary : genderRingColor(av.gender);
   // Ekran kenarındaki pinin etiketi içeri kayar (pin yerinde kalır).
   const EDGE = 6;
   const shift = !view ? 0 : x - width / 2 < EDGE ? EDGE - (x - width / 2) : x + width / 2 > view.w - EDGE ? view.w - EDGE - (x + width / 2) : 0;
@@ -97,7 +109,7 @@ export function FriendMarker({
     <View
       testID={`friend-marker-${id}`}
       pointerEvents="box-none"
-      style={[styles.wrap, { width, left: x - width / 2, top: y - BUBBLE / 2, zIndex: sos ? 6 : selected ? 4 : warn ? 3 : 2 }]}
+      style={[styles.wrap, { width, left: x - width / 2, top: y - TIP, zIndex: sos ? 6 : selected ? 4 : warn ? 3 : 2 }]}
     >
       <Pressable
         onPress={onPress}
@@ -108,8 +120,18 @@ export function FriendMarker({
       >
         <View style={[styles.bubble, dim && !sos ? styles.dim : null, { backgroundColor: ring, boxShadow: '0px 2px 8px rgba(15, 23, 42, 0.18)' }]}>
           {pulse ? <PulseRing size={BUBBLE} color={sos ? lightColors.danger : colors.primary} /> : null}
-          <Avatar name={name} size={AVATAR} freshness={freshness} batteryPct={batteryPct} />
+          <Avatar
+            name={name}
+            size={AVATAR}
+            photoUrl={av.photoUrl}
+            gender={av.gender}
+            recyclingKey={av.recyclingKey}
+            freshness={freshness}
+            batteryPct={batteryPct}
+            transition={0}
+          />
         </View>
+        <View testID={`friend-marker-tail-${id}`} style={[styles.tail, { borderTopColor: tailColor }]} />
         <View
           style={[
             styles.label,
@@ -156,6 +178,16 @@ const styles = StyleSheet.create({
   wrap: { position: 'absolute', width: WIDTH, alignItems: 'center' },
   press: { alignItems: 'center', cursor: 'pointer' },
   bubble: { borderRadius: 999, padding: 2 },
+  tail: {
+    width: 0,
+    height: 0,
+    marginTop: -1,
+    borderLeftWidth: 6,
+    borderRightWidth: 6,
+    borderTopWidth: TAIL_H,
+    borderLeftColor: 'transparent',
+    borderRightColor: 'transparent',
+  },
   dim: { opacity: 0.55 },
   label: { marginTop: 3, paddingHorizontal: 7, paddingVertical: 2, maxWidth: WIDTH },
   note: { marginTop: 2, paddingHorizontal: 6, paddingVertical: 1, maxWidth: WIDTH, borderWidth: 1 },

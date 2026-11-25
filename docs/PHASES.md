@@ -9,7 +9,7 @@ Her faz bir öncekinin sözleşmelerini (packages/core) **genişletir**, değiş
 | 3 | Arka plan takibi (iOS Always / Android FGS, kademeli izin akışı), hareket sensörüne göre GPS ve gönderim matrisi, uyku çiti, çevrimdışı kuyruk + `live_trail`, son doğrulanmış konum, %15 düşük pil bildirimi, duraksama bekçisi | Kod hazır, emülatörde uçtan uca kabul testi geçti (57/57); yerel modül (Swift/Kotlin) derlenmedi, gerçek cihazda pil ölçümü bekliyor. Ayrıntı: [`PHASE3.md`](PHASE3.md) |
 | 4 | Tek dokunuşla "Buradayım / Yoldayım" ping'i, konum yanına kısa durum notu ve yer notu, tam konumlu SOS (basılı tut + geri sayım, acil kişiler, yüksek öncelikli push, alıcıda tam ekran acil kartı) | Kod hazır; birim, kural ve emülatör testleri geçti, tarayıcı demosunda uçtan uca çalışıyor; gerçek cihazda bildirim davranışı ve Apple Critical Alerts onayı bekliyor. Ayrıntı: [`PHASE4.md`](PHASE4.md) |
 | 5 | Varış / ayrılış tetikleyicileri (Ev, İş, özel bölgeler; iOS `CLCircularRegion` / Android `GeofencingClient`; "vardığımda bildir", "çıkınca paylaşımı başlat"; GPS sapması filtresi), harita üzerinde "Buluşma noktası" önerisi (orta nokta / adil erişim süresi, Places + Route Matrix, numaralı pinler, paylaşım ve alıcı kartı) | Kod hazır; birim, kural ve emülatör testleri geçti, tarayıcı demosunda uçtan uca çalışıyor; gerçek cihazda bölge algılama ve gerçek Places / Routes anahtarı bekliyor. Ayrıntı: [`PHASE5.md`](PHASE5.md) |
-| 6 | Kilit ve ana ekran widget'ları, favoriye tek dokunuşla 1 saat, konum isteği ekranı | Planlandı |
+| 6 | Ana ekran ve kilit ekranı widget'ları (iOS WidgetKit, Android AppWidget + Hızlı Ayar kutucuğu), favoriye tek dokunuşla 1 saatlik paylaşım (widget token'ı, arka plan tetiği, geri sayım + bildirim), kamera / galeriden profil fotoğrafı (kırpma, sıkıştırma, önbellek), kayıtta zorunlu cinsiyet ve cinsiyet renkli çerçeve (liste, widget, harita pini, baş harf yedeği) | Kod hazır; birim, kural (Firestore + Storage) ve emülatör testleri geçti, tarayıcı demosunda uçtan uca çalışıyor; Swift / Kotlin widget kodu derlenmedi, gerçek cihazda widget ve kilit ekranı davranışı bekliyor. Ayrıntı: [`PHASE6.md`](PHASE6.md), yayın listesi: [`RELEASE_CHECKLIST.md`](RELEASE_CHECKLIST.md) |
 
 ## Faz 1 → Faz 2 geçiş noktası
 
@@ -244,3 +244,38 @@ Faz 6'ya geçmeden önce Faz 5 gerçek cihazda doğrulanmalı (Faz 4 → Faz 5 l
 - [ ] Soğuma (5 dk), günlük sınır (60), buluşma kotası (30/gün), varsayılan mod (≤ 2 km Yürüyüş), alıcıların birbirini
       görmesi, iptalde alıcıya push gitmemesi.
 - [ ] Arkadaşlık bitince aktif buluşma önerisinin iptal edilmesi; proje geneli buluşma bütçe sayacı.
+
+**Faz 6 için ek notlar** (Faz 6 kodu bu listeyi beklemeden yazıldı; cihaz testleri Faz 5 dağıtımının üstüne kurulur)
+- [ ] Widget'tan başlatılan paylaşımın uygulama kapalıyken takibe dönmesi Faz 3 `resume_tracking` sessiz push'una
+      dayanır: Faz 3 arka plan kabulü cihazda geçmeden Faz 6 "uygulama kapalıyken widget" senaryosu anlamlı değildir.
+- [ ] Apple Developer hesabında App Group (`group.${BUNDLE_ID}`) ve widget uzantısı kimliği (`${BUNDLE_ID}.widgets`)
+      açılsın; aynı imza ekibiyle uygulama + uzantı profilleri üretilsin (anahtarlık erişim grubu ortak).
+
+## Faz 6 (uygulandı)
+
+Widget mimarisi, sınırlar, yenileme bütçesi, hızlı paylaşım akışı ve düşüşleri, fotoğraf hattı ve çerçeve kararları
+[`PHASE6.md`](PHASE6.md) dosyasındadır. Özet:
+
+| Parça | Ne yapıldı |
+| --- | --- |
+| Widget verisi | Uygulama tek bir anlık görüntü JSON'u yazar (`konum.widget.snapshot.v1`, ≤ 16 KB, en çok 4 favori, `favorites_set`; iOS App Group `UserDefaults`, Android `SharedPreferences "konum_widgets"`), widget yalnızca okur. `widgetSyncDecision`: yazma ≥ 60 sn, zaman çizelgesi yenileme ≥ 5 dk (büyük değişiklikte hemen). Kilit ekranı ayrıntısı (yer adı / pil) kullanıcı ayarıyla, varsayılan kapalı. |
+| iOS | `targets/widgets` (`@bacons/apple-targets`, iOS 17.0): systemSmall / systemMedium + accessoryCircular / Rectangular / Inline; favori seçici (`AppIntentConfiguration`), `StartQuickShareIntent` (`.requiresAuthentication`), geri sayım `Text(timerInterval:)`. App Group ve anahtarlık erişim grubu `group.${BUNDLE_ID}`'den türetilir. |
+| Android | `AppWidgetProvider` + RemoteViews (2x2, 4x2), `Chronometer` geri sayımı, `QuickShareReceiver` (`goAsync`, `exported=false`), Hızlı Ayar kutucuğu (`unlockAndRun`), WorkManager 30 dk yenileme, token AndroidKeyStore AES-GCM ile şifreli. |
+| Tek dokunuşla 1 saat | Widget token'ı (32 bayt, sunucuda yalnızca `widget_tokens/{sha256}`, 30 gün, saatte 6 çağrı) → `widget_quick_share` (oturumsuz callable, App Check'siz; token `widget_token_issue` / `widget_token_revoke` ile yönetilir) → `quickShareExpiry` (started / extended / already_active) → `quick_share_started` push (görünür, iOS "Durdur" eylemi) + `resume_tracking`. Düşüş sırası `quickShareRoute`: oturum yok > favori yok > iOS < 17 > token yok > token dolmak üzere > arka plan konumu yok > arka planda başlat; her düşüş uygulamayı derin bağlantıyla açar. |
+| Profil fotoğrafı | Kamera / galeri (izin reddinde "Ayarları aç"), kare kırpma, 512 px JPEG q0,8 + 160 px JPEG q0,7 (yeniden kodlama EXIF / GPS siler), Storage `avatars/{uid}/{13 hane}.jpg` + `_160.jpg` (`storage.rules`, `checkAvatarPair`), adres `user_bootstrap` ile profile yazılır (`avatar_url`, `avatar_thumb_url`, `avatar_version`), expo-image bellek + disk önbelleği, `avatar_version` ile önbellek kırma. |
+| Cinsiyet ve çerçeve | Kayıtta zorunlu `gender` (`female` / `male`, `users/{uid}`), `GENDER_RING` pembe `#EC4899` / mavi `#3B82F6` / bilinmiyor gri; 3 px halka arkadaş listesinde, widget'ta ve harita pininde; fotoğraf yoksa baş harfli avatar. Tazelik halkadan durum noktasına taşındı. Android pininde `tracksViewChanges` görüntü yüklenince + 600 ms (en çok 5 sn) kapanır. |
+
+Faz 6 kabul ölçütleri (bu depoda): widget push'u ve anlık görüntü ham koordinat taşımaz ✓; token sunucuda yalnızca özetiyle
+durur, iptal / süre dolumu / hız sınırı / arkadaş olmayan alıcı reddedilir ✓; aynı `op_id` ikinci paylaşım açmaz ✓;
+cinsiyetsiz kayıt ve sahte avatar yolu reddedilir ✓ (emülatör + Storage kural testleri); kayıt → fotoğraf → çerçeveli
+liste / pin → favori sınırı → widget'tan 1 saat → geri sayım ve bildirim → token dolunca derin bağlantı ✓ (tarayıcı
+demosu, Playwright 48 denetim).
+
+## Faz 6 → yayın
+
+Altı faz kod olarak tamamlandı; mağaza yayını öncesi alan alan kontrol listesi
+[`RELEASE_CHECKLIST.md`](RELEASE_CHECKLIST.md) dosyasındadır (kimlikler ve imzalama, native derleme, izin metinleri,
+arka plan konumu gerekçesi, bildirimler / SOS, widget'lar, App Check ve kurallar, gizlilik etiketleri, hesap silme,
+test hesapları, çökme raporlama, faz bazında cihaz kabulü). Faz 6 cihaz senaryoları: [`PHASE6.md`](PHASE6.md) §9.1.
+
+Gerçek Firebase projesine geçiş (dağıtım, sırlar, CI) henüz yapılmadı: `firebase-kurulum` dalına bakın.

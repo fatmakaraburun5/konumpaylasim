@@ -28,3 +28,8 @@ export * from './sos';
 // Faz 5: varış/ayrılış tetikleyicileri, buluşma noktası
 export * from './zones';
 export * from './meetup';
+// Faz 6: widget'lar, tek tuşla 1 saat, profil fotoğrafı, cinsiyet çerçevesi
+export * from './profile';
+export * from './favorites';
+export * from './quickShare';
+export * from './widget';

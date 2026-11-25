@@ -1,0 +1,27 @@
+// Faz 6: Android ana ekran widget'ları (AppWidgetProvider + RemoteViews), hızlı paylaşım alıcısı ve Hızlı Ayarlar
+// kutucuğu (yerel Expo modülü). Jetpack Glance BİLEREK kullanılmadı: Compose derleyici eklentisi + Glance sürüm
+// eşlemesi bu (derleyicisiz) ortamda doğrulanamaz; RemoteViews XML'i her Android sürümünde aynı davranır ve
+// Chronometer geri sayımı doğrudan destekler.
+// [Varsayım] Bu ortamda Android SDK yok: derlenmedi; ilk development build'de doğrulanmalı.
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'expo.modules.konumwidgets'
+version = '0.1.0'
+
+android {
+  namespace "expo.modules.konumwidgets"
+  defaultConfig {
+    versionCode 1
+    versionName '0.1.0'
+  }
+}
+
+dependencies {
+  // Periyodik bayatlık yenilemesi + paylaşım bitişinde yeniden çizim. react-native-maps aynı sürümü zaten getiriyor
+  // (tek kopya). Belirteç şifrelemesi için ek bağımlılık yok: AndroidKeyStore AES-GCM (security-crypto 1.1.0'da
+  // EncryptedSharedPreferences kullanımdan kaldırıldı).
+  implementation 'androidx.work:work-runtime:2.9.1'
+}

@@ -15,7 +15,8 @@ import {
 import { useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { fixUntilSuffix } from '../../lib/turkish';
-import { Avatar, Button, cardShadow, Chip, Text, useTheme } from '../../ui';
+import { Button, cardShadow, Chip, Text, useTheme } from '../../ui';
+import { FriendAvatar } from '../profile/FriendAvatar';
 import { ProgressRing } from './ProgressRing';
 
 export interface ActiveShareCardProps {
@@ -85,7 +86,7 @@ export function ActiveShareCard({ session, names, now, trackingError, onExtend, 
                 key={id}
                 style={{ marginLeft: i === 0 ? 0 : -6, zIndex: 10 - i, borderRadius: 999, borderWidth: 2, borderColor: colors.surface, backgroundColor: colors.surface }}
               >
-                <Avatar name={names[id] ?? 'Arkadaş'} size={28} />
+                <FriendAvatar uid={id} fallbackName={names[id] ?? 'Arkadaş'} size={28} />
               </View>
             ))}
           </View>

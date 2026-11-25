@@ -14,6 +14,7 @@ import { demoScreenLocked } from '../../demo/web/screen';
 import * as Notifications from './expoNotifications';
 import { f4ForegroundContent } from './f4Push';
 import { f5ForegroundContent, isF5PushType, routeF5Received } from './f5Push';
+import { f6ForegroundContent, isF6PushType, routeF6Received } from './f6Push';
 
 /** Testlerde de kurulabilen asgari mesaj biçimi (native ile aynı). */
 export interface PushLike {
@@ -55,6 +56,17 @@ async function handleForegroundMessage(m: PushLike): Promise<void> {
     await Notifications.scheduleNotificationAsync({
       content: { title: f5.title, body: f5.body, data: f5.data, interruptionLevel: f5.interruptionLevel },
       trigger: { channelId: f5.channelId },
+    });
+    return;
+  }
+  // Faz 6: widget paylaşımı onayı bildirim kartı; `widget_refresh` sessiz (f6Services → requestWidgetSync).
+  if (isF6PushType(m.data?.type)) {
+    routeF6Received(m.data);
+    const f6 = f6ForegroundContent(m);
+    if (!f6) return;
+    await Notifications.scheduleNotificationAsync({
+      content: { title: f6.title, body: f6.body, data: f6.data, interruptionLevel: f6.interruptionLevel },
+      trigger: { channelId: f6.channelId },
     });
     return;
   }

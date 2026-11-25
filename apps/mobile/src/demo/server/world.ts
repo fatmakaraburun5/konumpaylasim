@@ -16,15 +16,20 @@ export interface DemoPerson {
   uid: string;
   name: string;
   invite: string;
+  /** Faz 6: kayıtta zorunlu cinsiyet (çerçeve rengi: kadın pembe, erkek mavi). */
+  gender: 'female' | 'male';
 }
 
 export const PEOPLE = {
-  ayse: { uid: 'ayse', name: 'Ayşe Yılmaz', invite: 'LOC-A7S3YN' },
-  mehmet: { uid: 'mehmet', name: 'Mehmet Demir', invite: 'LOC-M3HM7D' },
-  zeynep: { uid: 'zeynep', name: 'Zeynep Arslan', invite: 'LOC-Z3YN4P' },
-  can: { uid: 'can', name: 'Can Öztürk', invite: 'LOC-C4N5TK' },
-  elif: { uid: 'elif', name: 'Elif Şahin', invite: 'LOC-E2FS4H' },
+  ayse: { uid: 'ayse', name: 'Ayşe Yılmaz', invite: 'LOC-A7S3YN', gender: 'female' },
+  mehmet: { uid: 'mehmet', name: 'Mehmet Demir', invite: 'LOC-M3HM7D', gender: 'male' },
+  zeynep: { uid: 'zeynep', name: 'Zeynep Arslan', invite: 'LOC-Z3YN4P', gender: 'female' },
+  can: { uid: 'can', name: 'Can Öztürk', invite: 'LOC-C4N5TK', gender: 'male' },
+  elif: { uid: 'elif', name: 'Elif Şahin', invite: 'LOC-E2FS4H', gender: 'female' },
 } as const satisfies Record<string, DemoPerson>;
+
+/** Faz 6: demo hesabımın (Deniz Kaya) ilk favorileri — sıra = widget sırası, ilk = tek tuşla paylaşım hedefi. */
+export const DEMO_ME_FAVORITES: readonly string[] = [PEOPLE.ayse.uid, PEOPLE.mehmet.uid, PEOPLE.zeynep.uid];
 
 /** Davet koduyla eklenen yeni (sanal) arkadaşlar ve "Arkadaşlık isteği gelsin" için isim havuzu. */
 export const NAME_POOL = [
@@ -39,6 +44,20 @@ export const NAME_POOL = [
   'Oğuz Şen',
   'İrem Doğan',
 ] as const;
+
+/** Faz 6: isim havuzundaki sanal kişilerin cinsiyeti (fotoğrafları yok: baş harfli avatar). */
+export const NAME_POOL_GENDER: Record<string, 'female' | 'male'> = {
+  'Burak Koç': 'male',
+  'Selin Aydın': 'female',
+  'Emre Çelik': 'male',
+  'Ece Kurt': 'female',
+  'Kerem Aksoy': 'male',
+  'Defne Polat': 'female',
+  'Mert Yıldız': 'male',
+  'Naz Erdem': 'female',
+  'Oğuz Şen': 'male',
+  'İrem Doğan': 'female',
+};
 
 // --- yerler ----------------------------------------------------------------------------------
 
