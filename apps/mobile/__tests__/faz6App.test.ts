@@ -46,6 +46,7 @@ jest.mock('expo-file-system', () => ({
   Paths: { cache: { uri: 'file:///cache/' } },
 }));
 jest.mock('expo-image-picker', () => ({
+  UIImagePickerPreferredAssetRepresentationMode: { Automatic: 'automatic', Compatible: 'compatible', Current: 'current' },
   getCameraPermissionsAsync: jest.fn(async () => ({ granted: false, canAskAgain: false })),
   requestCameraPermissionsAsync: jest.fn(async () => ({ granted: false, canAskAgain: false })),
   launchCameraAsync: jest.fn(),

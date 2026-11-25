@@ -26,6 +26,8 @@ const PICKER_OPTIONS: ImagePicker.ImagePickerOptions = {
   quality: 0.9,
   exif: false,
   base64: false,
+  // iOS: HEIC fotoğraflar seçicide JPEG'e çevrilir (manipulator yine de HEIC çözebilir; uyumlu biçim en güvenlisi).
+  preferredAssetRepresentationMode: ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Compatible,
 };
 
 async function ensureCameraPermission(): Promise<{ ok: true } | { ok: false; canAskAgain: boolean }> {
@@ -64,6 +66,17 @@ function fileBytes(uri: string): number | null {
 }
 
 async function encode(src: SourceImage, px: number, quality: number, crop: CropRect | null): Promise<EncodedImage> {
+  try {
+    return await encodeOnce(src, px, quality, crop);
+  } catch (e) {
+    // Seçicinin bildirdiği boyut (EXIF yönü / kırpma sonrası) gerçek görüntüyle uyuşmazsa kırpma dikdörtgeni taşar
+    // ve manipulator hata verir: kırpmasız yeniden dene (seçici `allowsEditing` ile zaten kare kırptı).
+    if (crop) return encodeOnce(src, px, quality, null);
+    throw e;
+  }
+}
+
+async function encodeOnce(src: SourceImage, px: number, quality: number, crop: CropRect | null): Promise<EncodedImage> {
   // Büyük kamera fotoğrafı belleğe tam çözülmesin (kırpma yoksa çözümleme sınırı).
   const ctx = ImageManipulator.manipulate(src.uri);
   if (crop) ctx.crop(crop);

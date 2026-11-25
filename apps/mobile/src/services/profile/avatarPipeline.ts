@@ -30,7 +30,7 @@ export interface CropRect {
   height: number;
 }
 
-export type AvatarErrorCode = 'too_large' | 'invalid_image' | 'upload_failed' | 'offline';
+export type AvatarErrorCode = 'too_large' | 'invalid_image' | 'unsupported_format' | 'upload_failed' | 'offline';
 
 export class AvatarError extends Error {
   constructor(
@@ -45,6 +45,7 @@ export class AvatarError extends Error {
 export const AVATAR_ERROR_TEXT: Record<AvatarErrorCode, string> = {
   too_large: 'Fotoğraf sıkıştırılamadı. Başka bir fotoğraf dene.',
   invalid_image: 'Fotoğraf okunamadı. Başka bir fotoğraf dene.',
+  unsupported_format: 'Bu fotoğraf açılamadı. JPEG, PNG, HEIC, WEBP, GIF, BMP, TIFF ya da AVIF bir fotoğraf dene.',
   upload_failed: 'Fotoğraf yüklenemedi. Tekrar dene.',
   offline: 'Bağlantı yok. İnternet gelince tekrar dene.',
 };
@@ -93,7 +94,12 @@ export async function prepareAvatar(src: SourceImage, deps: AvatarPipelineDeps):
   } catch (e) {
     throw e instanceof AvatarError ? e : new AvatarError('invalid_image');
   }
-  const thumb = await encodeWithin(deps, main, AVATAR_LIMITS.thumbPx, THUMB_QUALITY_STEPS, AVATAR_LIMITS.thumbMaxBytes, null);
+  let thumb: EncodedImage;
+  try {
+    thumb = await encodeWithin(deps, main, AVATAR_LIMITS.thumbPx, THUMB_QUALITY_STEPS, AVATAR_LIMITS.thumbMaxBytes, null);
+  } catch (e) {
+    throw e instanceof AvatarError ? e : new AvatarError('invalid_image');
+  }
   return { main, thumb };
 }
 
