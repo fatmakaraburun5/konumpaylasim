@@ -4,7 +4,7 @@
  *  - Seçim: kendi gizli `<input type="file">`'ımız (expo-image-picker web yerine). Böylece `accept` listesi geniş
  *    tutulur (JPEG, PNG, HEIC, WEBP, GIF, BMP, TIFF, AVIF… uzantıyla da) ve dosyanın kendisi alınır; kamera
  *    `capture` ile (telefonda kamera açılır, masaüstünde dosya seçici).
- *  - Çözme + sıkıştırma: `webImageDecode.ts` (CORS'suz yollar, HEIC / TIFF çözücüleri, beyaz zemin, kademeli
+ *  - Çözme + sıkıştırma: `webImageDecode.ts` (tarayıcının kendi çözücüleri, CORS'suz yollar, beyaz zemin, kademeli
  *    küçültme) → JPEG data: URI; bayt = base64 uzunluğu.
  *  - "Yükleme": demo sunucusunda Storage yok. Firebase biçiminde bir indirme adresi üretilir ve görüntü
  *    `registerAvatarDataUri` ile tarayıcıda tutulur (Avatar bu adresi data: URI'ye çevirir). Demo sunucusu

@@ -45,7 +45,7 @@ export class AvatarError extends Error {
 export const AVATAR_ERROR_TEXT: Record<AvatarErrorCode, string> = {
   too_large: 'Fotoğraf sıkıştırılamadı. Başka bir fotoğraf dene.',
   invalid_image: 'Fotoğraf okunamadı. Başka bir fotoğraf dene.',
-  unsupported_format: 'Bu fotoğraf açılamadı. JPEG, PNG, HEIC, WEBP, GIF, BMP, TIFF ya da AVIF bir fotoğraf dene.',
+  unsupported_format: 'Bu fotoğraf bu tarayıcıda açılamadı. JPEG, PNG, WEBP ya da GIF bir fotoğraf dene.',
   upload_failed: 'Fotoğraf yüklenemedi. Tekrar dene.',
   offline: 'Bağlantı yok. İnternet gelince tekrar dene.',
 };

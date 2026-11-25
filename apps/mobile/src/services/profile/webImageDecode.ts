@@ -10,44 +10,16 @@
  *   1. createImageBitmap(dosya)  (EXIF yönü uygulanır)
  *   2. <img> + nesne adresi (crossOrigin YOK)
  *   3. <img> + data: adresi
- *   4. HEIC / HEIF (iPhone): heic2any ile JPEG'e çevrilip yeniden 1-3
- *   5. TIFF: UTIF ile RGBA'ya çözülür
  *
- * Desteklenen: JPEG/JPG/JFIF, PNG, WEBP, GIF (ilk kare), BMP, ICO, AVIF (tarayıcı destekliyorsa), HEIC/HEIF, TIFF.
+ * Desteklenen: JPEG/JPG/JFIF, PNG, WEBP, GIF (ilk kare), BMP, ICO, AVIF; HEIC/HEIF ve TIFF tarayıcı çözebiliyorsa
+ * (Safari / iPhone çözer; ayrıca iPhone dosya seçicisi HEIC'i zaten JPEG'e çevirir).
+ *
+ * BİLEREK harici çözücü kütüphanesi YOK (heic2any / UTIF): heic2any ~1,3 MB asm.js içeriyor ve tek dosyalık web
+ * demosunda bazı görüntüleyicilerde sayfanın hiç açılmamasına yol açtı (tembel `require` bile yetmedi; kod yine
+ * aynı betikte ayrıştırılıyor). Native uygulamada bu sorun yok: seçici her biçimi JPEG'e çevirir.
  * Şeffaf PNG / GIF beyaz zemine oturtulur (JPEG'de saydamlık yok; yoksa siyah çıkar).
  */
 import { centerSquareCrop, type CropRect } from './avatarPipeline';
-
-/**
- * HEIC / TIFF çözücüleri TEMBEL yüklenir: yalnızca o biçimde bir dosya seçilince `require` edilir.
- * heic2any yüklendiği anda Web Worker açar ve dizeden kod çalıştırır (eval); bunlara izin vermeyen gömülü
- * görüntüleyicilerde / sıkı CSP'li sayfalarda açılışta "Uncaught Error" ile tüm demo düşüyordu.
- */
-type Heic2Any = (o: { blob: Blob; toType?: string; quality?: number }) => Promise<Blob | Blob[]>;
-type Utif = {
-  decode: (buf: ArrayBuffer) => Array<{ width: number; height: number }>;
-  decodeImage: (buf: ArrayBuffer, ifd: unknown) => void;
-  toRGBA8: (ifd: unknown) => Uint8Array;
-};
-
-function loadHeic2any(): Heic2Any | null {
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const m = require('heic2any') as { default?: Heic2Any } | Heic2Any;
-    return typeof m === 'function' ? m : (m.default ?? null);
-  } catch {
-    return null;
-  }
-}
-
-function loadUtif(): Utif | null {
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    return require('utif') as Utif;
-  } catch {
-    return null;
-  }
-}
 
 /** Dosya seçicide görünmesi istenen biçimler (uzantıyla da: bazı sistemler image/* ile HEIC/TIFF göstermiyor). */
 export const WEB_IMAGE_ACCEPT =
@@ -143,55 +115,20 @@ function releaseCanvas(c: HTMLCanvasElement) {
   c.height = 0;
 }
 
-async function decodeTiff(buf: ArrayBuffer): Promise<DecodedImage | null> {
-  const UTIF = loadUtif();
-  if (!UTIF) return null;
-  try {
-    const ifds = UTIF.decode(buf);
-    const first = ifds[0];
-    if (!first) return null;
-    UTIF.decodeImage(buf, first);
-    const rgba = UTIF.toRGBA8(first);
-    const { width, height } = first;
-    if (!(width > 0 && height > 0)) return null;
-    const c = makeCanvas(width, height);
-    const g = c.getContext('2d');
-    if (!g) return null;
-    const px = new Uint8ClampedArray(width * height * 4);
-    px.set(rgba.subarray(0, px.length));
-    g.putImageData(new ImageData(px, width, height), 0, 0);
-    return { source: c, width, height, close: () => releaseCanvas(c) };
-  } catch {
-    return null;
-  }
-}
-
-/** Herhangi bir fotoğraf dosyasını çözer; hiçbir yol açamazsa null. */
+/** Herhangi bir fotoğraf dosyasını tarayıcının kendi çözücüleriyle açar; açamazsa null. */
 export async function decodeImageFile(file: Blob & { name?: string }): Promise<DecodedImage | null> {
-  const name = file.name ?? '';
-  const buf = await file.arrayBuffer();
-  const kind = sniffImageKind(new Uint8Array(buf, 0, Math.min(16, buf.byteLength)), file.type || '', name);
-
-  // TIFF'i yalnızca Safari çözer; önce tarayıcı, sonra UTIF.
-  if (kind !== 'heic') {
-    const native = await decodeWithBrowser(file);
-    if (native) return native;
-    if (kind === 'tiff') return decodeTiff(buf);
-    return null;
-  }
-
-  // HEIC: Safari 17+ kendisi çözer; diğerlerinde heic2any (libheif) ile JPEG'e çevrilir.
   const native = await decodeWithBrowser(file);
   if (native) return native;
-  const heic2any = loadHeic2any();
-  if (!heic2any) return null;
+  // Bazı sistemler HEIC/TIFF'i yanlış ya da boş MIME ile verir; doğru türle bir kez daha dene.
   try {
-    const out = await heic2any({ blob: new Blob([buf], { type: 'image/heic' }), toType: 'image/jpeg', quality: 0.92 });
-    const jpeg = Array.isArray(out) ? out[0] : out;
-    return jpeg ? decodeWithBrowser(jpeg) : null;
+    const head = new Uint8Array(await file.slice(0, 16).arrayBuffer());
+    const kind = sniffImageKind(head, file.type || '', file.name ?? '');
+    const type = kind === 'heic' ? 'image/heic' : kind === 'tiff' ? 'image/tiff' : '';
+    if (type && type !== file.type) return decodeWithBrowser(new Blob([file], { type }));
   } catch {
-    return null;
+    // yoksay
   }
+  return null;
 }
 
 /**
