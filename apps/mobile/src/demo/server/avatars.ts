@@ -7,7 +7,7 @@
  *    (`https://firebasestorage.googleapis.com/v0/b/{kova}/o/avatars%2F{uid}%2F{sürüm}.jpg?alt=media&token=...`);
  *    sunucu `user_bootstrap`'te bu biçimi core `checkAvatarPair` ile doğrular.
  *  - [Demo] Tarayıcı önizlemesi ağa çıkmaz: dinleyicilere giden profillerde bu adresler yerel içeriğe çözülür
- *    (yüklenen JPEG için `blob:` adresi, bot çizimi için `data:image/svg+xml`). Çözülemeyen adres `null` olur ve
+ *    (yüklenen JPEG için `data:image/jpeg`, bot çizimi için `data:image/svg+xml`; `blob:` KULLANILMAZ, sıkı CSP engelliyor). Çözülemeyen adres `null` olur ve
  *    istemci baş harflere düşer.
  *  - Yüklenen nesneler `storage.rules` ile aynı kurallardan geçer: yalnızca sahibi `avatars/{uid}/{dosya}` yazar,
  *    dosya adı core `AVATAR_FILE_RE`, tür `image/jpeg`, boyut ana ≤ `mainMaxBytes`, küçük ≤ `thumbMaxBytes`.
@@ -154,24 +154,18 @@ export function dataUrlBytes(dataUrl: string): number | null {
   return Math.floor((b64.length * 3) / 4) - pad;
 }
 
+/**
+ * Yerel gösterim adresi: veri adresinin KENDİSİ. Eskiden `blob:` adresine çevriliyordu; sıkı CSP'li görüntüleyiciler
+ * (img-src yalnızca data:) blob: görselini engellediği için yüklenen fotoğraf hiç görünmüyordu.
+ */
 function toObjectUrl(dataUrl: string): string {
-  const g = globalThis as { URL?: { createObjectURL?: (b: Blob) => string }; Blob?: typeof Blob; atob?: (s: string) => string };
-  const m = BASE64_RE.exec(dataUrl);
-  if (!m?.[2] || typeof g.URL?.createObjectURL !== 'function' || typeof g.Blob !== 'function' || typeof g.atob !== 'function') return dataUrl;
-  try {
-    const bin = g.atob(m[2]);
-    const bytes = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    return g.URL.createObjectURL(new g.Blob([bytes], { type: m[1] }));
-  } catch {
-    return dataUrl;
-  }
+  return dataUrl;
 }
 
 /** Bellek içi + `localStorage` (yalnızca yüklemede / silmede yazılır; ana demo durumundan ayrı tutulur). */
 export class DemoAvatarStore {
   private objects: Record<string, StoredObject>;
-  /** Yol → `blob:` adresi (sayfa ömrü boyunca; dinleyici farkları kısa metinle çalışsın). */
+  /** Yol → yerel gösterim adresi (sürüm değişene kadar aynı dize; dinleyici farkları kararlı kalsın). */
   private objectUrls = new Map<string, { at: EpochMs; url: string }>();
   private disposed = false;
 
@@ -242,8 +236,7 @@ export class DemoAvatarStore {
   }
 
   /**
-   * Saklanan Storage adresini tarayıcının gösterebileceği yerel adrese çevirir: yüklenen nesne → `blob:` (yoksa
-   * `data:`), bot çizimi → SVG veri adresi. Bilinmeyen / silinmiş nesne → null (istemci baş harflere düşer).
+   * Saklanan Storage adresini tarayıcının gösterebileceği yerel adrese çevirir: yüklenen nesne → `data:`, bot çizimi → SVG veri adresi. Bilinmeyen / silinmiş nesne → null (istemci baş harflere düşer).
    */
   resolve(url: string | null | undefined): string | null {
     if (!url) return null;

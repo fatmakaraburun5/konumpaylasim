@@ -42,6 +42,37 @@ function keyFor(file: File): string {
   }
 }
 
+/**
+ * Önizleme adresi: kare JPEG data: adresi. `blob:` adresi KULLANILMAZ: sıkı CSP'li görüntüleyiciler (img-src yalnızca
+ * data:) blob: görselini engelliyor, önizleme boş kalıyordu.
+ */
+function previewFor(img: DecodedImage): string | null {
+  try {
+    return renderSquareJpeg(img, PREVIEW_PX, 0.8, null).dataUrl;
+  } catch {
+    return null;
+  }
+}
+const PREVIEW_PX = 320;
+
+/** data: adresini `fetch` OLMADAN Blob'a çevirir (connect-src kısıtlı sayfalarda fetch(data:) engelleniyor). */
+export function dataUrlToBlob(uri: string): Blob | null {
+  const comma = uri.indexOf(',');
+  if (!uri.startsWith('data:') || comma < 0) return null;
+  const meta = uri.slice(5, comma);
+  const type = meta.split(';')[0] || 'application/octet-stream';
+  try {
+    const body = uri.slice(comma + 1);
+    if (!/;base64/i.test(meta)) return new Blob([decodeURIComponent(body)], { type });
+    const bin = atob(body);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new Blob([bytes], { type });
+  } catch {
+    return null;
+  }
+}
+
 /** Dosya seçiciyi AYNI kullanıcı hareketi içinde açar (await'ten önce `click`), seçilen dosyayı döner. */
 function chooseFile(source: AvatarSource): Promise<File | null> {
   return new Promise((resolve, reject) => {
@@ -80,8 +111,8 @@ export async function pickAvatarImage(source: AvatarSource): Promise<PickResult>
   }
   if (!file) return { kind: 'cancelled' };
   releasePicked();
-  const key = keyFor(file);
   const decoded = await decodeImageFile(file).catch(() => null);
+  const key = (decoded && previewFor(decoded)) || keyFor(file);
   picked.set(key, decoded);
   // Çözülemese de "seçildi" döner: hata sıkıştırma adımında anlamlı metinle (`unsupported_format`) gösterilir.
   return { kind: 'picked', image: { uri: key, width: decoded?.width ?? 0, height: decoded?.height ?? 0 } };
@@ -89,9 +120,10 @@ export async function pickAvatarImage(source: AvatarSource): Promise<PickResult>
 
 async function sourceFor(uri: string): Promise<DecodedImage | null> {
   if (picked.has(uri)) return picked.get(uri) ?? null;
-  // Küçük boy, ana boyun (bizim ürettiğimiz) JPEG data: adresinden üretilir.
+  // Küçük boy, ana boyun (bizim ürettiğimiz) JPEG data: adresinden üretilir. `fetch(data:)` KULLANILMAZ: sıkı
+  // CSP'li görüntüleyicide (connect-src 'none') engelleniyor ve "Fotoğraf okunamadı" hatasına düşüyordu.
   if (uri.startsWith('data:')) {
-    const blob = await (await fetch(uri)).blob().catch(() => null);
+    const blob = dataUrlToBlob(uri);
     return blob ? decodeWithBrowser(blob) : null;
   }
   return null;
