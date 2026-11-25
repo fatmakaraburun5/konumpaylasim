@@ -16,16 +16,38 @@
  * Desteklenen: JPEG/JPG/JFIF, PNG, WEBP, GIF (ilk kare), BMP, ICO, AVIF (tarayıcı destekliyorsa), HEIC/HEIF, TIFF.
  * Şeffaf PNG / GIF beyaz zemine oturtulur (JPEG'de saydamlık yok; yoksa siyah çıkar).
  */
-import heic2any from 'heic2any';
 import { centerSquareCrop, type CropRect } from './avatarPipeline';
 
-// utif tip paketi yok: kullanılan üç işlev burada tiplenir.
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const UTIF = require('utif') as {
+/**
+ * HEIC / TIFF çözücüleri TEMBEL yüklenir: yalnızca o biçimde bir dosya seçilince `require` edilir.
+ * heic2any yüklendiği anda Web Worker açar ve dizeden kod çalıştırır (eval); bunlara izin vermeyen gömülü
+ * görüntüleyicilerde / sıkı CSP'li sayfalarda açılışta "Uncaught Error" ile tüm demo düşüyordu.
+ */
+type Heic2Any = (o: { blob: Blob; toType?: string; quality?: number }) => Promise<Blob | Blob[]>;
+type Utif = {
   decode: (buf: ArrayBuffer) => Array<{ width: number; height: number }>;
   decodeImage: (buf: ArrayBuffer, ifd: unknown) => void;
   toRGBA8: (ifd: unknown) => Uint8Array;
 };
+
+function loadHeic2any(): Heic2Any | null {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const m = require('heic2any') as { default?: Heic2Any } | Heic2Any;
+    return typeof m === 'function' ? m : (m.default ?? null);
+  } catch {
+    return null;
+  }
+}
+
+function loadUtif(): Utif | null {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    return require('utif') as Utif;
+  } catch {
+    return null;
+  }
+}
 
 /** Dosya seçicide görünmesi istenen biçimler (uzantıyla da: bazı sistemler image/* ile HEIC/TIFF göstermiyor). */
 export const WEB_IMAGE_ACCEPT =
@@ -122,6 +144,8 @@ function releaseCanvas(c: HTMLCanvasElement) {
 }
 
 async function decodeTiff(buf: ArrayBuffer): Promise<DecodedImage | null> {
+  const UTIF = loadUtif();
+  if (!UTIF) return null;
   try {
     const ifds = UTIF.decode(buf);
     const first = ifds[0];
@@ -159,6 +183,8 @@ export async function decodeImageFile(file: Blob & { name?: string }): Promise<D
   // HEIC: Safari 17+ kendisi çözer; diğerlerinde heic2any (libheif) ile JPEG'e çevrilir.
   const native = await decodeWithBrowser(file);
   if (native) return native;
+  const heic2any = loadHeic2any();
+  if (!heic2any) return null;
   try {
     const out = await heic2any({ blob: new Blob([buf], { type: 'image/heic' }), toType: 'image/jpeg', quality: 0.92 });
     const jpeg = Array.isArray(out) ? out[0] : out;
