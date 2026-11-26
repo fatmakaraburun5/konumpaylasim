@@ -48,6 +48,12 @@ const PUBLISH_HOLD_KEY = 'konum.bg.invisible.v1';
  * aynı hesapla yeniden girişte niyet geri gelir ve aynı op_id ile yeniden gönderilir.
  */
 const PENDING_INVISIBLE_KEY = 'konum.f8.pendingInvisible.v1';
+/**
+ * Faz 7: gizlilik tercihlerinin başsız kopyası (yalnızca `battery_share` + `movement_alerts`, hesaba bağlı) ve son
+ * "yola çıktı" bildiriminin anı. Konum İÇERMEZ. Çıkışta silinir.
+ */
+const PRIVACY_KEY = 'konum.bg.privacy.v1';
+const MOVEMENT_KEY = 'konum.bg.movement.v1';
 
 /**
  * Yayın hedefi + sunucunun onayladığı oturum özeti. Özet, açılışta sunucu dinleyicisi henüz
@@ -406,8 +412,64 @@ export async function savePendingInvisible(v: PendingInvisibleIntents): Promise<
  * Durdurma niyetleri (stopIntents) SİLİNMEZ: aynı hesapla tekrar girişte sunucuya yeniden gönderilir.
  */
 export async function clearBackgroundState(): Promise<void> {
-  await withTargetsLock(() => AsyncStorage.multiRemove([TARGETS_KEY, CURSOR_KEY, PROFILE_KEY, STATUS_NOTE_KEY, ZONES_KEY, ZONE_FILTER_KEY, ZONE_REPORTS_KEY, PUBLISH_HOLD_KEY]));
+  await withTargetsLock(() =>
+    AsyncStorage.multiRemove([TARGETS_KEY, CURSOR_KEY, PROFILE_KEY, STATUS_NOTE_KEY, ZONES_KEY, ZONE_FILTER_KEY, ZONE_REPORTS_KEY, PUBLISH_HOLD_KEY, PRIVACY_KEY, MOVEMENT_KEY]),
+  );
   statusNoteCache = null;
+  privacyCache = null;
+}
+
+// --- Faz 7: gizlilik tercihi (pil paylaşımı) ve "yola çıktı" -----------------------------------------
+
+export interface PersistedPrivacy {
+  uid: UserId;
+  battery_share: boolean;
+  movement_alerts: boolean;
+}
+
+const PersistedPrivacySchema = z.object({ uid: z.string().min(1), battery_share: z.boolean(), movement_alerts: z.boolean().default(true) });
+let privacyCache: PersistedPrivacy | null | undefined;
+
+export async function loadPrivacy(): Promise<PersistedPrivacy | null> {
+  if (privacyCache !== undefined) return privacyCache;
+  const v = await read(PRIVACY_KEY, PersistedPrivacySchema.nullable(), null);
+  privacyCache = v;
+  return v;
+}
+
+export async function savePrivacy(v: PersistedPrivacy | null): Promise<void> {
+  privacyCache = v;
+  try {
+    if (v) await AsyncStorage.setItem(PRIVACY_KEY, JSON.stringify(v));
+    else await AsyncStorage.removeItem(PRIVACY_KEY);
+  } catch {
+    // disk yazılamadı: bellek önbelleği bu çalıştırma için yeterli
+  }
+}
+
+/** Pil bilgisi yayınlanabilir mi? Kayıt yoksa / başka hesabınsa HAYIR (varsayılan kapalı; sunucu kuralı da reddeder). */
+export async function batteryShareAllowed(uid: UserId): Promise<boolean> {
+  const p = await loadPrivacy().catch(() => null);
+  return p !== null && p.uid === uid && p.battery_share;
+}
+
+export interface PersistedMovement {
+  uid: UserId;
+  /** Son "yola çıktı" bildiriminin anı (sunucu saati). */
+  last_report_at: EpochMs | null;
+}
+
+const PersistedMovementSchema = z.object({ uid: z.string().min(1), last_report_at: z.number().nullable() });
+
+export const loadMovement = (): Promise<PersistedMovement | null> => read(MOVEMENT_KEY, PersistedMovementSchema.nullable(), null);
+
+export async function saveMovement(v: PersistedMovement): Promise<void> {
+  await AsyncStorage.setItem(MOVEMENT_KEY, JSON.stringify(v)).catch(() => undefined);
+}
+
+/** Testler: bellek önbelleğini sıfırla. */
+export function __resetPrivacyCacheForTests(): void {
+  privacyCache = undefined;
 }
 
 // --- Faz 5: bölge izleme ---------------------------------------------------------------------------

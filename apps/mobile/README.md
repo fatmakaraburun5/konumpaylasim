@@ -510,3 +510,18 @@ Ayrıntı ve gerekçeler: [`docs/PHASE6.md`](../../docs/PHASE6.md). Yayın önce
 - **Sınırlar** [Varsayım: cihazda doğrulanmalı]: Swift / Kotlin kodu bu ortamda derlenmedi; Android'de widget başına
   favori seçici yok; iOS 16'da widget yok; uygulama kapalıyken widget'tan başlayan paylaşımın takibe dönmesi
   sessiz push'a bağlı.
+
+## 11. Faz 7 — etkinlikler, bildirim kanalları, izin akışı, harita teması
+
+Tasarım ve sözleşmeler: `docs/PHASE7.md`.
+
+| Parça | Dosyalar |
+| --- | --- |
+| Etkinlik ekranları | `app/(main)/events/{index,new,[id]}.tsx` → `src/features/events/` (`EventsScreen`: Etkinlikler / Bildirimler sekmeleri; `EventCreateScreen`: tarih çipleri, izinli davetliler, ≤ 3 mekan, 2–4 saat, oylama süresi; `EventDetailScreen`: aşama göstergesi, ön onay / son onay + 300 karakter not, mekan önerisi, mekan / saat oylaması, eşitlikte kazanan seçimi, düzenleyen araçları) |
+| Durum | `src/state/eventsStore.ts` (dinleyici + callable yanıtı; yüksek sürüm kazanır, okunmamış bildirim sayısı cihazda), `src/state/privacyStore.ts`, `src/state/onboardingStore.ts`, `src/ui/themePref.ts` |
+| Veri | `src/services/firebase/eventsRepo.ts` (`events where member_ids array-contains`, `users/{uid}/notices`), `callables.ts` (`eventsApi`, `privacyApi`) |
+| Bildirimler | `src/services/notifications/f7Push.ts` (doğrulama, ön plan içeriği, yönlendirme), `expiryNotifications.ts` (kanallar: `sos_alarm`, `movement`, `events`, `event_reminders`; eski `sos` silinir), `assets/sounds/sos_alarm.wav` |
+| İzinler | `src/features/onboarding/OnboardingFlow.tsx` (ilk açılış), `src/features/privacy/PrivacyCenterScreen.tsx` (`/privacy`), `src/services/permissions/permissionCenter.ts` + `mediaPermissions.ts` |
+| Pil / hareket | `src/services/location/pipeline.ts` (pil paylaşımı kapalıyken pil alanı yok, kuyruk yazmalarından ayıklanır; "yola çıktı" raporu), `src/state/persist.ts` (başsız gizlilik kopyası) |
+| Harita teması | `src/ui/theme.ts` (`MAP_STYLES`, `mapStyleFor`), `src/features/map/MapThemeButton.tsx` |
+| Testler | `__tests__/faz7Mobile.test.ts`, `__tests__/demoFaz7.test.ts` |

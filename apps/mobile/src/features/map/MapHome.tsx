@@ -6,10 +6,10 @@
  *   │   ├─ FriendMarker × n (yumuşak kayan pin, seçiliyse vurgulu)
  *   │   ├─ DestinationPin (uzun basışla bırakılan hedef)
  *   │   └─ Polyline (seçili hedefin rotası, core `decodePolyline`)
- *   ├─ TopBar (avatar, başlık, davet kodu çipi, arkadaşlar)
+ *   ├─ TopBar (avatar, başlık, davet kodu çipi, Faz 7 etkinlikler + okunmamış rozeti, arkadaşlar)
  *   ├─ IncomingStrip (bana paylaşanlar; dokununca seçer)
  *   ├─ SyncBanner (sunucuyla eşitleme hatası; dinleyici yeniden deneniyor)
- *   ├─ RecenterButton (+ paylaşım sürerken "QR ile paylaş" kısayolu)
+ *   ├─ Faz 7 MapThemeButton (Sistem / Açık / Koyu harita görünümü, anında) · RecenterButton (+ paylaşım sürerken "QR ile paylaş" kısayolu)
  *   ├─ alt alan:
  *   │   seçim varsa:  ExpiryBanner(lar) → EtaCard (ad/adres, Araç|Yürüyüş|Bisiklet, ETA · mesafe, "Rotayı kapat")
  *   │   yoksa:        BackgroundPermissionHint → ExpiryBanner(lar) → ShareDeck (tüm giden paylaşımlar tek kitapçıkta: öndeki kart + arka katmanlar, liste, ince çubuk) | ShareButton
@@ -94,6 +94,8 @@ import { ExpiryBanner } from './ExpiryBanner';
 import { IncomingStrip } from './IncomingStrip';
 import { MapCanvas, type MapCanvasHandle } from './MapCanvas';
 import { RecenterButton } from './RecenterButton';
+import { MapThemeButton } from './MapThemeButton';
+import { selectUnreadNotices, useEventsStore } from '../../state/eventsStore';
 import { ShareButton } from './ShareButton';
 import { ShareDeck, type ShareDeckActions } from './ShareDeck';
 import { TopBar } from './TopBar';
@@ -156,6 +158,8 @@ export function MapHome() {
 
   // --- Faz 8: görünmez mod -------------------------------------------------------------------
   const invisible = useIsInvisible();
+  // Faz 7: Etkinlik Alanı okunmamış bildirim rozeti.
+  const unreadEvents = useEventsStore(selectUnreadNotices);
   /** Paylaşım sayfasını açar; görünmezken açmaz, "Görünmez moddasın" uyarısını gösterir. */
   const openShare = useCallback((audience?: ShareAudience) => {
     if (selectIsInvisible(invisibleStore.getState())) explainInvisibleShare();
@@ -540,6 +544,9 @@ export function MapHome() {
         onProfile={() => router.push('/profile')}
         onSignOut={signOut}
         invisible={invisible}
+        onEvents={() => router.push('/events')}
+        unreadEvents={unreadEvents}
+        onPrivacy={() => router.push('/privacy')}
       />
       <View style={[styles.strip, { top: insets.top + 72, gap: spacing.xs }]} pointerEvents="box-none">
         {invisible ? <InvisibleBanner onVisible={openRestoreFlow} /> : null}
@@ -570,6 +577,7 @@ export function MapHome() {
             {anyRunning && !target ? (
               <IconButton icon="qr" variant="floating" size={48} accessibilityLabel="QR ile paylaş" onPress={() => openShare('link')} />
             ) : null}
+            <MapThemeButton />
             <RecenterButton onPress={recenter} disabled={!myPosition} />
             <SosLauncher route={sosRoute} />
           </View>

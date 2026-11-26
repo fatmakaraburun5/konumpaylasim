@@ -135,6 +135,36 @@ import {
   type LocationRequestCancelResponse,
   type LocationRequestRespondResponse,
   type LocationRequestSendResponse,
+  EventAdvanceRequestSchema,
+  EventCancelRequestSchema,
+  EventCreateRequestSchema,
+  EventInviteAddRequestSchema,
+  EventResponseSchema,
+  EventRsvpRequestSchema,
+  EventTimeOptionsSetRequestSchema,
+  EventUpdateRequestSchema,
+  EventVenueProposeRequestSchema,
+  EventVenueRemoveRequestSchema,
+  EventVoteRequestSchema,
+  MovementReportRequestSchema,
+  MovementReportResponseSchema,
+  PrivacySettingsResponseSchema,
+  PrivacySettingsSetRequestSchema,
+  type EventAdvanceRequest,
+  type EventCancelRequest,
+  type EventCreateRequest,
+  type EventInviteAddRequest,
+  type EventResponse,
+  type EventRsvpRequest,
+  type EventTimeOptionsSetRequest,
+  type EventUpdateRequest,
+  type EventVenueProposeRequest,
+  type EventVenueRemoveRequest,
+  type EventVoteRequest,
+  type MovementReportRequest,
+  type MovementReportResponse,
+  type PrivacySettingsResponse,
+  type PrivacySettingsSetRequest,
 } from '@konum/core';
 import { z } from 'zod';
 import { KonumError, toKonumError } from '../../lib/errors';
@@ -566,3 +596,87 @@ export interface LocationRequestApi {
   locationRequestCancel: typeof locationRequestCancel;
 }
 export const locationRequestApi: LocationRequestApi = { locationRequestSend, locationRequestRespond, locationRequestCancel };
+
+// --- Faz 7: Etkinlik Alanı, gizlilik ayarları, "yola çıktı" ----------------------------------------
+
+/**
+ * Etkinlik callable'ları (core `CALLABLES.eventCreate` … `eventCancel`; istek ve yanıt şemaları core `events.ts`).
+ * Hepsi `op_id` taşır ve güncel etkinlik belgesini döner (ekran, dinleyici gelmeden yanıtla güncellenir).
+ *  - `event_create` / `event_invite_add`: izin vermeyen / arkadaş olmayan sessizce atlanır (`skipped_count`).
+ *  - `event_rsvp` "Katılamayacağım" onaysız da çalışır (çekilmek her zaman mümkün).
+ */
+const op = <T extends { op_id?: string }>(input: T) => ({ ...input, op_id: input.op_id ?? uuidV4() });
+
+export function eventCreate(input: WithOp<EventCreateRequest>): Promise<EventResponse> {
+  return invoke(CALLABLES.eventCreate, EventCreateRequestSchema, op(input), EventResponseSchema);
+}
+export function eventRsvp(input: WithOp<EventRsvpRequest>): Promise<EventResponse> {
+  return invoke(CALLABLES.eventRsvp, EventRsvpRequestSchema, op(input), EventResponseSchema);
+}
+export function eventVenuePropose(input: WithOp<EventVenueProposeRequest>): Promise<EventResponse> {
+  return invoke(CALLABLES.eventVenuePropose, EventVenueProposeRequestSchema, op(input), EventResponseSchema);
+}
+export function eventVenueRemove(input: WithOp<EventVenueRemoveRequest>): Promise<EventResponse> {
+  return invoke(CALLABLES.eventVenueRemove, EventVenueRemoveRequestSchema, op(input), EventResponseSchema);
+}
+export function eventVote(input: WithOp<EventVoteRequest>): Promise<EventResponse> {
+  return invoke(CALLABLES.eventVote, EventVoteRequestSchema, op(input), EventResponseSchema);
+}
+export function eventAdvance(input: WithOp<EventAdvanceRequest>): Promise<EventResponse> {
+  return invoke(CALLABLES.eventAdvance, EventAdvanceRequestSchema, op(input), EventResponseSchema);
+}
+export function eventTimeOptionsSet(input: WithOp<EventTimeOptionsSetRequest>): Promise<EventResponse> {
+  return invoke(CALLABLES.eventTimeOptionsSet, EventTimeOptionsSetRequestSchema, op(input), EventResponseSchema);
+}
+export function eventUpdate(input: WithOp<EventUpdateRequest>): Promise<EventResponse> {
+  return invoke(CALLABLES.eventUpdate, EventUpdateRequestSchema, op(input), EventResponseSchema);
+}
+export function eventInviteAdd(input: WithOp<EventInviteAddRequest>): Promise<EventResponse> {
+  return invoke(CALLABLES.eventInviteAdd, EventInviteAddRequestSchema, op(input), EventResponseSchema);
+}
+export function eventCancel(input: WithOp<EventCancelRequest>): Promise<EventResponse> {
+  return invoke(CALLABLES.eventCancel, EventCancelRequestSchema, op(input), EventResponseSchema);
+}
+
+export interface EventsApi {
+  eventCreate: typeof eventCreate;
+  eventRsvp: typeof eventRsvp;
+  eventVenuePropose: typeof eventVenuePropose;
+  eventVenueRemove: typeof eventVenueRemove;
+  eventVote: typeof eventVote;
+  eventAdvance: typeof eventAdvance;
+  eventTimeOptionsSet: typeof eventTimeOptionsSet;
+  eventUpdate: typeof eventUpdate;
+  eventInviteAdd: typeof eventInviteAdd;
+  eventCancel: typeof eventCancel;
+}
+export const eventsApi: EventsApi = {
+  eventCreate,
+  eventRsvp,
+  eventVenuePropose,
+  eventVenueRemove,
+  eventVote,
+  eventAdvance,
+  eventTimeOptionsSet,
+  eventUpdate,
+  eventInviteAdd,
+  eventCancel,
+};
+
+/**
+ * İzin & Gizlilik Merkezi: pil paylaşımı (varsayılan KAPALI; sunucu RTDB kuralıyla zorlar) ve "yola çıktı" uyarıları.
+ * Kapatmak onaysız da çalışır.
+ */
+export function privacySettingsSet(input: WithOp<PrivacySettingsSetRequest>): Promise<PrivacySettingsResponse> {
+  return invoke(CALLABLES.privacySettingsSet, PrivacySettingsSetRequestSchema, op(input), PrivacySettingsResponseSchema);
+}
+
+/** Paylaşım sürerken sabit (≥ 10 dk) → hareket geçişi: etkin alıcılara "X yola çıktı" (koordinat yok, 30 dk soğuma). */
+export function movementReport(input: WithOp<MovementReportRequest>): Promise<MovementReportResponse> {
+  return invoke(CALLABLES.movementReport, MovementReportRequestSchema, op(input), MovementReportResponseSchema);
+}
+
+export interface PrivacyApi {
+  privacySettingsSet: typeof privacySettingsSet;
+}
+export const privacyApi: PrivacyApi = { privacySettingsSet };

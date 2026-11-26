@@ -301,6 +301,24 @@ indirme token'lı URL'yi kullanır. Firestore: `widget_tokens` kapalı.
 **Dağıtım:** `firebase deploy --only storage` (yeni `storage.rules`), TTL `widget_tokens.purge_at`; Functions servis
 hesabının Storage nesnelerini silme yetkisi olmalı (varsayılan hesapta var).
 
+## Faz 7: etkinlikler, gizlilik ayarları, "yola çıktı"
+
+Tasarım: `docs/PHASE7.md`. Durum makinesi core `events.ts` (`reduceEvent`, `createEventDoc`); backend yalnızca
+okur, izin / onay / hız sınırını denetler ve etkileri yazar.
+
+- **Callable'lar:** `event_create`, `event_rsvp`, `event_venue_propose`, `event_venue_remove`, `event_vote`,
+  `event_advance`, `event_time_options_set`, `event_update`, `event_invite_add`, `event_cancel`
+  (`src/handlers/events.ts`); `privacy_settings_set`, `movement_report` (`src/handlers/privacy.ts`).
+- **Zamanlanmış:** `event_sweeper` (dakikada bir): oylama süresi / gün sonu / tamamlanma `tick`'i ve zamanı gelen
+  hatırlatmalar (1 gün önce, buluşma günü 08:00; 2 saatten geç kalan `stale`).
+- **Veri:** `events/{id}` (üyeler okur), `event_reminders`, `users/{uid}/notices` (30 gün TTL), `users/{uid}.privacy`
+  + RTDB aynası `privacy/{uid}`, `movement_cooldowns`. İndeksler ve TTL alanları `firestore.indexes.json`'da.
+- **Kurallar:** `database.rules.json` pil alanlarını (`battery_pct`, `is_charging`) yalnızca
+  `privacy/{auth.uid}/battery_share === true` iken kabul eder; `battery_low_notify` kapalıyken `suppressed`.
+- **Push:** `buildEventPush` (`events` / `event_reminders` kanalları), `buildMovementPush` (`movement`), SOS
+  `sos_alarm` kanalı ve `sos_alarm.wav` sesi; bölge bildirimleri `movement` kanalında.
+- Senaryolar: `test/functions/faz7.test.ts`, kural testleri `test/rules/database.rules.test.ts`.
+
 ## Faz 8: izinler, görünmez mod, Güvenlik Sözleşmesi / KVKK onayı
 
 Tasarım: `docs/PHASE8.md`. Kararlar core'da (`access.ts` matris + belge geçişleri, `invisible.ts`, `consent.ts`);

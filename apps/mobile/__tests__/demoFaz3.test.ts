@@ -14,7 +14,7 @@ import {
 } from '@konum/core';
 import { AYSE_LOW_BATTERY, DemoServer, type DemoPushMessage } from '../src/demo/server/server';
 import { DEMO_ME, PEOPLE } from '../src/demo/server/world';
-import { acceptConsent, grant } from './demoTestUtils';
+import { acceptConsent, grant, shareBattery } from './demoTestUtils';
 
 jest.setTimeout(30_000);
 
@@ -23,6 +23,7 @@ async function server(): Promise<DemoServer> {
   const s = new DemoServer();
   servers.push(s);
   await acceptConsent(s); // Faz 8: onaysız hesap çağrı yapamaz
+  await shareBattery(s); // Faz 7: pil paylaşımı varsayılan kapalı (paketlerde pil alanı reddedilir)
   return s;
 }
 let clock: jest.SpyInstance | null = null;

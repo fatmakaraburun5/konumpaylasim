@@ -13,6 +13,7 @@ import {
   meetupPushText,
   meetupResponsePushText,
   NOTIFICATION_CHANNELS_F4,
+  NOTIFICATION_CHANNELS_F7,
   PUSH_TYPES_F5,
   ZONE_TRIGGERS,
   zoneEventPushText,
@@ -55,7 +56,7 @@ export function parseF5Data(data: Record<string, unknown> | null | undefined): F
   return null;
 }
 
-/** Ön plan yerel bildirimi (Android kanal `ping`, iOS etkin). Sunucunun başlığı/gövdesi varsa o, yoksa core metinleri. */
+/** Ön plan yerel bildirimi (Android kanal `ping`, iOS etkin; bölge olayı Faz 7'den beri `movement`, zamana duyarlı). Sunucunun başlığı/gövdesi varsa o, yoksa core metinleri. */
 export function f5ForegroundContent(m: F4PushLike, opts: { includeMeetup: boolean } = { includeMeetup: false }): F4LocalContent | null {
   const ev = parseF5Data(m.data);
   if (!ev) return null;
@@ -65,7 +66,13 @@ export function f5ForegroundContent(m: F4PushLike, opts: { includeMeetup: boolea
   const base = { channelId: NOTIFICATION_CHANNELS_F4.ping, data, interruptionLevel: 'active' as const, sound: true };
   switch (ev.type) {
     case 'zone_event':
-      return { ...pick(zoneEventPushText('Arkadaşın', ev.zone_name, ev.transition)), ...base };
+      // Faz 7: "Ayşe eve girdi" heads-up banner (IMPORTANCE_HIGH `movement` kanalı, iOS zamana duyarlı).
+      return {
+        ...pick(zoneEventPushText('Arkadaşın', ev.zone_name, ev.transition)),
+        ...base,
+        channelId: NOTIFICATION_CHANNELS_F7.movement,
+        interruptionLevel: 'timeSensitive',
+      };
     case 'meetup':
       if (!opts.includeMeetup) return null;
       return { ...pick(meetupPushText('Arkadaşın', { name: 'yeni bir yer' })), ...base };

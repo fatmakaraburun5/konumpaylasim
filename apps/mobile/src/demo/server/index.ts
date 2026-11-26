@@ -213,6 +213,20 @@ export const demoControls = {
     return demoServer().friendRequestsMyLocation(who);
   },
 
+  // --- Faz 7 ---------------------------------------------------------------------------------------
+  /** "Ayşe etkinliğe davet etsin": yarın için 3 mekanlı etkinlik → bana davet (push + Etkinlikler). Dönen: kimlik ya da hata kodu. */
+  ayseCreatesEvent(): { ok: true; event_id: string } | { ok: false; code: string } {
+    return demoServer().botCreateEvent(PEOPLE.ayse.uid);
+  },
+  /** "Hatırlatmayı şimdi gönder": kesinleşmiş etkinliklerimin sıradaki hatırlatması hemen gider. Dönen: gönderilen sayı. */
+  fireEventRemindersNow(): number {
+    return demoServer().fireMyEventRemindersNow();
+  },
+  /** "Mehmet yola çıksın": Mehmet'in hareket raporu → bana "Mehmet yola çıktı" heads-up bildirimi. Dönen: sunucu durumu. */
+  mehmetDeparts(): string {
+    return demoServer().botDeparture(PEOPLE.mehmet.uid);
+  },
+
   // --- Faz 8 ---------------------------------------------------------------------------------------
   /** "Can konumunu görmek istiyor": bana `location_view` isteği (push + "İzin istekleri" kartı). Dönen: gönderildi mi. */
   canRequestsMyLocation(): boolean {

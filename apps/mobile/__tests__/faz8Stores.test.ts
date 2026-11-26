@@ -337,6 +337,8 @@ describe('yayın anahtarı: konum hattı hiçbir şey yazmaz', () => {
     const publisher: PublisherDeps = { write, refreshTargets: jest.fn(async () => []) };
     const engine = { stopBackground: jest.fn(async () => undefined), startBackground: jest.fn(async () => undefined), canReconfigureNow: () => false };
     const pipeline = createSamplePipeline({
+    batteryShare: async () => true,
+    reportDeparture: async () => undefined,
       probeAuth: jest.fn(async (): Promise<AuthProbe> => ({ kind: 'signed_in', uid: ME })),
       publisherDeps: () => publisher,
       waitOnline: async () => true,

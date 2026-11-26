@@ -677,7 +677,7 @@ export const PUSH_TYPES_F7 = ['event_invite', 'event_stage', 'event_rsvp', 'even
  * (önem, ses, DND aşma) KURULDUKTAN SONRA DEĞİŞTİRİLEMEZ; özel alarm sesi için yeni kanal `sos_alarm` açılır ve eski
  * `sos` kanalı silinir (`LEGACY_NOTIFICATION_CHANNELS`).
  *  - `sosAlarm`: IMPORTANCE_MAX, `bypassDnd`, kilit ekranında herkese açık, özel ses `sos_alarm` (res/raw), uzun titreşim.
- *    iOS: `SOS_CRITICAL_ALERTS` açıksa `critical` + kritik ses `sos_alarm.caf`, kapalıysa `time-sensitive` + aynı ses.
+ *    iOS: `SOS_CRITICAL_ALERTS` açıksa `critical` + kritik ses `sos_alarm.wav`, kapalıysa `time-sensitive` + aynı ses.
  *  - `movement`: IMPORTANCE_HIGH (heads-up banner), bölge varış/ayrılış ve "yola çıktı". iOS `time-sensitive`.
  *  - `events`: IMPORTANCE_HIGH, davet / aşama / yanıt / iptal. iOS `active`.
  *  - `eventReminders`: IMPORTANCE_HIGH, 1 gün önce ve günün 08:00'i. iOS `time-sensitive`.

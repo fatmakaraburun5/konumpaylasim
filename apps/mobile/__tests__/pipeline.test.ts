@@ -35,6 +35,8 @@ function setup(over: Partial<PipelineDeps> = {}) {
   const probeAuth = jest.fn<Promise<AuthProbe>, []>().mockResolvedValue({ kind: 'signed_in', uid: 'me' });
   let clock = NOW;
   const pipeline = createSamplePipeline({
+    batteryShare: async () => true,
+    reportDeparture: async () => undefined,
     probeAuth,
     publisherDeps: () => publisher,
     waitOnline: async () => true,

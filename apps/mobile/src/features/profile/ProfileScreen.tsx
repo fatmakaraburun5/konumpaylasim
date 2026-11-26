@@ -322,6 +322,9 @@ export function ProfileScreen() {
         {/* --- Faz 8: Sözleşme ve KVKK --- */}
         <ConsentCard />
 
+        {/* --- Faz 7: İzin & Gizlilik Merkezi (izinler, pil paylaşımı, görünüm) --- */}
+        <Button title="İzin ve Gizlilik Merkezi" variant="secondary" onPress={() => router.push('/privacy')} testID="profile-privacy-center" />
+
         <Button title="Çıkış yap" variant="ghost" onPress={() => void signOut()} />
       </ScrollView>
     </View>

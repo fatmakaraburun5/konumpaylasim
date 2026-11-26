@@ -28,7 +28,15 @@ export type IconName =
   | 'user'
   // Faz 8
   | 'eye'
-  | 'eyeOff';
+  | 'eyeOff'
+  // Faz 7
+  | 'calendar'
+  | 'sun'
+  | 'moon'
+  | 'themeAuto'
+  | 'shield'
+  | 'bell'
+  | 'mapPin';
 
 export interface IconProps {
   name: IconName;
@@ -135,6 +143,43 @@ export function Icon({ name, size = 22, color, strokeWidth = 2 }: IconProps) {
         <>
           <Path d="M9.9 5.8A9.6 9.6 0 0112 5.5c6 0 9.5 6.5 9.5 6.5a17 17 0 01-2.6 3.4M6.4 7.1C3.9 8.8 2.5 12 2.5 12S6 18.5 12 18.5c1.7 0 3.2-.5 4.5-1.2" {...common} />
           <Path d="M9.9 9.9a3 3 0 004.2 4.2M3 3l18 18" {...common} />
+        </>
+      )}
+      {name === 'calendar' && (
+        <>
+          <Path d="M5 5h14a1 1 0 011 1v13a1 1 0 01-1 1H5a1 1 0 01-1-1V6a1 1 0 011-1z" {...common} />
+          <Path d="M4 10h16M8 3v4M16 3v4" {...common} />
+        </>
+      )}
+      {name === 'sun' && (
+        <>
+          <Circle cx={12} cy={12} r={4} {...common} />
+          <Path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4" {...common} />
+        </>
+      )}
+      {name === 'moon' && <Path d="M20 14.5A8 8 0 019.5 4a8 8 0 1010.5 10.5z" {...common} />}
+      {name === 'themeAuto' && (
+        <>
+          <Circle cx={12} cy={12} r={8.5} {...common} />
+          <Path d="M12 3.5a8.5 8.5 0 010 17z" fill={color} stroke="none" />
+        </>
+      )}
+      {name === 'shield' && (
+        <>
+          <Path d="M12 3l7.5 3v5.5c0 4.5-3.2 8.2-7.5 9.5-4.3-1.3-7.5-5-7.5-9.5V6z" {...common} />
+          <Path d="M8.8 12.2l2.2 2.2 4.2-4.4" {...common} />
+        </>
+      )}
+      {name === 'bell' && (
+        <>
+          <Path d="M6 16V11a6 6 0 0112 0v5l1.5 2h-15z" {...common} />
+          <Path d="M10 20.5a2 2 0 004 0" {...common} />
+        </>
+      )}
+      {name === 'mapPin' && (
+        <>
+          <Path d="M12 21s-6.5-6.2-6.5-11a6.5 6.5 0 0113 0c0 4.8-6.5 11-6.5 11z" {...common} />
+          <Circle cx={12} cy={10} r={2.3} {...common} />
         </>
       )}
       {name === 'battery' && (

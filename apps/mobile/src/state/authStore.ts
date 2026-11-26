@@ -48,7 +48,7 @@ export interface AuthState {
   retryBootstrap: () => Promise<void>;
   signOut: () => Promise<void>;
   /** Faz 8: callable yanıtını (görünmez / onay) dinleyici yetişmeden profile işler; sonraki anlık görüntü doğrudur. */
-  patchProfileLocal: (patch: Partial<Pick<UserProfile, 'invisible' | 'consent'>>) => void;
+  patchProfileLocal: (patch: Partial<Pick<UserProfile, 'invisible' | 'consent' | 'privacy'>>) => void;
 }
 
 export interface ProfilePatch {

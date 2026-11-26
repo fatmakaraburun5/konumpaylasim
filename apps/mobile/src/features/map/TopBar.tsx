@@ -15,9 +15,14 @@ export interface TopBarProps {
   onSignOut: () => void;
   /** Faz 8: görünmez mod → avatarda göz-kapalı rozeti. */
   invisible?: boolean;
+  /** Faz 7: Etkinlik Alanı (okunmamış bildirim sayısı rozeti). */
+  onEvents?: () => void;
+  unreadEvents?: number;
+  /** Faz 7: İzin & Gizlilik Merkezi. */
+  onPrivacy?: () => void;
 }
 
-export function TopBar({ profile, onFriends, onZones, onProfile, onSignOut, invisible = false }: TopBarProps) {
+export function TopBar({ profile, onFriends, onZones, onProfile, onSignOut, invisible = false, onEvents, unreadEvents = 0, onPrivacy }: TopBarProps) {
   const { colors, spacing, radius } = useTheme();
   const insets = useSafeAreaInsets();
   const code = profile?.invite_code ? formatInviteCode(profile.invite_code) : null;
@@ -32,6 +37,8 @@ export function TopBar({ profile, onFriends, onZones, onProfile, onSignOut, invi
       ...(onProfile ? [{ text: 'Profili düzenle', onPress: onProfile }] : []),
       { text: 'Arkadaşlar', onPress: onFriends },
       ...(onZones ? [{ text: 'Bölgelerim', onPress: onZones }] : []),
+      ...(onEvents ? [{ text: 'Etkinlikler', onPress: onEvents }] : []),
+      ...(onPrivacy ? [{ text: 'İzin ve Gizlilik', onPress: onPrivacy }] : []),
       { text: 'Çıkış yap', style: 'destructive', onPress: onSignOut },
       { text: 'Vazgeç', style: 'cancel' },
     ]);
@@ -79,6 +86,28 @@ export function TopBar({ profile, onFriends, onZones, onProfile, onSignOut, invi
             </Text>
           </Pressable>
         ) : null}
+        {onEvents ? (
+          <View>
+            <IconButton
+              icon="calendar"
+              accessibilityLabel={unreadEvents > 0 ? `Etkinlikler, ${unreadEvents} yeni bildirim` : 'Etkinlikler'}
+              onPress={onEvents}
+            />
+            {unreadEvents > 0 ? (
+              <View
+                testID="topbar-events-badge"
+                pointerEvents="none"
+                style={[styles.count, { backgroundColor: colors.danger, borderColor: colors.surface }]}
+                accessibilityElementsHidden
+                importantForAccessibility="no-hide-descendants"
+              >
+                <Text variant="caption" style={{ color: colors.onPrimary, fontSize: 10, lineHeight: 13 }} maxFontSizeMultiplier={1}>
+                  {unreadEvents > 9 ? '9+' : String(unreadEvents)}
+                </Text>
+              </View>
+            ) : null}
+          </View>
+        ) : null}
         <IconButton icon="users" accessibilityLabel="Arkadaşlar" onPress={onFriends} />
       </View>
     </View>
@@ -93,6 +122,7 @@ const styles = StyleSheet.create({
   // Dokunma hedefi en az 44 (tasarım kuralı); çubuk 56 yüksekliğinde, sığar.
   chip: { minHeight: MIN_TOUCH, justifyContent: 'center' },
   mono: { fontVariant: ['tabular-nums'], letterSpacing: 0.5 },
+  count: { position: 'absolute', right: 4, top: 4, minWidth: 16, height: 16, paddingHorizontal: 3, borderRadius: 8, borderWidth: 1.5, alignItems: 'center', justifyContent: 'center' },
   badge: { position: 'absolute', right: -4, bottom: -4, width: 16, height: 16, borderRadius: 8, borderWidth: 1.5, alignItems: 'center', justifyContent: 'center' },
 });
 

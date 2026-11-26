@@ -11,11 +11,13 @@
  */
 import {
   NOTIFICATION_CHANNELS_F4,
+  NOTIFICATION_CHANNELS_F7,
   PING_KINDS,
   pingPushText,
   PUSH_TYPES_F4,
   sosAckPushText,
   sosResolvedPushText,
+  SOS_ALARM_SOUND,
   SOS_MESSAGE,
   type PingKind,
 } from '@konum/core';
@@ -71,7 +73,12 @@ export interface F4LocalContent {
   /** iOS 15+: SOS zamana duyarlı (odak modunu deler); diğerleri etkin. */
   interruptionLevel: 'active' | 'timeSensitive';
   sound: boolean;
+  /** Faz 7: özel ses dosyası (iOS paket adı; Android'de kanal sesi geçerlidir). Yoksa varsayılan ses. */
+  soundName?: string;
 }
+
+/** expo-notifications `content.sound` değeri. */
+export const localSound = (c: Pick<F4LocalContent, 'sound' | 'soundName'>): string | false => (c.sound ? (c.soundName ?? 'default') : false);
 
 /**
  * Ön plan yerel bildirimi. Sunucunun başlığı/gövdesi varsa o (adres, pil vb. sunucu metni), yoksa core metinleri.
@@ -93,10 +100,12 @@ export function f4ForegroundContent(m: F4PushLike, opts: { includePing: boolean 
     case 'sos':
       return {
         ...pick({ title: 'ACİL DURUM', body: `${SOS_MESSAGE}. Konumu görmek için dokun.` }),
-        channelId: NOTIFICATION_CHANNELS_F4.sos,
+        // Faz 7: özel alarm sesli kanal (eski `sos` kanalı silinir; Android kanal sesi sonradan değişemez).
+        channelId: NOTIFICATION_CHANNELS_F7.sosAlarm,
         data,
         interruptionLevel: 'timeSensitive',
         sound: true,
+        soundName: SOS_ALARM_SOUND.ios,
       };
     case 'sos_resolved':
       return { ...pick(sosResolvedPushText('Arkadaşın')), channelId: NOTIFICATION_CHANNELS_F4.ping, data, interruptionLevel: 'active', sound: true };

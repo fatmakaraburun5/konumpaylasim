@@ -10,12 +10,20 @@ export const CHANNELS = {
   locationRequests: 'location_requests',
   /** Faz 3: düşük pil / "paylaşımın duraksadı" (backend FCM `channel_id: share_status`). */
   shareStatus: 'share_status',
-  /** Faz 4: acil durum (core `NOTIFICATION_CHANNELS_F4.sos`; backend FCM `channel_id: sos`). */
+  /** Faz 4: acil durum. Faz 7'de yerine `sosAlarm` geldi; yalnızca eski kanalı silmek için (core `LEGACY_NOTIFICATION_CHANNELS`). */
   sos: 'sos',
   /** Faz 4: "Buradayım / Yoldayım" (core `NOTIFICATION_CHANNELS_F4.ping`). */
   ping: 'ping',
   /** Faz 8: arkadaşlık ve izin istekleri / izin verildi (backend FCM `channel_id: friend_requests`). */
   friendRequests: 'friend_requests',
+  /**
+   * Faz 7 (core `NOTIFICATION_CHANNELS_F7`): SOS özel alarm sesli yeni kanal (Android kanal sesi kurulduktan sonra
+   * değişmez; eski `sos` silinir), bölge / "yola çıktı" heads-up, etkinlik ve etkinlik hatırlatmaları.
+   */
+  sosAlarm: 'sos_alarm',
+  movement: 'movement',
+  events: 'events',
+  eventReminders: 'event_reminders',
 } as const;
 
 export const expiryNotificationId = (sessionId: string) => `share-expiring-${sessionId}`;

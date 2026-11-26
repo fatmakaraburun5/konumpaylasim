@@ -211,6 +211,10 @@ export async function setNotificationChannelAsync(_id: string, _channel: unknown
   return null;
 }
 
+export async function deleteNotificationChannelAsync(_id: string): Promise<void> {
+  // web demo: kanal yok
+}
+
 export async function setNotificationCategoryAsync(
   identifier: string,
   actions: NotificationAction[],

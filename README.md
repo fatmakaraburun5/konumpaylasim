@@ -1,6 +1,6 @@
 # Konum
 
-Arkadaşlarla süreli canlı konum paylaşan iOS ve Android uygulaması. Bu depo Faz 1–6'nın çalıştırılabilir kodudur: ortak çekirdek paket, Expo (React Native) mobil uygulama, Firebase backend ve QR bağlantıları için salt okunur web haritası. Faz 3 haftalık ve süresiz paylaşımlar için arka plan takibini, harekete göre pil optimizasyonunu, çevrimdışı kuyruğu ve %15 düşük pil bildirimini ekler. Faz 4 harita üzerinden tek dokunuşla "Buradayım / Yoldayım" sinyalini, konum yanına kısa durum ve yer notlarını ve tam konumlu SOS'u (basılı tut + geri sayım, acil kişiler, yüksek öncelikli bildirim, alıcıda tam ekran acil kartı) ekler. Faz 5 kayıtlı bölgeler (Ev, İş, özel nokta) için varış / ayrılış tetikleyicilerini ("Eve vardığımda bildir", "İşten çıkınca paylaşımı başlat"; GPS sapması filtresiyle) ve harita üzerinde iki ya da daha çok kişi için adil erişim süreli "Buluşma noktası" önerisini ekler. Faz 6 ana ekran ve kilit ekranı widget'larını (iOS WidgetKit, Android AppWidget + Hızlı Ayar kutucuğu; favorilerin son durumu, pili, fotoğrafı ve aktif paylaşım), favoriye tek dokunuşla 1 saatlik paylaşımı (geri sayım ve bildirimle), kamera / galeriden profil fotoğrafını ve kayıtta zorunlu cinsiyete göre pembe / mavi fotoğraf çerçevesini (liste, widget, harita pini; fotoğraf yoksa baş harfler) ekler.
+Arkadaşlarla süreli canlı konum paylaşan iOS ve Android uygulaması. Bu depo Faz 1–8'in çalıştırılabilir kodudur: ortak çekirdek paket, Expo (React Native) mobil uygulama, Firebase backend ve QR bağlantıları için salt okunur web haritası. Faz 3 haftalık ve süresiz paylaşımlar için arka plan takibini, harekete göre pil optimizasyonunu, çevrimdışı kuyruğu ve %15 düşük pil bildirimini ekler. Faz 4 harita üzerinden tek dokunuşla "Buradayım / Yoldayım" sinyalini, konum yanına kısa durum ve yer notlarını ve tam konumlu SOS'u (basılı tut + geri sayım, acil kişiler, yüksek öncelikli bildirim, alıcıda tam ekran acil kartı) ekler. Faz 5 kayıtlı bölgeler (Ev, İş, özel nokta) için varış / ayrılış tetikleyicilerini ("Eve vardığımda bildir", "İşten çıkınca paylaşımı başlat"; GPS sapması filtresiyle) ve harita üzerinde iki ya da daha çok kişi için adil erişim süreli "Buluşma noktası" önerisini ekler. Faz 6 ana ekran ve kilit ekranı widget'larını (iOS WidgetKit, Android AppWidget + Hızlı Ayar kutucuğu; favorilerin son durumu, pili, fotoğrafı ve aktif paylaşım), favoriye tek dokunuşla 1 saatlik paylaşımı (geri sayım ve bildirimle), kamera / galeriden profil fotoğrafını ve kayıtta zorunlu cinsiyete göre pembe / mavi fotoğraf çerçevesini (liste, widget, harita pini; fotoğraf yoksa baş harfler) ekler. Faz 7 arkadaşlarla 3 aşamalı etkinlik oylamasını (tarih ve katılım ön onayı, 3 mekan arasından oylama, saat oylaması ve son onay; "Katılamayacağım" notu; 1 gün önce ve sabah 08:00 hatırlatma), özel sesli SOS alarmını, "eve girdi / yola çıktı" üst bildirimlerini, ilk açılış izin akışını ve İzin & Gizlilik Merkezi'ni, varsayılan kapalı pil paylaşımını ve haritada Açık / Koyu / Sistem görünümünü ekler. Faz 8 yönlü kişi izinlerini, görünmez modu ve Güvenlik Sözleşmesi / KVKK onayını ekler.
 
 ## Yapı
 
@@ -31,6 +31,9 @@ konum/
     PHASE6.md        Faz 6: widget mimarisi (iOS WidgetKit, Android AppWidget), boyut/veri sınırları ve yenileme
                      bütçesi, tek dokunuşla 1 saat akışı ve hata/izin düşüşleri, widget token güvenliği, cinsiyet
                      alanı, kamera/galeri → kırpma → sıkıştırma → önbellek, cinsiyet renkli çerçeve ve harita pini
+    PHASE7.md        Faz 7: etkinlik veri modeli ve durum makinesi, hatırlatmalar, iOS/Android bildirim kanalları ve
+                     SOS alarmı, ilk açılış izin akışı ve İzin & Gizlilik Merkezi, pil paylaşımı onayı, harita teması
+    PHASE8.md        Faz 8: yönlü kişi izinleri, görünmez mod, Güvenlik Sözleşmesi / KVKK onay kapısı
     RELEASE_CHECKLIST.md  Altı faz için mağaza yayını kontrol listesi (imzalama, izin metinleri, arka plan konumu
                      gerekçesi, bildirimler, widget'lar, App Check, gizlilik etiketleri, hesap silme, cihaz kabulü)
     ARCHITECTURE.md  Bileşenler, konum ve bağlantı akışı, gizlilik modeli, yollar
@@ -59,7 +62,10 @@ gerekçe panelde), "Ayşe eve vardı" ve "Ayşe buluşma noktası önersin"; ken
 "Galeri" ile fotoğraf yüklenir, arkadaşlarda yıldızla favori eklenir (en çok 4); paneldeki "FAZ 6 · WIDGET'LAR" iOS ana
 ekran, kilit ekranı ve Android widget'larını gösterir, "1 sa paylaş" geri sayımı ve bildirimi başlatır; "Widget oturumu
 sunucuda dolsun", "'Her Zaman' konum izni kapansın", "Bağlantı kesilsin" ve "Hız sınırı dolsun" düşüşleri dener. `npm run web:export`
-tek dosyalık statik sürümü `apps/mobile/dist-web/` altına üretir. Ayrıntı: `apps/mobile/README.md`.
+tek dosyalık statik sürümü `apps/mobile/dist-web/` altına üretir. Faz 7 için sağ üstteki takvimden etkinlik oluştur
+(Ayşe, Mehmet ve Zeynep birkaç saniyede yanıt verip mekan önerir ve oy verir; Can "Katılamayacağım" notu bırakır), panelde
+"Ayşe etkinliğe davet etsin", "Hatırlatmayı şimdi gönder" ve "Mehmet yola çıksın"; harita görünümünü haritadaki
+güneş / ay düğmesinden ya da hesap menüsü > İzin ve Gizlilik'ten değiştir. Ayrıntı: `apps/mobile/README.md`.
 
 ## Testleri çalıştırma
 

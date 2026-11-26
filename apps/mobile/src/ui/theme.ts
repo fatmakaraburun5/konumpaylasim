@@ -1,19 +1,37 @@
+import { resolveColorScheme, type ColorScheme } from '@konum/core';
 import { useColorScheme } from 'react-native';
+import { useThemePref } from './themePref';
 import { darkTheme, lightTheme, type Theme } from './tokens';
 
-/** Açık/koyu tema cihaz ayarından (useColorScheme) seçilir. */
-export function useTheme(): Theme {
-  return useColorScheme() === 'dark' ? darkTheme : lightTheme;
-}
+export { hydrateThemePref, setThemePref, themePrefStore, useThemePref } from './themePref';
 
 /**
- * Google Haritalar özel stili (customMapStyle): belirteçlerdeki harita renkleri.
+ * Etkin tema: Faz 7 görünüm tercihi (Açık / Koyu / Sistem). `system` cihaz ayarını (useColorScheme) izler; cihaz
+ * ayarı ya da tercih değişince aynı karede yeniden çizilir.
+ */
+export function useTheme(): Theme {
+  const system = useColorScheme();
+  const pref = useThemePref();
+  return resolveColorScheme(pref, system === 'dark' ? 'dark' : system === 'light' ? 'light' : null) === 'dark' ? darkTheme : lightTheme;
+}
+
+export const themeFor = (scheme: ColorScheme): Theme => (scheme === 'dark' ? darkTheme : lightTheme);
+
+/**
+ * Google Haritalar özel stili (customMapStyle JSON): belirteçlerdeki harita renkleri.
  * Açık ve koyu tema için TAM stil: zemin, insan yapımı alan, park, su, yollar (otoyol dahil), toplu taşıma
  * çizgileri, idari sınırlar ve tüm etiket renkleri belirteçlerden gelir; koyu temada hiçbir öğe varsayılan
- * (açık) renkte kalmaz. `useColorScheme` değişince MapCanvas stili canlı olarak değiştirir.
+ * (açık) renkte kalmaz. Faz 7: iki stil modül yüklenirken BİR KEZ üretilir (`MAP_STYLES`); tema değişince harita
+ * yalnızca dizi referansını değiştirir → native SDK stili yeniden yüklemeden, anında uygular.
  * Yer imleri (POI) ve toplu taşıma simgeleri gizlidir: haritada yalnızca kişiler öne çıksın.
  */
-export function mapStyleFor(theme: Theme) {
+export type MapStyle = ReturnType<typeof buildMapStyle>;
+
+export function mapStyleFor(theme: Pick<Theme, 'scheme'>): MapStyle {
+  return MAP_STYLES[theme.scheme];
+}
+
+function buildMapStyle(theme: Theme) {
   const c = theme.colors;
   return [
     { elementType: 'geometry', stylers: [{ color: c.mapLand }] },
@@ -44,3 +62,9 @@ export function mapStyleFor(theme: Theme) {
     { featureType: 'water', elementType: 'labels.text.stroke', stylers: [{ color: c.mapWater }] },
   ];
 }
+
+/** Açık ve koyu harita stilleri (sabit diziler: referans eşitliği → gereksiz yeniden uygulama yok). */
+export const MAP_STYLES: Readonly<Record<ColorScheme, ReturnType<typeof buildMapStyle>>> = Object.freeze({
+  light: buildMapStyle(lightTheme),
+  dark: buildMapStyle(darkTheme),
+});

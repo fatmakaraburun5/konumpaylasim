@@ -22,6 +22,7 @@ import {
   type ShareEndReason,
   type ShareMode,
   type UserProfile,
+  parsePrivacy,
 } from '@konum/core';
 import { z } from 'zod';
 
@@ -144,6 +145,8 @@ export const UserProfileSchema: z.ZodType<UserProfile> = z.object({
   // --- Faz 8 (eski belgede yoksa null: görünür, onay kapısı açılır) ---
   invisible: InvisibleStateSchema.nullable().default(null).catch(null),
   consent: ProfileConsentSchema.nullable().default(null).catch(null),
+  // --- Faz 7 (eski belgede yoksa varsayılan: pil paylaşımı kapalı, hareket bildirimi açık) ---
+  privacy: z.unknown().transform((v) => parsePrivacy(v)),
 });
 
 const PublicProfileSchema = z.object({

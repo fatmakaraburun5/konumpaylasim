@@ -41,6 +41,7 @@ import {
 } from '../controls';
 import { isF4PushType } from '../../services/notifications/f4Push';
 import { isF5PushType } from '../../services/notifications/f5Push';
+import { isF7PushType } from '../../services/notifications/f7Push';
 import { safeStorage } from '../server/storage';
 import { demoBatteryPct, demoEngineState, demoMotionMode, type DemoEngineState, type DemoMotionMode } from '../web/device';
 import { demoOnline, demoTunnelLeftMs } from '../web/network';
@@ -646,7 +647,9 @@ const isF6Push = (n: DemoNotification) => n.data?.type === 'quick_share_started'
 /** Dokunulunca uygulamadaki gerçek yanıt yoluna giren push'lar (Faz 4 + Faz 5 + Faz 6). */
 /** Konum İste: gelen istek (Onayla / Reddet eylemli) ve yanıt bildirimi. */
 const isLocationRequestPush = (n: DemoNotification) => n.data?.type === 'location_request' || n.data?.type === 'location_request_answered';
-const isRoutedPush = (n: DemoNotification) => isF4Push(n) || isF5Push(n) || isF6Push(n) || isLocationRequestPush(n);
+/** Faz 7: etkinlik daveti / aşama / yanıt / hatırlatma / iptal ve "yola çıktı" (heads-up). */
+const isF7Push = (n: DemoNotification) => isF7PushType(n.data?.type);
+const isRoutedPush = (n: DemoNotification) => isF4Push(n) || isF5Push(n) || isF6Push(n) || isF7Push(n) || isLocationRequestPush(n);
 const isBatteryPush = (n: DemoNotification) => n.data?.type === 'battery_low' || isRoutedPush(n);
 
 /** Bildirime dokunma: Faz 4/5 push'u uygulamadaki gerçek yanıt yoluna girer (SOS kartı / ping vurgusu / buluşma kartı). */

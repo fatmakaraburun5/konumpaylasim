@@ -13,6 +13,8 @@
  *    aynı afiş ve kilit ekranında (SOS kırmızı) görünür, dokununca uygulamada ilgili ekran açılır.
  *  - Faz 6 (Faz6.web.tsx): "FAZ 6 · WIDGET'LAR" — core snapshot'ıyla çizilen iOS / kilit ekranı / Android widget
  *    galerisi, tek tuşla 1 saatlik paylaşım (oturumsuz `widget_quick_share`) ve hata / izin düşüşü senaryoları.
+ *  - Faz 7 (Faz7.web.tsx): "FAZ 7 SENARYOLARI" (Ayşe etkinliğe davet etsin, hatırlatmayı şimdi gönder, Mehmet yola
+ *    çıksın) ve gizlilik tercihleri.
  */
 // Ekran kilidi simülasyonu `document.visibilityState`'i bu modül yüklenirken bağlar (AppState'ten önce olmalı).
 import '../web/screen';
@@ -48,6 +50,7 @@ import {
 import { Faz4Section } from './Faz4.web';
 import { Faz5Section } from './Faz5.web';
 import { Faz6Section } from './Faz6.web';
+import { Faz7Section } from './Faz7.web';
 import { Faz8Section } from './Faz8.web';
 
 const WIDE_MIN = 900;
@@ -387,6 +390,7 @@ function DemoPanel({ showNotice, onNavigate, padding, footer }: { showNotice: bo
       <Faz4Section snap={snap} renderRow={renderRow} />
       <Faz5Section snap={snap} renderRow={renderRow} />
       <Faz6Section snap={snap} renderRow={renderRow} onNavigate={onNavigate} />
+      <Faz7Section snap={snap} renderRow={renderRow} />
       <Faz8Section snap={snap} renderRow={renderRow} />
       <PermissionsSection renderRow={renderRow} />
 

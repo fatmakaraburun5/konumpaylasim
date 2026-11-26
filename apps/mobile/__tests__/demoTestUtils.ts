@@ -24,3 +24,8 @@ export async function acceptConsent(s: DemoServer, uid: UserId = DEMO_ME): Promi
 export async function grant(s: DemoServer, granter: UserId, grantee: UserId, ...scopes: RequestableScope[]): Promise<void> {
   for (const scope of scopes) await s.call('permission_set', { op_id: uuidV4(), grantee_id: grantee, scope, granted: true }, granter);
 }
+
+/** Faz 7: pil paylaşımı varsayılan KAPALI; pil alanı yazan / düşük pil bildiren testler önce açar. */
+export async function shareBattery(s: DemoServer, uid: UserId = DEMO_ME, on = true): Promise<void> {
+  await s.call('privacy_settings_set', { op_id: uuidV4(), battery_share: on }, uid);
+}

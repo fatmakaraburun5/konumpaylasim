@@ -5,6 +5,7 @@
  *  - Simüle bağlantı yokken push gelmez; bağlantı gelince bekleyenler iletilir.
  *  - `resume_tracking` / arka plan mesaj işleyicisi demoda yok (gönderen bekçisi demo sunucusunda çalışmaz).
  * Koordinat taşımaz (core `PushData`).
+ * Faz 7: etkinlik bildirimleri / "yola çıktı" bildirim kartı; dokunuş → f7Services.
  * Faz 8: izin isteği / izin verildi bildirim kartı; dokunuş (`respondToDemoNotification`) → f8Services → Arkadaşlar.
  */
 import { lowBatteryPushText, type PushData, type UserId } from '@konum/core';
@@ -16,6 +17,7 @@ import * as Notifications from './expoNotifications';
 import { f4ForegroundContent } from './f4Push';
 import { f5ForegroundContent, isF5PushType, routeF5Received } from './f5Push';
 import { f6ForegroundContent, isF6PushType, routeF6Received } from './f6Push';
+import { f7ForegroundContent, isF7PushType, routeF7Received } from './f7Push';
 import { f8ForegroundContent, isF8PushType, routeF8Received } from './f8Push';
 import { friendsStore, selectFriends } from '../../state/friendsStore';
 import { locationRequestLocalContent } from './locationRequestPush';
@@ -80,6 +82,17 @@ async function handleForegroundMessage(m: PushLike): Promise<void> {
     await Notifications.scheduleNotificationAsync({
       content: { title: lr.title, body: lr.body, data: lr.data, interruptionLevel: 'active', ...(lr.categoryIdentifier ? { categoryIdentifier: lr.categoryIdentifier } : {}) },
       trigger: { channelId: lr.channelId },
+    });
+    return;
+  }
+  // Faz 7: etkinlik ve "yola çıktı" bildirim kartı (dokunuş → f7Services → etkinlik ekranı / harita).
+  if (isF7PushType(m.data?.type)) {
+    routeF7Received(m.data);
+    const f7 = f7ForegroundContent(m, (id) => selectFriends(friendsStore.getState()).find((f) => f.uid === id)?.displayName || null);
+    if (!f7) return;
+    await Notifications.scheduleNotificationAsync({
+      content: { title: f7.title, body: f7.body, data: f7.data, interruptionLevel: f7.interruptionLevel },
+      trigger: { channelId: f7.channelId },
     });
     return;
   }

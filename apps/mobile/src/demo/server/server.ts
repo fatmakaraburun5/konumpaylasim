@@ -87,6 +87,18 @@
  *    kimseye iznim yok; acil kişi listeleri `sos_alert`; benim onayım YOK (kapı görünür). Botlar bana yalnızca
  *    `location_view` izni varken paylaşır; isteğime 6 sn sonra yanıt verir (Can izin verir ve 1 saat paylaşır).
  *
+ * Faz 7 (backend `handlers/events.ts`, `handlers/privacy.ts` ile aynı anlam; docs/PHASE7.md):
+ *  - `event_create … event_cancel`: core `createEventDoc` / `reduceEvent` (saf durum makinesi). Davet yalnızca bana
+ *    `meetup_invite` vermiş arkadaşlara (`canInvite`); diğerleri sessizce düşer, SAYISI döner. Etkiler → bildirim kutusu
+ *    (`users/{uid}/notices`, 30 gün) + push; hatırlatıcılar `event_reminders` (1 gün önce, gün sabahı 08:00).
+ *  - Süpürücü: oylama süresi / gün sonu / tamamlanma `tick`'i, zamanı gelen hatırlatmalar (2 sa'ten geç kalan `stale`).
+ *  - Botlar üye olduğu etkinlikte birkaç saniye sonra yanıt verir (Can "Katılamayacağım" + not), mekan önerir, oy verir,
+ *    son onayı verir; bot sahibi mekan oylamasını açar ve eşitlikte kazananı seçer.
+ *  - `privacy_settings_set`: `users/{uid}.privacy` (+ RTDB aynası anlamı): pil paylaşımı KAPALIYKEN canlı paketlerde
+ *    `battery_pct` / `is_charging` reddedilir ve `battery_low_notify` `suppressed` döner. Botlar pil paylaşır.
+ *  - `movement_report`: etkin paylaşımlarımın alıcılarına (tercihi açık olanlara) "yola çıktı"; 30 dk soğuma.
+ *  - Tohum (`withPhase7`): Ayşe / Mehmet / Zeynep bana `meetup_invite` vermiş (etkinliğe davet edilebilirler), Can vermemiş.
+ *
  * Durum tarayıcıda `localStorage`'a yazılır (erişilemezse yalnızca bellekte kalır). Sunucu saati = cihaz saati.
  */
 import {
@@ -340,6 +352,57 @@ import {
   type LocationRequestSendResponse,
   type LocationRequestStatus,
 } from '@konum/core';
+import {
+  addDaysToDate,
+  createEventDoc,
+  EVENT_LIMITS,
+  EVENT_REMINDER_KINDS,
+  EVENT_REMINDER_MAX_LATENESS_MS,
+  EventAdvanceRequestSchema,
+  EventCancelRequestSchema,
+  eventCancelledPushText,
+  EventCreateRequestSchema,
+  EventInviteAddRequestSchema,
+  eventInvitePushText,
+  eventNextActionAt,
+  eventReminderId,
+  eventReminderPlan,
+  eventReminderPushText,
+  eventReminderRecipients,
+  EventRsvpRequestSchema,
+  eventRsvpPushText,
+  eventStagePushText,
+  eventTally,
+  EventTimeOptionsSetRequestSchema,
+  EventUpdateRequestSchema,
+  EventVenueProposeRequestSchema,
+  EventVenueRemoveRequestSchema,
+  EventVoteRequestSchema,
+  isActiveEventStage,
+  localDateOf,
+  localDateTimeToEpoch,
+  MOVEMENT_LIMITS,
+  movementPushText,
+  MovementReportRequestSchema,
+  NOTICE_LIST_LIMIT,
+  NOTICE_RETENTION_MS,
+  parsePrivacy,
+  PrivacySettingsSetRequestSchema,
+  reduceEvent,
+  type EventAction,
+  type EventCtx,
+  type EventDoc,
+  type EventEffect,
+  type EventNotice,
+  type EventNoticeType,
+  type EventReminderKind,
+  type EventResponse,
+  type EventResult,
+  type EventVenueInput,
+  type MovementReportResponse,
+  type PrivacySettings,
+  type PrivacySettingsResponse,
+} from '@konum/core';
 import { z } from 'zod';
 import { botAvatarUrls, DEMO_STORAGE_BUCKET, DEMO_STORAGE_HOST, DemoAvatarStore, DemoStorageError, uriToDataUrl } from './avatars';
 import { fakeComputeRoutes, fakeReverseGeocode } from './fakeGoogle';
@@ -387,6 +450,9 @@ interface UserRec {
   consent: ProfileConsent | null;
   /** Görünmez moddan son çıkış anı (backend `users.visible_since`; bu andan önceki bölge olayı düşer). */
   visible_since?: EpochMs | null;
+  // --- Faz 7 (eski kayıtlarda yok: `withPhase7` tamamlar) ---
+  /** `users/{uid}.privacy` (+ RTDB aynası `privacy/{uid}`); `null` = hiç ayarlanmadı (varsayılan: pil KAPALI). */
+  privacy?: PrivacySettings | null;
 }
 
 /** Firestore `widget_tokens/{sha256(token)}` (istemciye tamamen kapalı; düz token SAKLANMAZ). */
@@ -642,6 +708,34 @@ interface Db {
   loc_req_day: Record<string, number>;
   /** Demo: bot hedefin isteğime otomatik yanıt anı (istek kimliği → an). */
   loc_req_auto: Record<string, EpochMs>;
+  // --- Faz 7 (eski kayıtlarda yok: `withPhase7` tamamlar) ---
+  phase7: boolean;
+  /** Firestore `events/{event_id}`. */
+  events: Record<string, EventDoc>;
+  /** `event_reminders/{event_id}_{kind}` (istemciye kapalı). */
+  event_reminders: Record<string, EventReminderRec>;
+  /** `users/{uid}/notices` (en yeni önde, 30 gün). */
+  notices: Record<UserId, EventNotice[]>;
+  /** Saatlik / günlük etkinlik sayaçları `{uid}_{tür}_{pencere}`. */
+  event_rate: Record<string, number>;
+  /** Demo: bot üyenin bir sonraki etkinlik adımı (`{event_id}|{uid}` → an). */
+  event_auto: Record<string, EpochMs>;
+  /** `movement_cooldowns/{uid}` → son "yola çıktı" bildirimi anı. */
+  movement_cooldown: Record<UserId, EpochMs>;
+  /** Demo paneli: en son "yola çıktı" raporum. */
+  movement_last: { at: EpochMs; status: MovementReportResponse['status']; notified: number } | null;
+}
+
+/** Backend `EventReminderDoc` (TTL alanı yok). */
+interface EventReminderRec {
+  event_id: string;
+  kind: EventReminderKind;
+  due_at: EpochMs;
+  /** Planlandığı andaki başlangıç: değiştiyse hatırlatma geçersiz. */
+  starts_at: EpochMs;
+  sent: boolean;
+  sent_at: EpochMs | null;
+  outcome: 'sent' | 'stale' | null;
 }
 
 interface LocReqRec {
@@ -809,17 +903,45 @@ function withPhase8(db: Db): Db {
   return db;
 }
 
+/**
+ * Faz 8 kaydına Faz 7 alanlarını ekler (demo verisi silinmeden; DB_VERSION değişmez). Botlar pil paylaşır (demo onayı),
+ * benim tercihim boş (varsayılan: pil KAPALI, "yola çıktı" AÇIK; ilk açılış akışı sorar). Tohum: Ayşe / Mehmet / Zeynep
+ * bana `meetup_invite` vermiş (etkinliğe davet edilebilirler), Can vermemiş (seçicide "izin iste").
+ */
+function withPhase7(db: Db): Db {
+  db.events ??= {};
+  db.event_reminders ??= {};
+  db.notices ??= {};
+  db.event_rate ??= {};
+  db.event_auto ??= {};
+  db.movement_cooldown ??= {};
+  db.movement_last ??= null;
+  for (const u of Object.values(db.users)) {
+    if (u.privacy !== undefined) continue;
+    u.privacy = u.uid === DEMO_ME ? null : { battery_share: true, movement_alerts: true, updated_at: u.created_at };
+  }
+  if (!db.phase7) {
+    db.phase7 = true;
+    const now = Date.now();
+    for (const id of [PEOPLE.ayse.uid, PEOPLE.mehmet.uid, PEOPLE.zeynep.uid]) {
+      if (db.friendships[friendshipId(id, DEMO_ME)]?.status === 'accepted') seedGrant(db, id, DEMO_ME, 'meetup_invite', 'migration', now);
+    }
+  }
+  return db;
+}
+
 // --- hata modeli -----------------------------------------------------------------------------
 
 /** Firebase `HttpsError` benzeri: istemci `details.code` → core ERROR_CODES eşlemesini kullanır. */
 export class DemoHttpsError extends Error {
   readonly code: string;
-  readonly details: { code: ErrorCode };
-  constructor(code: ErrorCode, message?: string) {
+  /** Backend `ErrorDetails` gibi: `code` + ekler (ör. `event_vote_tie` → `leaders`). */
+  readonly details: { code: ErrorCode; [extra: string]: unknown };
+  constructor(code: ErrorCode, message?: string, extra: Record<string, unknown> = {}) {
     super(message ?? code);
     this.name = 'DemoHttpsError';
     this.code = `functions/${TRANSPORT[code]}`;
-    this.details = { code };
+    this.details = { ...extra, code };
   }
 }
 
@@ -859,6 +981,19 @@ const TRANSPORT: Record<ErrorCode, string> = {
   invisible_mode: 'failed-precondition',
   consent_required: 'failed-precondition',
   permission_cooldown: 'resource-exhausted',
+  // Faz 7
+  event_not_found: 'not-found',
+  event_not_owner: 'permission-denied',
+  event_stage_mismatch: 'failed-precondition',
+  event_not_eligible: 'failed-precondition',
+  event_options_invalid: 'invalid-argument',
+  event_vote_tie: 'failed-precondition',
+  event_no_attendees: 'failed-precondition',
+  event_date_invalid: 'invalid-argument',
+  event_note_too_long: 'invalid-argument',
+  event_invitee_limit: 'resource-exhausted',
+  event_started: 'failed-precondition',
+  event_limit_reached: 'resource-exhausted',
 };
 
 /** RTDB kural reddi (RNFB `database/permission-denied` ile aynı biçim). */
@@ -870,8 +1005,8 @@ export class DemoPermissionDenied extends Error {
   }
 }
 
-const fail = (code: ErrorCode, message?: string): never => {
-  throw new DemoHttpsError(code, message);
+const fail = (code: ErrorCode, message?: string, extra?: Record<string, unknown>): never => {
+  throw new DemoHttpsError(code, message, extra);
 };
 
 // --- yardımcılar -----------------------------------------------------------------------------
@@ -898,6 +1033,33 @@ const randomBetween = (lo: number, hi: number) => lo + Math.random() * (hi - lo)
 const otherMember = (f: Friendship, uid: UserId): UserId => (f.member_ids[0] === uid ? f.member_ids[1] : f.member_ids[0]);
 
 const DEFAULT_TZ = 'Europe/Istanbul';
+
+// --- Faz 7 demo verisi -------------------------------------------------------------------------
+
+/** Botların etkinliğe önerdiği mekan (davetli başına bir öneri). */
+const BOT_EVENT_VENUES: Record<string, EventVenueInput> = {
+  ayse: { name: 'Moda Sahili Çay Bahçesi', address: 'Caferağa, Moda Cd., Kadıköy', location: { lat: 40.9819, lng: 29.0254 }, place_id: null },
+  mehmet: { name: 'Kadıköy Çarşı Kahvecisi', address: 'Osmanağa, Güneşli Bahçe Sk., Kadıköy', location: { lat: 40.9905, lng: 29.0275 }, place_id: null },
+  zeynep: { name: 'Yeldeğirmeni Kitap Kafe', address: 'Rasimpaşa, Karakolhane Cd., Kadıköy', location: { lat: 40.9958, lng: 29.0305 }, place_id: null },
+};
+/** "Ayşe etkinliğe davet etsin": Ayşe'nin hazır 3 mekanı. */
+const AYSE_EVENT_VENUES: EventVenueInput[] = [
+  { name: 'Moda Sahili Çay Bahçesi', address: 'Caferağa, Moda Cd., Kadıköy', location: { lat: 40.9819, lng: 29.0254 }, place_id: null },
+  { name: 'Yeldeğirmeni Kitap Kafe', address: 'Rasimpaşa, Karakolhane Cd., Kadıköy', location: { lat: 40.9958, lng: 29.0305 }, place_id: null },
+  { name: 'Kadıköy Çarşı Kahvecisi', address: 'Osmanağa, Güneşli Bahçe Sk., Kadıköy', location: { lat: 40.9905, lng: 29.0275 }, place_id: null },
+];
+/** Can her davete "Katılamayacağım" der (300 karakterlik not örneği). */
+const CAN_EVENT_NOTE = 'Bu hafta sonu ailemin yanındayım, kusura bakmayın. Fotoğrafları gruba atarsanız çok sevinirim, bir dahakini ben ayarlıyorum!';
+/** Bot sahibin "saat ekle" adayları (yerel dakika). */
+const BOT_TIME_CANDIDATES = [10 * 60, 12 * 60 + 30, 15 * 60, 18 * 60 + 30, 20 * 60, 21 * 60 + 30];
+
+/** Etkinlik etkisinden doğan tek gönderim (bildirim kutusu + push). */
+interface EventOutgoing {
+  to: UserId[];
+  type: EventNoticeType;
+  text: { title: string; body: string };
+  data: Record<string, string> & { event_id: string };
+}
 /** Backend `LIMITS.linkCreatePerHour` ile aynı. [Varsayım] */
 const LINK_CREATE_PER_HOUR = 20;
 /** Faz 6: backend `WIDGET_TOKEN_LIMITS` ile aynı (günlük üretim, aynı anda aktif cihaz). [Varsayım] */
@@ -1007,6 +1169,15 @@ export interface DemoSnapshot {
     mehmetGrantsPing: boolean;
     consent: { version: string; current: boolean } | null;
   };
+  /** Faz 7: etkinlik sayıları, gizlilik tercihlerim ve son "yola çıktı" raporum. */
+  f7: {
+    activeEvents: number;
+    pendingReminders: number;
+    nextReminderAt: EpochMs | null;
+    privacy: PrivacySettings;
+    lastMovement: { at: EpochMs; status: MovementReportResponse['status']; notified: number } | null;
+    movementCooldownLeftMs: number;
+  };
 }
 
 /** Faz 6: widget önizlemesinin ham kaynağı (`widgetSource`). Avatar adresi yerel (gösterilebilir) adrestir. */
@@ -1061,7 +1232,7 @@ export class DemoServer {
       if (!db || db.v !== DB_VERSION || !db.users || !db.users[DEMO_ME]) return null;
       const cutoff = Date.now() - DAY;
       for (const [k, op] of Object.entries(db.ops)) if (op.at < cutoff) delete db.ops[k];
-      return withPhase8(withPhase6(withPhase5(withPhase4(withPhase3(withPhase2(db))))));
+      return withPhase7(withPhase8(withPhase6(withPhase5(withPhase4(withPhase3(withPhase2(db)))))));
     } catch {
       return null;
     }
@@ -1169,6 +1340,14 @@ export class DemoServer {
       loc_requests: {},
       loc_req_day: {},
       loc_req_auto: {},
+      phase7: false,
+      events: {},
+      event_reminders: {},
+      notices: {},
+      event_rate: {},
+      event_auto: {},
+      movement_cooldown: {},
+      movement_last: null,
     };
     this.db = db;
     withPhase4(db);
@@ -1194,6 +1373,8 @@ export class DemoServer {
     db.bots[PEOPLE.can.uid] = { uid: PEOPLE.can.uid, kind: 'idle', battery: 88, charging: true, walk_origin: now, next_at: Number.MAX_SAFE_INTEGER, spot: EXTRA_SPOTS[0] as LatLng };
     // Faz 8: Ayşe / Mehmet / Zeynep bana konum izni vermiş, Can vermemiş; benim kimseye iznim yok, onayım yok.
     withPhase8(db);
+    // Faz 7: botlar pil paylaşır, Ayşe / Mehmet / Zeynep bana etkinlik daveti izni vermiş.
+    withPhase7(db);
     this.seedBotShares(now);
     return db;
   }
@@ -1699,10 +1880,12 @@ export class DemoServer {
     if (this.sweepPhase5(now)) changed = true;
     if (this.sweepPhase8(now)) changed = true;
     if (this.sweepLocationRequests(now)) changed = true;
+    if (this.sweepPhase7(now)) changed = true;
     if (now - this.lastPrune > MINUTE) {
       this.lastPrune = now;
       if (this.prunePhase2(now)) changed = true;
       if (this.prunePhase6(now)) changed = true;
+      if (this.prunePhase7(now)) changed = true;
     }
     if (changed) this.commit();
   }
@@ -1866,6 +2049,8 @@ export class DemoServer {
     const acc = num('accuracy');
     if (acc < 0 || acc > 1000) deny('accuracy');
     if ('battery_pct' in v) {
+      // Faz 7 kuralı: `privacy/{auth.uid}/battery_share === true` değilse pil alanı yazılamaz.
+      if (!this.batteryShareOf(auth)) deny('pil paylaşımı kapalı');
       const b = num('battery_pct');
       if (!Number.isInteger(b) || b < 0 || b > 100) deny('battery_pct');
     }
@@ -1913,6 +2098,8 @@ export class DemoServer {
       if (sp < 0 || sp > 120) deny('speed_mps');
     }
     if ('battery_pct' in v) {
+      // Faz 7 kuralı: `privacy/{auth.uid}/battery_share === true` değilse pil alanı yazılamaz.
+      if (!this.batteryShareOf(auth)) deny('pil paylaşımı kapalı');
       const b = num('battery_pct');
       if (!Number.isInteger(b) || b < 0 || b > 100) deny('battery_pct');
     }
@@ -1971,10 +2158,12 @@ export class DemoServer {
       if (h < 0 || h >= 360) deny('heading');
     }
     if ('battery_pct' in v) {
+      // Faz 7 kuralı: `privacy/{auth.uid}/battery_share === true` değilse pil alanı yazılamaz.
+      if (!this.batteryShareOf(auth)) deny('pil paylaşımı kapalı');
       const b = num('battery_pct');
       if (!Number.isInteger(b) || b < 0 || b > 100) deny('battery_pct');
     }
-    if ('is_charging' in v && typeof v.is_charging !== 'boolean') deny('is_charging');
+    if ('is_charging' in v && (!this.batteryShareOf(auth) || typeof v.is_charging !== 'boolean')) deny('is_charging');
     if (!['still', 'walking', 'running', 'cycling', 'automotive', 'unknown'].includes(v.activity_state as string)) deny('activity_state');
     this.validateF3Fields(v, deny, true);
     // Faz 4 (RTDB kuralı): `note` 1..60 karakter ve `note_exp` sayı; ikisi birlikte.
@@ -2034,6 +2223,7 @@ export class DemoServer {
       favorite_ids: [...(u.favorite_ids ?? [])],
       invisible: u.invisible ?? null,
       consent: u.consent ?? null,
+      privacy: u.privacy ?? null,
     };
   }
 
@@ -2264,6 +2454,56 @@ export class DemoServer {
         return this.locationRequestRespondCall(payload, uid, now);
       case 'location_request_cancel':
         return this.locationRequestCancelCall(payload, uid, now);
+      // Faz 7
+      case 'event_create':
+        return this.eventCreateCall(payload, uid, now);
+      case 'event_rsvp': {
+        const d = this.parse(EventRsvpRequestSchema, payload);
+        return this.mutateEvent(d.event_id, uid, now, { type: 'rsvp', round: d.round, status: d.status, note: d.note });
+      }
+      case 'event_venue_propose': {
+        const d = this.parse(EventVenueProposeRequestSchema, payload);
+        return this.mutateEvent(d.event_id, uid, now, { type: 'venue_propose', venue: d.venue });
+      }
+      case 'event_venue_remove': {
+        const d = this.parse(EventVenueRemoveRequestSchema, payload);
+        return this.mutateEvent(d.event_id, uid, now, { type: 'venue_remove', option_id: d.option_id });
+      }
+      case 'event_vote': {
+        const d = this.parse(EventVoteRequestSchema, payload);
+        return this.mutateEvent(d.event_id, uid, now, { type: 'vote', kind: d.kind, option_id: d.option_id });
+      }
+      case 'event_advance': {
+        const d = this.parse(EventAdvanceRequestSchema, payload);
+        const action: EventAction =
+          d.action === 'open_venue_vote'
+            ? { type: 'open_venue_vote', vote_window_ms: d.vote_window_ms }
+            : { type: 'close_vote', kind: d.action === 'close_venue_vote' ? 'venue' : 'time', tie_break_option_id: d.tie_break_option_id };
+        return this.mutateEvent(d.event_id, uid, now, action);
+      }
+      case 'event_time_options_set': {
+        const d = this.parse(EventTimeOptionsSetRequestSchema, payload);
+        return this.mutateEvent(d.event_id, uid, now, { type: 'time_options_set', minutes: d.minutes });
+      }
+      case 'event_update': {
+        const d = this.parse(EventUpdateRequestSchema, payload);
+        return this.mutateEvent(d.event_id, uid, now, {
+          type: 'update',
+          ...(d.title !== undefined ? { title: d.title } : {}),
+          ...(d.description !== undefined ? { description: d.description } : {}),
+          ...(d.date !== undefined ? { date: d.date } : {}),
+        });
+      }
+      case 'event_invite_add':
+        return this.eventInviteAddCall(payload, uid, now);
+      case 'event_cancel': {
+        const d = this.parse(EventCancelRequestSchema, payload);
+        return this.mutateEvent(d.event_id, uid, now, { type: 'cancel' });
+      }
+      case 'privacy_settings_set':
+        return this.privacySettingsSetCall(payload, uid, now);
+      case 'movement_report':
+        return this.movementReportCall(payload, uid, now);
       default:
         return fail('invalid_argument', `Demo sunucusunda yok: ${name}`);
     }
@@ -2541,6 +2781,8 @@ export class DemoServer {
     }
     // Faz 8: iki yöndeki izin belgeleri silinir.
     this.dropPairGrants(uid, other);
+    // Faz 7: birinin sahibi, diğerinin davetlisi olduğu etkin etkinliklerden davetli çıkar.
+    this.removePairFromEvents(uid, other, now);
     return response;
   }
 
@@ -2562,6 +2804,10 @@ export class DemoServer {
       (s) => s.sender_id === uid && s.session_id === req.session_id && s.status === 'active' && (s.expires_at === null || s.expires_at > now),
     );
     if (shares.length === 0) fail('share_not_active');
+    // Faz 7: pil paylaşımı kapalıysa (varsayılan) alıcıya düşük pil bildirimi GİTMEZ; tetikleyici durumu değişmez.
+    if (!this.batteryShareOf(uid)) {
+      return { status: 'suppressed', armed: this.db.battery_alerts[`${uid}_${req.session_id}`]?.state.armed ?? true, receivers: 0, server_now: now };
+    }
     return this.applyBatteryAlert(uid, req.session_id, req.battery_pct, req.is_charging ?? false, shares, now);
   }
 
@@ -4728,6 +4974,462 @@ export class DemoServer {
     return null;
   }
 
+
+  // --- Faz 7: gizlilik ayarları ve "yola çıktı" ---------------------------------------------------
+
+  /** RTDB aynası `privacy/{uid}/battery_share` (kural girdisi): yalnızca açıkça açılmışsa true. */
+  private batteryShareOf(uid: UserId): boolean {
+    return parsePrivacy(this.db.users[uid]?.privacy).battery_share;
+  }
+
+  /** Backend `privacySettingsSet`: verilmeyen alan korunur; kapatmak onaysız da yapılabilir (call() kapısı). */
+  private privacySettingsSetCall(payload: unknown, uid: UserId, now: EpochMs): PrivacySettingsResponse {
+    const d = this.parse(PrivacySettingsSetRequestSchema, payload);
+    const u = this.db.users[uid];
+    if (!u) return fail('unauthenticated');
+    const prev = parsePrivacy(u.privacy);
+    const next: PrivacySettings = { battery_share: d.battery_share ?? prev.battery_share, movement_alerts: d.movement_alerts ?? prev.movement_alerts, updated_at: now };
+    u.privacy = next;
+    return { privacy: { ...next }, server_now: now };
+  }
+
+  private movementReportCall(payload: unknown, uid: UserId, now: EpochMs): MovementReportResponse {
+    const d = this.parse(MovementReportRequestSchema, payload);
+    const r = this.movementNow(uid, d.at, now);
+    if (uid === DEMO_ME) this.db.movement_last = { at: now, status: r.status, notified: r.notified_count };
+    return r;
+  }
+
+  /**
+   * Backend `movementReport`: alıcılar = şu an ETKİN paylaşımlarımın alıcıları ve "yola çıktı" tercihi açık olanlar.
+   * Görünmezken / geç rapor / 30 dk soğuma / alıcı yoksa bildirim gitmez. Push'ta koordinat YOK.
+   */
+  private movementNow(uid: UserId, at: EpochMs, now: EpochMs): MovementReportResponse {
+    const done = (status: MovementReportResponse['status'], n = 0): MovementReportResponse => ({ status, notified_count: n, server_now: now });
+    const me = this.db.users[uid];
+    if (!me) return fail('unauthenticated');
+    if (isInvisible(me)) return done('invisible');
+    if (now - at > MOVEMENT_LIMITS.maxReportAgeMs || at > now + MOVEMENT_LIMITS.maxReportAgeMs) return done('stale');
+    const last = this.db.movement_cooldown[uid] ?? null;
+    if (last !== null && now - last < MOVEMENT_LIMITS.cooldownMs) return done('cooldown');
+    const receivers = [
+      ...new Set(
+        Object.values(this.db.shares)
+          .filter((s) => s.sender_id === uid && s.status === 'active' && (s.expires_at === null || s.expires_at > now))
+          .map((s) => s.receiver_id),
+      ),
+    ];
+    const to = receivers.filter((r) => parsePrivacy(this.db.users[r]?.privacy).movement_alerts);
+    if (to.length === 0) return done('no_recipients');
+    this.db.movement_cooldown[uid] = now;
+    const data: Extract<PushData, { type: 'movement' }> = { type: 'movement', from: uid, kind: 'departed' };
+    for (const r of to) this.push(r, { notification: movementPushText(me.display_name, 'departed'), data });
+    return done('sent', to.length);
+  }
+
+  // --- Faz 7: etkinlikler -------------------------------------------------------------------------
+
+  /** Firestore `events where member_ids array-contains uid orderBy updated_at desc limit 50`. */
+  eventsOf(uid: UserId): EventDoc[] {
+    return Object.values(this.db.events)
+      .filter((e) => e.member_ids.includes(uid))
+      .sort((a, b) => b.updated_at - a.updated_at)
+      .slice(0, 50);
+  }
+
+  /** `users/{uid}/notices orderBy created_at desc limit NOTICE_LIST_LIMIT` (30 gün). */
+  noticesOf(uid: UserId): EventNotice[] {
+    const cutoff = Date.now() - NOTICE_RETENTION_MS;
+    return (this.db.notices[uid] ?? []).filter((n) => n.created_at > cutoff).slice(0, NOTICE_LIST_LIMIT);
+  }
+
+  private eventCtx(doc: Pick<EventDoc, 'time_zone'>, now: EpochMs): EventCtx {
+    return { now, offsetAt: offsetFnForTimeZone(doc.time_zone) };
+  }
+
+  /** Saatlik / günlük sayaç (backend `rate_limits`): doluysa `rate_limited`; dönen fonksiyon BAŞARIDA sayar. */
+  private eventRate(uid: UserId, kind: 'create' | 'action', limit: number, windowMs: number, now: EpochMs): () => void {
+    const key = `${uid}_${kind}_${Math.floor(now / windowMs)}`;
+    const n = this.db.event_rate[key] ?? 0;
+    if (n >= limit) fail('rate_limited');
+    return () => {
+      this.db.event_rate[key] = n + 1;
+    };
+  }
+
+  private eventFail(r: Extract<EventResult, { ok: false }>): never {
+    return fail(r.error, undefined, r.extra);
+  }
+
+  /** Davet edilebilirler (Faz 8 `canInvite`): bana `meetup_invite` vermiş, kabul edilmiş arkadaşlar. */
+  private eventInvitees(owner: UserId, candidates: readonly UserId[]): { allowed: UserId[]; anyFriend: boolean } {
+    const list = [...new Set(candidates)].filter((u) => u !== owner && this.db.users[u]);
+    const friends = list.filter((u) => this.areFriends(owner, u));
+    return { allowed: friends.filter((u) => canInvite(this.pair(owner, u))), anyFriend: friends.length > 0 };
+  }
+
+  private eventCreateCall(payload: unknown, uid: UserId, now: EpochMs): EventResponse {
+    return this.createEventAs(uid, this.parse(EventCreateRequestSchema, payload), now);
+  }
+
+  private createEventAs(uid: UserId, d: z.output<typeof EventCreateRequestSchema>, now: EpochMs): EventResponse {
+    const counted = this.eventRate(uid, 'create', EVENT_LIMITS.createsPerDay, DAY, now);
+    const active = Object.values(this.db.events).filter((e) => e.owner_id === uid && isActiveEventStage(e.stage)).length;
+    if (active >= EVENT_LIMITS.maxActivePerOwner) fail('event_limit_reached');
+    const { allowed, anyFriend } = this.eventInvitees(uid, d.invitee_ids);
+    if (allowed.length === 0) fail(anyFriend ? 'not_permitted' : 'not_friends');
+    const names: Record<UserId, string> = {};
+    for (const u of [uid, ...allowed]) names[u] = this.db.users[u]?.display_name ?? '';
+    const id = `e${randomHex32().slice(0, 19)}`;
+    const r = createEventDoc(
+      id,
+      uid,
+      {
+        title: d.title,
+        description: d.description,
+        date: d.date,
+        time_zone: d.time_zone,
+        invitee_ids: allowed,
+        names,
+        venue_options: d.venue_options,
+        time_minutes: d.time_minutes,
+        vote_window_ms: d.vote_window_ms,
+      },
+      { now, offsetAt: offsetFnForTimeZone(d.time_zone) },
+    );
+    if (!r.ok) return this.eventFail(r);
+    counted();
+    this.commitEvent(r.doc, r.effects, now);
+    const asked = [...new Set(d.invitee_ids)].filter((u) => u !== uid).length;
+    return { event: clone(r.doc), skipped_count: asked - allowed.length, server_now: now };
+  }
+
+  /** Backend `mutateEvent`: üye değilse / yoksa AYNI `event_not_found`; değişiklik yoksa yazma ve bildirim yok. */
+  private mutateEvent(eventId: string, uid: UserId, now: EpochMs, action: EventAction, skipped = 0): EventResponse {
+    const doc = this.db.events[eventId];
+    if (!doc || !doc.member_ids.includes(uid)) return fail('event_not_found');
+    const counted = this.eventRate(uid, 'action', EVENT_LIMITS.actionsPerHour, HOUR, now);
+    const r = reduceEvent(doc, uid, action, this.eventCtx(doc, now));
+    if (!r.ok) return this.eventFail(r);
+    counted();
+    if (r.changed) this.commitEvent(r.doc, r.effects, now);
+    return { event: clone(r.doc), skipped_count: skipped, server_now: now };
+  }
+
+  private eventInviteAddCall(payload: unknown, uid: UserId, now: EpochMs): EventResponse {
+    const d = this.parse(EventInviteAddRequestSchema, payload);
+    const doc = this.db.events[d.event_id];
+    if (!doc || !doc.member_ids.includes(uid)) return fail('event_not_found');
+    if (doc.owner_id !== uid) return fail('event_not_owner');
+    const fresh = [...new Set(d.invitee_ids)].filter((u) => u !== doc.owner_id && !doc.invitee_ids.includes(u));
+    const { allowed, anyFriend } = this.eventInvitees(uid, fresh);
+    if (fresh.length > 0 && allowed.length === 0) return fail(anyFriend ? 'not_permitted' : 'not_friends');
+    const names: Record<UserId, string> = {};
+    for (const u of allowed) names[u] = this.db.users[u]?.display_name ?? '';
+    return this.mutateEvent(d.event_id, uid, now, { type: 'invite_add', invitee_ids: allowed, names }, fresh.length - allowed.length);
+  }
+
+  /** Belge + hatırlatıcılar + bildirim kutusu + push (backend `commitResult`); sonra bot adımları planlanır. */
+  private commitEvent(doc: EventDoc, effects: readonly EventEffect[], now: EpochMs): void {
+    this.db.events[doc.event_id] = clone(doc);
+    this.writeEventReminders(doc, effects);
+    for (const o of this.eventOutgoing(doc, effects)) this.deliverEventNotice(o, now);
+    this.scheduleEventBots(doc, now);
+  }
+
+  /** Backend `eventOutgoing`: alıcılar üyelerle sınırlı ve tekil; metinler core push metinleri. */
+  private eventOutgoing(doc: EventDoc, effects: readonly EventEffect[]): EventOutgoing[] {
+    const members = new Set(doc.member_ids);
+    const ownerName = doc.names[doc.owner_id] ?? '';
+    const out: EventOutgoing[] = [];
+    for (const e of effects) {
+      if (e.type === 'reminders') continue;
+      const to = [...new Set(e.to)].filter((u) => members.has(u));
+      if (to.length === 0) continue;
+      const id = doc.event_id;
+      switch (e.type) {
+        case 'invite':
+          out.push({ to, type: 'event_invite', text: eventInvitePushText(ownerName, doc), data: { type: 'event_invite', event_id: id, from: doc.owner_id } });
+          break;
+        case 'stage':
+          out.push({ to, type: 'event_stage', text: eventStagePushText(e.notice, doc), data: { type: 'event_stage', event_id: id, notice: e.notice } });
+          break;
+        case 'rsvp':
+          out.push({
+            to,
+            type: 'event_rsvp',
+            text: eventRsvpPushText(doc.names[e.by] ?? '', doc, e.status, e.note),
+            data: { type: 'event_rsvp', event_id: id, by: e.by, round: e.round, status: e.status },
+          });
+          break;
+        case 'cancelled':
+          out.push({ to, type: 'event_cancelled', text: eventCancelledPushText(ownerName, doc), data: { type: 'event_cancelled', event_id: id } });
+          break;
+      }
+    }
+    return out;
+  }
+
+  private deliverEventNotice(o: EventOutgoing, now: EpochMs): void {
+    for (const u of o.to) {
+      const notice: EventNotice = { notice_id: `n${randomHex32().slice(0, 19)}`, type: o.type, event_id: o.data.event_id, title: o.text.title, body: o.text.body, created_at: now };
+      this.db.notices[u] = [notice, ...(this.db.notices[u] ?? [])].slice(0, NOTICE_LIST_LIMIT * 2);
+      this.push(u, { notification: o.text, data: o.data });
+    }
+  }
+
+  /** Backend `writeReminders`: listede olmayan türler iptal, olanlar (yeniden) planlanır. */
+  private writeEventReminders(doc: EventDoc, effects: readonly EventEffect[]): void {
+    const eff = [...effects].reverse().find((e): e is Extract<EventEffect, { type: 'reminders' }> => e.type === 'reminders');
+    if (!eff) return;
+    for (const kind of EVENT_REMINDER_KINDS) {
+      const id = eventReminderId(doc.event_id, kind);
+      const item = eff.items.find((i) => i.kind === kind);
+      if (!item || doc.starts_at === null) {
+        delete this.db.event_reminders[id];
+        continue;
+      }
+      this.db.event_reminders[id] = { event_id: doc.event_id, kind, due_at: item.due_at, starts_at: doc.starts_at, sent: false, sent_at: null, outcome: null };
+    }
+  }
+
+  /** Backend `fireReminder`: etkinlik hâlâ `final` ve başlangıç aynıysa; 2 sa'ten geç kalan `stale`. */
+  private fireEventReminder(id: string, now: EpochMs): void {
+    const rem = this.db.event_reminders[id];
+    if (!rem || rem.sent) return;
+    const doc = this.db.events[rem.event_id];
+    if (!doc || doc.stage !== 'final' || doc.starts_at !== rem.starts_at) {
+      delete this.db.event_reminders[id];
+      return;
+    }
+    if (now - rem.due_at > EVENT_REMINDER_MAX_LATENESS_MS || now >= doc.starts_at) {
+      Object.assign(rem, { sent: true, sent_at: now, outcome: 'stale' });
+      return;
+    }
+    this.deliverEventNotice(
+      {
+        to: eventReminderRecipients(doc),
+        type: 'event_reminder',
+        text: eventReminderPushText(rem.kind, doc),
+        data: { type: 'event_reminder', event_id: doc.event_id, kind: rem.kind },
+      },
+      now,
+    );
+    Object.assign(rem, { sent: true, sent_at: now, outcome: 'sent' });
+  }
+
+  /** Sistem eylemi (tick / üye çıkarma): değiştiyse yazar ve bildirir. */
+  private applyEventSystem(eventId: string, action: EventAction, now: EpochMs): boolean {
+    const doc = this.db.events[eventId];
+    if (!doc) return false;
+    const r = reduceEvent(doc, 'system', action, this.eventCtx(doc, now));
+    if (!r.ok || !r.changed) return false;
+    this.commitEvent(r.doc, r.effects, now);
+    return true;
+  }
+
+  /** Backend `removePairFromEvents`: sahibi biri, davetlisi diğeri olan etkin etkinliklerden davetli çıkar. */
+  private removePairFromEvents(a: UserId, b: UserId, now: EpochMs): void {
+    for (const doc of Object.values(this.db.events)) {
+      if (!isActiveEventStage(doc.stage) || !doc.member_ids.includes(a) || !doc.member_ids.includes(b)) continue;
+      const target = doc.owner_id === a ? b : doc.owner_id === b ? a : null;
+      if (target) this.applyEventSystem(doc.event_id, { type: 'remove_member', uid: target }, now);
+    }
+  }
+
+  /** Süpürücü: aşama süreleri, hatırlatmalar, bot adımları. */
+  private sweepPhase7(now: EpochMs): boolean {
+    let changed = false;
+    for (const doc of Object.values(this.db.events)) {
+      if (!isActiveEventStage(doc.stage)) continue;
+      const at = eventNextActionAt(doc);
+      if (at !== null && at <= now && this.applyEventSystem(doc.event_id, { type: 'tick' }, now)) changed = true;
+    }
+    for (const [id, rem] of Object.entries(this.db.event_reminders)) {
+      if (rem.sent || rem.due_at > now) continue;
+      this.fireEventReminder(id, now);
+      changed = true;
+    }
+    for (const [key, at] of Object.entries(this.db.event_auto)) {
+      if (at > now) continue;
+      delete this.db.event_auto[key];
+      changed = true;
+      const [id, bot] = key.split('|');
+      const doc = id ? this.db.events[id] : undefined;
+      if (!doc || !bot) continue;
+      const action = this.botEventAction(doc, bot, now);
+      if (!action) continue;
+      const r = reduceEvent(doc, bot, action, this.eventCtx(doc, now));
+      if (r.ok && r.changed) this.commitEvent(r.doc, r.effects, now);
+    }
+    return changed;
+  }
+
+  private prunePhase7(now: EpochMs): boolean {
+    let changed = false;
+    for (const doc of Object.values(this.db.events)) {
+      if (isActiveEventStage(doc.stage) || (doc.ended_at ?? doc.updated_at) + EVENT_LIMITS.retentionMs > now) continue;
+      delete this.db.events[doc.event_id];
+      changed = true;
+    }
+    for (const [id, rem] of Object.entries(this.db.event_reminders)) {
+      if (rem.starts_at + DAY > now && this.db.events[rem.event_id]) continue;
+      delete this.db.event_reminders[id];
+      changed = true;
+    }
+    const cutoff = now - NOTICE_RETENTION_MS;
+    for (const [uid, list] of Object.entries(this.db.notices)) {
+      const kept = list.filter((n) => n.created_at > cutoff);
+      if (kept.length === list.length) continue;
+      this.db.notices[uid] = kept;
+      changed = true;
+    }
+    for (const key of Object.keys(this.db.event_rate)) {
+      const parts = key.split('_');
+      const win = parts[parts.length - 2] === 'create' ? DAY : HOUR;
+      if ((Number(parts[parts.length - 1]) + 1) * win > now) continue;
+      delete this.db.event_rate[key];
+      changed = true;
+    }
+    for (const [uid, at] of Object.entries(this.db.movement_cooldown)) {
+      if (now - at <= MOVEMENT_LIMITS.cooldownMs) continue;
+      delete this.db.movement_cooldown[uid];
+      changed = true;
+    }
+    return changed;
+  }
+
+  /** Demo: bot üyelerin sıradaki adımı (varsa) birkaç saniye sonraya planlanır. */
+  private scheduleEventBots(doc: EventDoc, now: EpochMs): void {
+    if (!isActiveEventStage(doc.stage)) return;
+    doc.member_ids.forEach((u, i) => {
+      if (!this.db.bots[u]) return;
+      const key = `${doc.event_id}|${u}`;
+      if (this.db.event_auto[key] !== undefined || !this.botEventAction(doc, u, now)) return;
+      this.db.event_auto[key] = now + (4 + ((i * 3) % 7)) * SECOND;
+    });
+  }
+
+  /**
+   * Demo botunun etkinlikteki sıradaki adımı: davetli yanıt verir (Can "Katılamayacağım" + not), bir mekan önerir, oy
+   * verir, son onayı verir. Bot sahip: herkes yanıtlayınca mekan oylamasını açar, oy verir, eşitlikte ilk lideri seçer,
+   * saat seçeneği yoksa ekler. Yapacak bir şey yoksa null.
+   */
+  private botEventAction(doc: EventDoc, bot: UserId, now: EpochMs): EventAction | null {
+    const isOwner = bot === doc.owner_id;
+    const going = isOwner || doc.rsvp[bot]?.status === 'going';
+    const seed = [...bot].reduce((a, c) => a + c.charCodeAt(0), 0);
+    switch (doc.stage) {
+      case 'rsvp': {
+        if (isOwner) {
+          const ready =
+            doc.venue_options.length === EVENT_LIMITS.venueOptions && doc.invitee_ids.every((u) => doc.rsvp[u]) && doc.invitee_ids.some((u) => doc.rsvp[u]?.status === 'going');
+          return ready ? { type: 'open_venue_vote', vote_window_ms: null } : null;
+        }
+        if (!doc.rsvp[bot]) {
+          return bot === PEOPLE.can.uid ? { type: 'rsvp', round: 'initial', status: 'not_going', note: CAN_EVENT_NOTE } : { type: 'rsvp', round: 'initial', status: 'going', note: null };
+        }
+        const venue = BOT_EVENT_VENUES[bot];
+        const free = doc.venue_options.length < EVENT_LIMITS.venueOptions;
+        const fresh = venue && !doc.venue_options.some((o) => o.proposed_by === bot || o.name.toLocaleLowerCase('tr') === venue.name.toLocaleLowerCase('tr'));
+        return going && free && venue && fresh ? { type: 'venue_propose', venue } : null;
+      }
+      case 'venue_vote':
+      case 'time_vote': {
+        const kind = doc.stage === 'venue_vote' ? 'venue' : 'time';
+        if (kind === 'time' && doc.stage_deadline_at === null) {
+          if (!isOwner) return null;
+          const offsetAt = offsetFnForTimeZone(doc.time_zone);
+          const minutes = BOT_TIME_CANDIDATES.filter((m) => localDateTimeToEpoch(doc.date, m, offsetAt) >= now + EVENT_LIMITS.minLeadMs + 5 * MINUTE).slice(0, 3);
+          return minutes.length >= EVENT_LIMITS.minTimeOptions ? { type: 'time_options_set', minutes } : null;
+        }
+        if (!going) return null;
+        const t = eventTally(doc, kind, now);
+        const ids = Object.keys(t.counts);
+        const votes = kind === 'venue' ? doc.venue_votes : doc.time_votes;
+        if (!votes[bot] && ids.length > 0) return { type: 'vote', kind, option_id: ids[seed % ids.length] as string };
+        if (isOwner && t.eligible > 0 && t.total === t.eligible && t.leaders.length > 1) return { type: 'close_vote', kind, tie_break_option_id: t.leaders[0] ?? null };
+        return null;
+      }
+      case 'final': {
+        if (isOwner || doc.final_rsvp[bot] || (doc.starts_at !== null && now >= doc.starts_at)) return null;
+        const first = doc.rsvp[bot];
+        return first?.status === 'not_going' ? { type: 'rsvp', round: 'final', status: 'not_going', note: first.note } : { type: 'rsvp', round: 'final', status: 'going', note: null };
+      }
+      default:
+        return null;
+    }
+  }
+
+  // --- Faz 7 demo paneli --------------------------------------------------------------------------
+
+  /** "Ayşe etkinliğe davet etsin": yarın için 3 mekanlı, 2 saat seçenekli etkinlik; bana davet. Dönen: hata kodu ya da kimlik. */
+  botCreateEvent(bot: UserId): { ok: true; event_id: string } | { ok: false; code: ErrorCode } {
+    const now = Date.now();
+    const tz = this.db.users[bot]?.time_zone ?? DEFAULT_TZ;
+    const date = addDaysToDate(localDateOf(now, offsetFnForTimeZone(tz)), 1);
+    try {
+      const r = this.createEventAs(
+        bot,
+        {
+          op_id: uuidV4(),
+          title: 'Moda’da kahvaltı',
+          description: 'Uzun zamandır toplanamadık. Yarın kahvaltıda buluşalım mı? Mekanı ve saati birlikte seçelim.',
+          date,
+          time_zone: tz,
+          invitee_ids: [DEMO_ME],
+          venue_options: AYSE_EVENT_VENUES.map((v) => ({ name: v.name, address: v.address ?? null, location: v.location ?? null, place_id: v.place_id ?? null })),
+          time_minutes: [10 * 60, 11 * 60 + 30],
+          vote_window_ms: 2 * HOUR,
+        },
+        now,
+      );
+      this.commit();
+      return { ok: true, event_id: r.event.event_id };
+    } catch (e) {
+      return { ok: false, code: e instanceof DemoHttpsError ? e.details.code : 'internal' };
+    }
+  }
+
+  /** "Hatırlatmayı şimdi gönder": üyesi olduğum her kesinleşmiş etkinliğin sıradaki hatırlatması hemen gider. */
+  fireMyEventRemindersNow(): number {
+    const now = Date.now();
+    const next = new Map<string, string>();
+    for (const [id, rem] of Object.entries(this.db.event_reminders)) {
+      const doc = this.db.events[rem.event_id];
+      if (rem.sent || !doc || !doc.member_ids.includes(DEMO_ME)) continue;
+      const cur = next.get(rem.event_id);
+      if (!cur || (this.db.event_reminders[cur]?.due_at ?? Infinity) > rem.due_at) next.set(rem.event_id, id);
+    }
+    for (const id of next.values()) this.fireEventReminder(id, now);
+    if (next.size) this.commit();
+    return next.size;
+  }
+
+  /** "Mehmet yola çıksın": botun hareket raporu (demo: soğuma sıfırlanır). */
+  botDeparture(bot: UserId): MovementReportResponse['status'] {
+    const now = Date.now();
+    delete this.db.movement_cooldown[bot];
+    const r = this.movementNow(bot, now, now);
+    this.commit();
+    return r.status;
+  }
+
+  private f7View(): DemoSnapshot['f7'] {
+    const now = Date.now();
+    const mine = Object.values(this.db.events).filter((e) => e.member_ids.includes(DEMO_ME));
+    const pending = Object.values(this.db.event_reminders).filter((r) => !r.sent && mine.some((e) => e.event_id === r.event_id));
+    const nextRem = pending.sort((a, b) => a.due_at - b.due_at)[0] ?? null;
+    return {
+      activeEvents: mine.filter((e) => isActiveEventStage(e.stage)).length,
+      pendingReminders: pending.length,
+      nextReminderAt: nextRem?.due_at ?? null,
+      privacy: parsePrivacy(this.db.users[DEMO_ME]?.privacy),
+      lastMovement: this.db.movement_last,
+      movementCooldownLeftMs: Math.max(0, (this.db.movement_cooldown[DEMO_ME] ?? 0) + MOVEMENT_LIMITS.cooldownMs - now),
+    };
+  }
+
   snapshot(): DemoSnapshot {
     const deliveries: DemoSnapshot['myDeliveries'] = [];
     for (const [receiver, inbox] of Object.entries(this.db.live)) {
@@ -4762,6 +5464,7 @@ export class DemoServer {
       f4: this.f4View(),
       f5: this.f5View(),
       f6: this.f6View(),
+      f7: this.f7View(),
       f8: this.f8View(),
       mapsDown: this.db.maps_down,
       maps: {

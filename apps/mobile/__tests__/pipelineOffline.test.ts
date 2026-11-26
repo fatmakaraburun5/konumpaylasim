@@ -52,6 +52,8 @@ function setup(over: Partial<PipelineDeps> = {}) {
   const outbox = createOutboxRepo(() => asyncStorageOutboxStore);
   let op = 0;
   const pipeline = createSamplePipeline({
+    batteryShare: async () => true,
+    reportDeparture: async () => undefined,
     probeAuth: async () => ({ kind: 'signed_in', uid: 'me' }),
     publisherDeps: () => publisher,
     waitOnline: async () => online,

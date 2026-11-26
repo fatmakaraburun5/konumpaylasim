@@ -28,6 +28,9 @@
  *   Faz 6 (f6Services.ts): depolar → ana ekran / kilit ekranı widget snapshot'ı (kısıtlı yazma / yenileme), favori
  *   fotoğrafları paylaşılan alana, widget token'ı, widget olayları, fotoğraf ön belleği.
  *
+ *   Faz 7 (f7Services.ts): etkinlikler + bildirim kutusu → eventsStore; etkinlik / "yola çıktı" bildirimine dokunma;
+ *   profil gizlilik tercihi (pil paylaşımı) → konum hattının başsız kopyası.
+ *
  *   Faz 8 (f8Services.ts): yönlü izinler (permission_grants) → grantsStore; izin push'ları. Kesme anahtarı
  *   (`publishHold`: görünmez niyeti ya da onay kapısı) açıkken yayın hedefleri BOŞ sayılır (kalıcı hedefler boş
  *   yazılır → takip durur, ön plan yayını / nabız yok); bu cihazda konum izni geri alınan kişiye yayın hemen kesilir.
@@ -109,6 +112,7 @@ import { resilientListener, type ListenerHandlers, type ResilientListener } from
 import { resetF4Stores, startF4Services } from './f4Services';
 import { onF5Connected, resetF5State, startF5Services } from './f5Services';
 import { resetF6State, startF6Services } from './f6Services';
+import { installF7Guards, resetF7State, startF7Services } from './f7Services';
 import { installF8Guards, onF8Connected, resetF8State, startF8Services } from './f8Services';
 import { resetLocationRequestState, startLocationRequestServices } from './locationRequestServices';
 import { grantsStore, isLocationRevoked } from '../state/grantsStore';
@@ -212,6 +216,8 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 // Faz 8: profil → kesme anahtarı (oturum servisleri onay kapısında başlamasa da yayın kesilir).
 installF8Guards();
+// Faz 7: profil gizlilik tercihi (pil paylaşımı) → konum hattının başsız kopyası.
+installF7Guards();
 
 /**
  * Faz 8: onay kapısı açıkken (oturum servisleri BAŞLAMAZ) yalnızca koruyucu, onaydan muaf istekler sürer: bekleyen
@@ -400,6 +406,8 @@ export function startSessionServices(uid: UserId): () => void {
   unsubs.push(startF5Services(uid));
   // Faz 6: widget eşitleme, favori fotoğrafları, widget token'ı.
   unsubs.push(startF6Services(uid));
+  // Faz 7: Etkinlik Alanı (etkinlikler + bildirim kutusu), etkinlik / hareket bildirimine dokunma.
+  unsubs.push(startF7Services(uid));
   // Faz 8: yönlü izinler, izin push'ları, bekleyen görünmez olma isteği.
   unsubs.push(startF8Services(uid));
   // Konum İste: gelen / giden istekler, Onayla / Reddet bildirim eylemleri.
@@ -754,6 +762,8 @@ onSignedOut(async () => {
   await resetF5State();
   // Faz 6: widget "Giriş yap" çizer; yerel widget kimlik bilgisi, avatar dosyaları ve bellek durumu silinir.
   await resetF6State();
+  // Faz 7: etkinlikler, bildirim kutusu, gizlilik tercihi kopyası.
+  await resetF7State();
   // Faz 8: kesme anahtarı (görünmez niyeti / onay kapısı) ve izin / görünmez / onay bellek durumu.
   await resetF8State();
   resetLocationRequestState();

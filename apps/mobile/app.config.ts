@@ -202,6 +202,8 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       {
         icon: './assets/notification-icon.png',
         color: '#2563EB',
+        // Faz 7: SOS alarm sesi (iOS paketine `sos_alarm.wav`, Android `res/raw/sos_alarm`; core `SOS_ALARM_SOUND`).
+        sounds: ['./assets/sounds/sos_alarm.wav'],
       },
     ],
     '@react-native-firebase/app',

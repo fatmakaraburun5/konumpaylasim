@@ -76,6 +76,8 @@ export interface ObserveInput {
 
 export interface ObserveResult {
   motion: MotionState;
+  /** Faz 7: gözlemden ÖNCEKİ hareket durumu ve o duruma giriş anı ("yola çıktı" tespiti). */
+  previous?: { state: MotionState; since: EpochMs };
   sendPlan: TrackingPlan;
   bgPlan: TrackingPlan;
   transitions: { from: MotionState; to: MotionState; reason: string }[];
@@ -161,6 +163,7 @@ export function createAdaptiveController(opts: { io: () => AdaptiveEngineIO; sto
       await storage.save(snap);
       return {
         motion: step.motion,
+        previous: { state: prev.machine.state, since: prev.machine.since },
         sendPlan: step.sendPlan,
         bgPlan: step.bgPlan,
         transitions: step.transitions,

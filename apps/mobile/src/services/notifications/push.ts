@@ -14,6 +14,9 @@
  * `widget_refresh` (yalnızca veri) widget'ı yeniler. Arka planda (başsız) widget paylaşımı kalıcı hedeflere alınır
  * (widgetBackground.ts) ve takip `resume_tracking` ile başlar.
  *
+ * Faz 7: etkinlik bildirimleri ve "yola çıktı" önde yerel bildirimle (f7Push); SOS `sos_alarm` kanalında özel sesle;
+ * bölge varış/ayrılış `movement` kanalında heads-up banner. Dokununca etkinlik ekranı / harita (f7Services).
+ *
  * Faz 8: `permission_request` / `permission_granted` (görünür, koordinatsız) önde yerel bildirimle gösterilir;
  * dokununca (önde, arka planda ya da soğuk açılışta) Arkadaşlar ekranı açılır (f8Services). Retde push yoktur.
  */
@@ -34,9 +37,10 @@ import { ensureFirebase } from '../firebase/init';
 import { deleteDeviceToken, saveDeviceToken } from '../firebase/profileRepo';
 import { resumeTracking } from '../location/resume';
 import * as Notifications from './expoNotifications';
-import { f4ForegroundContent, routeF4Open } from './f4Push';
+import { f4ForegroundContent, localSound, routeF4Open } from './f4Push';
 import { f5ForegroundContent, isF5PushType, routeF5Open, routeF5Received } from './f5Push';
 import { f6ForegroundContent, isF6PushType, routeF6Received } from './f6Push';
+import { f7ForegroundContent, isF7PushType, routeF7Open, routeF7Received } from './f7Push';
 import { f8ForegroundContent, isF8PushType, routeF8Open, routeF8Received } from './f8Push';
 import { isLocationRequestPushType, locationRequestLocalContent } from './locationRequestPush';
 import { friendsStore, selectFriends } from '../../state/friendsStore';
@@ -81,8 +85,9 @@ export async function registerPushToken(uid: UserId): Promise<() => void> {
   const unMessage = onMessage(messaging, (m) => void handleForegroundMessage(m).catch(() => undefined));
   // Faz 4: sistemin gösterdiği FCM bildirimine dokunma (arka plan / kapalıyken) → SOS kartı / ping vurgusu.
   // Faz 5: bölge olayı → göndereni vurgula, buluşma önerisi / yanıtı → buluşma kartı.
+  // Faz 7: etkinlik bildirimi → etkinlik ekranı, "yola çıktı" → göndereni vurgula.
   // Faz 8: izin isteği / izin verildi → Arkadaşlar.
-  const openRoute = (data: Record<string, unknown> | undefined) => routeF4Open(data) || routeF5Open(data) || routeF8Open(data);
+  const openRoute = (data: Record<string, unknown> | undefined) => routeF4Open(data) || routeF5Open(data) || routeF7Open(data) || routeF8Open(data);
   const unOpened = onNotificationOpenedApp(messaging, (m) => void openRoute((m as unknown as PushLike).data));
   void getInitialNotification(messaging)
     .then((m) => (m ? openRoute((m as unknown as PushLike).data) : false))
@@ -170,7 +175,7 @@ async function handleForegroundMessage(msg: RemoteMessage): Promise<void> {
     const f5 = f5ForegroundContent(m);
     if (f5) {
       await Notifications.scheduleNotificationAsync({
-        content: { title: f5.title, body: f5.body, data: f5.data, sound: f5.sound ? 'default' : false, interruptionLevel: f5.interruptionLevel },
+        content: { title: f5.title, body: f5.body, data: f5.data, sound: localSound(f5), interruptionLevel: f5.interruptionLevel },
         trigger: Platform.OS === 'android' ? { channelId: f5.channelId } : null,
       });
     }
@@ -196,6 +201,18 @@ async function handleForegroundMessage(msg: RemoteMessage): Promise<void> {
     }
     return;
   }
+  // Faz 7: etkinlik (davet / aşama / yanıt / hatırlatıcı / iptal) ve "yola çıktı" yerel bildirimle.
+  if (isF7PushType(m.data?.type)) {
+    routeF7Received(m.data);
+    const f7 = f7ForegroundContent(m, friendName);
+    if (f7) {
+      await Notifications.scheduleNotificationAsync({
+        content: { title: f7.title, body: f7.body, data: f7.data, sound: localSound(f7), interruptionLevel: f7.interruptionLevel, categoryIdentifier: f7.channelId },
+        trigger: Platform.OS === 'android' ? { channelId: f7.channelId } : null,
+      });
+    }
+    return;
+  }
   // Faz 8: izin isteği / izin verildi yerel bildirimle (dokununca Arkadaşlar).
   if (isF8PushType(m.data?.type)) {
     routeF8Received(m.data);
@@ -211,7 +228,8 @@ async function handleForegroundMessage(msg: RemoteMessage): Promise<void> {
   const f4 = f4ForegroundContent(m, { includePing: false });
   if (f4) {
     await Notifications.scheduleNotificationAsync({
-      content: { title: f4.title, body: f4.body, data: f4.data, sound: f4.sound ? 'default' : false, interruptionLevel: f4.interruptionLevel },
+      // Faz 7: SOS özel alarm sesiyle (iOS paket sesi; Android'de `sos_alarm` kanal sesi).
+      content: { title: f4.title, body: f4.body, data: f4.data, sound: localSound(f4), interruptionLevel: f4.interruptionLevel },
       trigger: Platform.OS === 'android' ? { channelId: f4.channelId } : null,
     });
   }

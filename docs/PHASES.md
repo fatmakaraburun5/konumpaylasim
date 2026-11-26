@@ -10,6 +10,7 @@ Her faz bir öncekinin sözleşmelerini (packages/core) **genişletir**, değiş
 | 4 | Tek dokunuşla "Buradayım / Yoldayım" ping'i, konum yanına kısa durum notu ve yer notu, tam konumlu SOS (basılı tut + geri sayım, acil kişiler, yüksek öncelikli push, alıcıda tam ekran acil kartı) | Kod hazır; birim, kural ve emülatör testleri geçti, tarayıcı demosunda uçtan uca çalışıyor; gerçek cihazda bildirim davranışı ve Apple Critical Alerts onayı bekliyor. Ayrıntı: [`PHASE4.md`](PHASE4.md) |
 | 5 | Varış / ayrılış tetikleyicileri (Ev, İş, özel bölgeler; iOS `CLCircularRegion` / Android `GeofencingClient`; "vardığımda bildir", "çıkınca paylaşımı başlat"; GPS sapması filtresi), harita üzerinde "Buluşma noktası" önerisi (orta nokta / adil erişim süresi, Places + Route Matrix, numaralı pinler, paylaşım ve alıcı kartı) | Kod hazır; birim, kural ve emülatör testleri geçti, tarayıcı demosunda uçtan uca çalışıyor; gerçek cihazda bölge algılama ve gerçek Places / Routes anahtarı bekliyor. Ayrıntı: [`PHASE5.md`](PHASE5.md) |
 | 6 | Ana ekran ve kilit ekranı widget'ları (iOS WidgetKit, Android AppWidget + Hızlı Ayar kutucuğu), favoriye tek dokunuşla 1 saatlik paylaşım (widget token'ı, arka plan tetiği, geri sayım + bildirim), kamera / galeriden profil fotoğrafı (kırpma, sıkıştırma, önbellek), kayıtta zorunlu cinsiyet ve cinsiyet renkli çerçeve (liste, widget, harita pini, baş harf yedeği) | Kod hazır; birim, kural (Firestore + Storage) ve emülatör testleri geçti, tarayıcı demosunda uçtan uca çalışıyor; Swift / Kotlin widget kodu derlenmedi, gerçek cihazda widget ve kilit ekranı davranışı bekliyor. Ayrıntı: [`PHASE6.md`](PHASE6.md), yayın listesi: [`RELEASE_CHECKLIST.md`](RELEASE_CHECKLIST.md) |
+| 7 | Etkinlik Alanı (3 aşamalı oylama: tarih + katılım ön onayı, 3 mekan arasından oylama, saat oylaması + son onay; 300 karakterlik "Katılamayacağım" notu; davet anında, hatırlatma 1 gün önce ve sabah 08:00), bildirim mimarisi (özel sesli SOS alarm kanalı, "eve girdi / yola çıktı" heads-up), ilk açılış izin akışı ve İzin & Gizlilik Merkezi, varsayılan kapalı pil paylaşımı, harita Açık / Koyu / Sistem | Kod hazır; birim, kural ve emülatör testleri geçti, tarayıcı demosunda uçtan uca çalışıyor; gerçek cihazda bildirim kanalları, alarm sesi ve hatırlatma saatleri bekliyor. Ayrıntı: [`PHASE7.md`](PHASE7.md) |
 | 8 | Yönlü kişi izinleri (`permission_grants`: konumu görme, ping, varış bildirimi, buluşma daveti, SOS; arkadaşlık izin değil, varsayılan kapalı), izin isteği / onayı / geri alma zincirleri, sunucuda zorlanan görünmez mod (seçmeli geri yükleme), Güvenlik Sözleşmesi ve KVKK aydınlatma / açık rıza onay kapısı (kaydırma şartı, sürüm + SHA-256 kaydı, geri çekme) | Kod hazır; birim, kural ve emülatör testleri geçti, tarayıcı demosunda uçtan uca çalışıyor; KVKK metni hukuk incelemesi, gerçek cihazda deneme ve eski arkadaşlıklar için izin göçü bekliyor. Ayrıntı: [`PHASE8.md`](PHASE8.md) |
 
 ## Faz 1 → Faz 2 geçiş noktası
@@ -281,10 +282,30 @@ test hesapları, çökme raporlama, faz bazında cihaz kabulü). Faz 6 cihaz sen
 
 Gerçek Firebase projesine geçiş (dağıtım, sırlar, CI) henüz yapılmadı: `firebase-kurulum` dalına bakın.
 
+## Faz 7 (uygulandı)
+
+Faz 8'den sonra uygulandı; Faz 8'in izin modelini kullanır (davet için `meetup_invite`). Ayrıntı:
+[`PHASE7.md`](PHASE7.md). Özet:
+
+| Parça | Ne yapıldı |
+| --- | --- |
+| Etkinlik Alanı | `events/{id}` (yalnızca üyeler okur), 10 callable, saf durum makinesi `reduceEvent` (rsvp → venue_vote → time_vote → final → completed; cancelled / expired). Davet yalnızca izin vermiş arkadaşlara, diğerleri sessizce düşer. Eşit oyda sahip kazananı seçer. |
+| Bildirimler | Davet anında; hatırlatma 1 gün önce ve buluşma günü 08:00 (`event_sweeper`, dakikalık). Uygulama içi bildirim kutusu `users/{uid}/notices` (30 gün) + push. Android kanalları `sos_alarm` (özel ses, Rahatsız Etme'yi aşar), `movement` (heads-up), `events`, `event_reminders`; eski `sos` silinir. iOS `critical` / `time-sensitive` / `active`. |
+| İzinler | İlk açılış akışı (Kullanırken → Her zaman → bildirimler → pil onayı → kamera/fotoğraf; her adım atlanabilir), İzin & Gizlilik Merkezi (durum, neden, tek düğme). |
+| Gizlilik | Pil paylaşımı varsayılan KAPALI: RTDB kuralı, sunucu ve istemci üç katmanda zorlar. "Yola çıktı" bildirimi (≥ 10 dk sabit → hareket; 30 dk soğuma; alıcı tercihi). |
+| Harita teması | Sistem / Açık / Koyu; haritadaki düğme ve Gizlilik Merkezi; önceden hesaplanmış iki stil dizisi → anında geçiş. |
+
+Faz 7 kabul ölçütleri (bu depoda): izinsiz davetli düşer ve sayısı döner ✓; üye olmayan etkinliği göremez ✓; eşit oyda
+`leaders` döner, sahip seçer ✓; herkes oy verince kendiliğinden kesinleşir ✓; hatırlatma yalnızca `final`'de ve
+başlangıç değişmediyse, geç kalan `stale` ✓; pil paylaşımı kapalıyken pil alanı RTDB'de reddedilir, düşük pil
+bastırılır ✓ (emülatör + kural testleri); oluştur → botlar yanıtlar → mekan oyu (eşitlik) → saat oyu → kesinleşme →
+hatırlatma bildirimi → Gizlilik Merkezi → harita Koyu ✓ (tarayıcı demosu, Playwright).
+
+**Faz 7 → yayın** (`RELEASE_CHECKLIST.md`'ye ek): `PHASE7.md` §9.1.
+
 ## Faz 8 (uygulandı)
 
-Faz 7 numarası atlandı. Tasarım sözleşmesi, uygulama kararları, testler ve açıklar [`PHASE8.md`](PHASE8.md)
-dosyasındadır. Özet:
+Tasarım sözleşmesi, uygulama kararları, testler ve açıklar [`PHASE8.md`](PHASE8.md) dosyasındadır. Özet:
 
 | Parça | Ne yapıldı |
 | --- | --- |

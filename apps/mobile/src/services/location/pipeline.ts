@@ -28,6 +28,13 @@
  *  - Düşük pil: core `lowBatteryTrigger` %15 geçişinde (oturum başına bir kez) yayını zorlar ve
  *    `battery_low_notify` çağırır; çevrimdışıysa çağrı kuyruğa alınır (aynı op_id).
  *
+ * Faz 7:
+ *  - Pil paylaşımı onayı (`state/persist` gizlilik kopyası, varsayılan KAPALI): kapalıyken pakete, bağlantı paketine ve
+ *    kuyruktan boşaltılan yazmalara `battery_pct` / `is_charging` GİRMEZ (RTDB kuralı da `privacy/{uid}` aynasına
+ *    bakarak reddeder) ve düşük pil bildirimi çağrılmaz. Uyarlamalı takip gerçek pil düzeyini kullanmaya devam eder.
+ *  - "Yola çıktı": arkadaş paylaşımı sürerken hareket makinesi ≥ 10 dk sabitten harekete geçerse
+ *    (core `shouldReportDeparture`) `movement_report` çağrılır (koordinatsız; 30 dk soğuma cihazda da tutulur).
+ *
  * Faz 8: yayın kesme anahtarı (`state/publishHold`: görünmez mod niyeti ya da onay kapısı) açıkken HİÇBİR hedef
  * kullanılabilir sayılmaz: hedefler kilit içinde boşaltılır, takip kapanır, imleç ve kuyruk silinir; yazmadan hemen
  * önce ve yayıncının her denemesinde de sorulur (sunucu ayrıca paylaşımları bitirir ve RTDB yazılarını reddeder).
@@ -43,6 +50,7 @@ import {
   serverNow,
   safeRecordedAt,
   shouldPublish,
+  shouldReportDeparture,
   statusNoteExtras,
   uuidV4,
   type AppPhase,
@@ -62,7 +70,7 @@ import {
 import { AppState } from 'react-native';
 import { toKonumError } from '../../lib/errors';
 import { currentAuthUser, listenAuthUser } from '../firebase/authClient';
-import { batteryLowNotify, BATTERY_LOW_NOTIFY } from '../firebase/callables';
+import { batteryLowNotify, BATTERY_LOW_NOTIFY, movementReport } from '../firebase/callables';
 import { ensureFirebase } from '../firebase/init';
 import { isConnected, waitForConnection, writeFanout } from '../firebase/liveRepo';
 import { publishLinkSample, type LinkPublisherDeps, type LinkPublishResult } from '../firebase/linkPublisher';
@@ -71,8 +79,11 @@ import { firebaseLinkPublisherDeps, firebasePublisherDeps } from '../firebase/pu
 import { outboxRepo, type OutboxRepo } from '../outbox/outboxRepo';
 import type { PendingCall } from '../outbox/outboxStore';
 import {
+  batteryShareAllowed,
   clearCursor,
   inTargetsLock,
+  loadMovement,
+  saveMovement,
   loadCursor,
   loadStatusNote,
   loadTargets,
@@ -163,6 +174,43 @@ export interface PipelineDeps {
   /** Faz 8: yayın kesme anahtarı (görünmez mod / onay kapısı): açıkken hiçbir şey yayınlanmaz. */
   isHeld: () => boolean;
   hydrateHold: () => Promise<void>;
+  /** Faz 7: pil bilgisi paylaşılabilir mi (gizlilik tercihi; varsayılan hayır). */
+  batteryShare: (uid: UserId) => Promise<boolean>;
+  /** Faz 7: son "yola çıktı" bildiriminin anı (cihazda; sunucu ayrıca soğuma uygular). */
+  lastDepartureAt: (uid: UserId) => Promise<EpochMs | null>;
+  /** Faz 7: "yola çıktı" bildir (hata yutulur). */
+  reportDeparture: (uid: UserId, at: EpochMs) => Promise<void>;
+}
+
+/** "Yola çıktı" çağrısı konum hattını en çok bu kadar bekletir. */
+const DEPARTURE_CALL_TIMEOUT_MS = 4_000;
+
+/** Pil paylaşımı kapalıyken yayınlanan cihaz durumu: pil bilinmiyor gibi (paket alanları hiç yazılmaz). */
+export const withoutBattery = (device: DeviceStatus): DeviceStatus => ({ ...device, batteryLevel: null, isCharging: null });
+
+const BATTERY_KEYS = new Set(['battery_pct', 'is_charging']);
+
+/** Kuyruk boşaltma yazmasından pil alanlarını ayıklar (yol sonu ya da nesne alanı; iç içe nesneler dahil). */
+export function stripBatteryFields(map: Record<string, unknown>): Record<string, unknown> {
+  const clean = (v: unknown): unknown => {
+    if (!v || typeof v !== 'object' || Array.isArray(v)) return v;
+    const out: Record<string, unknown> = {};
+    for (const [k, x] of Object.entries(v as Record<string, unknown>)) if (!BATTERY_KEYS.has(k)) out[k] = clean(x);
+    return out;
+  };
+  const out: Record<string, unknown> = {};
+  for (const [path, v] of Object.entries(map)) {
+    const last = path.slice(path.lastIndexOf('/') + 1);
+    if (BATTERY_KEYS.has(last)) continue;
+    out[path] = clean(v);
+  }
+  return out;
+}
+
+async function defaultReportDeparture(uid: UserId, at: EpochMs): Promise<void> {
+  // Önce kaydet: çağrı sürerken gelen örnekler ikinci kez bildirmesin (sunucu da 30 dk soğuma uygular).
+  await saveMovement({ uid, last_report_at: at });
+  await movementReport({ kind: 'departed', at }).catch(() => undefined);
 }
 
 /** Firebase Auth: oturum yerelden geri yüklenene kadar bekle; zaman aşımında "bilinmiyor". */
@@ -244,7 +292,25 @@ const defaultDeps = (getDeps: () => PipelineDeps): PipelineDeps => ({
   },
   isHeld: isPublishHeld,
   hydrateHold: hydratePublishHold,
+  batteryShare: batteryShareAllowed,
+  lastDepartureAt: async (uid) => {
+    const m = await loadMovement();
+    return m && m.uid === uid ? m.last_report_at : null;
+  },
+  reportDeparture: defaultReportDeparture,
 });
+
+/**
+ * Faz 7: "yola çıktı" — yalnızca ARKADAŞ paylaşımı sürerken, çevrimiçiyken ve kesme anahtarı kapalıyken. Bağlantı (QR)
+ * izleyicilerine bildirim gitmez. Bildirim anı geçişin anıdır (sunucu 5 dk'dan eskisini atar).
+ */
+async function maybeReportDeparture(d: PipelineDeps, uid: UserId, obs: Pick<ObserveResult, 'motion' | 'previous'>, now: EpochMs, hasFriendTargets: boolean): Promise<void> {
+  if (!hasFriendTargets || !obs.previous || d.isHeld() || !d.isOnline()) return;
+  const stillSince = obs.previous.state === 'stationary' ? obs.previous.since : null;
+  const last = await d.lastDepartureAt(uid).catch(() => null);
+  if (!shouldReportDeparture(obs.previous.state, obs.motion, stillSince, now, last)) return;
+  await Promise.race([d.reportDeparture(uid, now).catch(() => undefined), new Promise<void>((r) => setTimeout(r, DEPARTURE_CALL_TIMEOUT_MS))]);
+}
 
 export interface SamplePipeline {
   handleSamples: (raws: readonly RawLocationSample[], source: SampleSource) => Promise<void>;
@@ -413,12 +479,14 @@ async function flushQueue(d: PipelineDeps, uid: UserId, now: EpochMs, lastLiveTs
   const shares = fresh.targets.filter(usableAt(d, now));
   const links = fresh.linkTargets.filter(usableLinkAt(d, now));
   const linkIdByHash = new Map(fresh.linkTargets.map((t) => [t.token_hash, t.link_id] as const));
+  // Faz 7: pil paylaşımı (sonradan) kapandıysa kuyruktaki eski örneklerin pil alanları da gitmez (kural reddederdi).
+  const shareBattery = await d.batteryShare(uid).catch(() => false);
   const r = await d.outbox.flush({
     uid,
     now,
     targets: [...shares.map(toShareOutboxTarget), ...links.map(toLinkOutboxTarget)],
     isAllowed: (t) => !d.isHeld() && (t.kind === 'share' ? !d.isBlocked(t.share_id) : !d.isLinkBlocked(linkIdByHash.get(t.token_hash) ?? '')),
-    write: d.writeRaw,
+    write: shareBattery ? d.writeRaw : (map) => d.writeRaw(stripBatteryFields(map)),
     call: d.callPending,
     lastLiveTs,
     force,
@@ -500,6 +568,7 @@ async function processMotion(d: PipelineDeps, event: MotionEvent | { type: 'geof
     sessionKeys: sessionKeysOf(targets, linkTargets),
     notification: serviceNotificationFor(targets, linkTargets),
   });
+  await maybeReportDeparture(d, persisted.uid, obs, now, targets.length > 0);
   const cursor = await loadCursor();
   const hb = obs.sendPlan.row.heartbeatMs;
   const heartbeatDue = !cursor.lastPublished || now - cursor.lastPublished.sent_at >= hb - HEARTBEAT_SLACK_MS;
@@ -512,7 +581,9 @@ async function processMotion(d: PipelineDeps, event: MotionEvent | { type: 'geof
   }
   // Ölçüm yok ama durum değişti: bildirim / yeniden kurma çağrısı yine gitsin (çevrimdışıysa kuyruğa).
   const keys = [...obs.lowBatteryFired, ...obs.lowBatteryRearmed];
-  if (keys.length && persisted.uid) await notifyLowBattery(d, persisted.uid, keys, device, d.isOnline(), now);
+  if (keys.length && persisted.uid && (await d.batteryShare(persisted.uid).catch(() => false))) {
+    await notifyLowBattery(d, persisted.uid, keys, device, d.isOnline(), now);
+  }
 }
 
 async function processSamples(
@@ -566,6 +637,10 @@ async function processSamples(
   const device = await d.readDevice();
   const pct = batteryPct(device.batteryLevel);
   const appPhase = d.appPhase();
+  // Faz 7: yayına giden cihaz durumu (pil paylaşımı kapalıysa pil yok); takip kararları gerçek pil düzeyiyle.
+  const shareBattery = await d.batteryShare(uid).catch(() => false);
+  const pubDevice = shareBattery ? device : withoutBattery(device);
+  const pubPct = shareBattery ? pct : null;
 
   // Faz 3: hareket makinesi ← toplu örneklerin hepsi (+ son OS etkinliği); plan ← matris.
   const events: MotionEvent[] = [];
@@ -584,8 +659,10 @@ async function processSamples(
   const plan = obs.sendPlan;
   const activity = obs.motion === 'unknown' ? inferActivityFromSpeed(norm.sample.speed_mps) : motionToActivity(obs.motion);
   const hb = plan.row.heartbeatMs;
-  const lowFired = [...new Set([...(carry.lowBatteryFired ?? []), ...obs.lowBatteryFired])];
-  const lowNotify = [...new Set([...lowFired, ...(carry.lowBatteryRearmed ?? []), ...obs.lowBatteryRearmed])];
+  // Pil paylaşımı kapalıyken düşük pil ne yayını zorlar ne bildirim çağrısı yapar (sunucu da bastırır).
+  const lowFired = shareBattery ? [...new Set([...(carry.lowBatteryFired ?? []), ...obs.lowBatteryFired])] : [];
+  const lowNotify = shareBattery ? [...new Set([...lowFired, ...(carry.lowBatteryRearmed ?? []), ...obs.lowBatteryRearmed])] : [];
+  await maybeReportDeparture(d, uid, obs, now, targets.length > 0);
 
   const cursor = await loadCursor();
   if (cursor.authMissingSince !== null) await saveCursor({ authMissingSince: null });
@@ -595,7 +672,7 @@ async function processSamples(
   const noteKey = noteExtras.note ?? '';
   const noteChanged = targets.length > 0 && (cursor.lastNoteKey ?? '') !== noteKey;
   const force = cursor.lastTargetsKey !== key || needsHeartbeatAnnounce(obs.lastSentHb, plan) || lowFired.length > 0 || noteChanged;
-  const decision = shouldPublish(cursor.lastPublished, { sample: norm.sample, battery_pct: pct, activity }, plan.profile, now, force);
+  const decision = shouldPublish(cursor.lastPublished, { sample: norm.sample, battery_pct: pubPct, activity }, plan.profile, now, force);
   let lastLiveTs = cursor.lastLiveTs;
 
   if (decision.publish) {
@@ -608,8 +685,8 @@ async function processSamples(
     const finalTargets = targets.filter((t) => latestIds.has(t.share_id));
     const finalLinks = linkTargets.filter((t) => latestLinkIds.has(t.link_id));
     if (finalTargets.length === 0 && finalLinks.length === 0) return;
-    const lastPublished = { lat: norm.sample.lat, lng: norm.sample.lng, sent_at: now, battery_pct: pct, activity };
-    const queueSample = toOutboxSample(norm.sample, device, latest, activity, hb);
+    const lastPublished = { lat: norm.sample.lat, lng: norm.sample.lng, sent_at: now, battery_pct: pubPct, activity };
+    const queueSample = toOutboxSample(norm.sample, pubDevice, latest, activity, hb);
 
     // Çevrimdışı: RTDB SDK kuyruğuna DEĞİL, Faz 3 kalıcı kuyruğuna (zincir beklemez; "Durdur" kuyruğu da temizler).
     if (!(await d.waitOnline(CONNECT_WAIT_MS))) {
@@ -629,13 +706,13 @@ async function processSamples(
     const friendExtras = { hb, ...noteExtras };
     const friendResult: PublishResult | null = finalTargets.length
       ? await publishSample(
-          { sample: norm.sample, device, senderId: uid, targets: finalTargets, now, activity, extras: friendExtras },
+          { sample: norm.sample, device: pubDevice, senderId: uid, targets: finalTargets, now, activity, extras: friendExtras },
           { ...d.publisherDeps(uid, nowFn), isAllowed: (id) => !d.isHeld() && !d.isBlocked(id) },
         )
       : null;
     const linkResult: LinkPublishResult | null = finalLinks.length
       ? await publishLinkSample(
-          { sample: norm.sample, device, targets: finalLinks, now, extras },
+          { sample: norm.sample, device: pubDevice, targets: finalLinks, now, extras },
           { ...d.linkPublisherDeps(uid, nowFn), isAllowed: (id) => !d.isHeld() && !d.isLinkBlocked(id) },
         )
       : null;

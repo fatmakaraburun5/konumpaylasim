@@ -20,12 +20,24 @@
  * kimlik `share-expiring-link:<link_id>`, veri `kind: 'link_expiring'` + `link_id` (eylem `link_share_extend`
  * çağırır). Süresiz bağlantı için de haftalık "Konum bağlantın hâlâ açık" hatırlatması planlanır.
  */
-import { DURATION_LIMITS, formatClock, NOTIFICATION_CHANNELS_F4, uuidV4, type EpochMs, type LinkId, type ShareSession } from '@konum/core';
+import {
+  DURATION_LIMITS,
+  formatClock,
+  LEGACY_NOTIFICATION_CHANNELS,
+  NOTIFICATION_CHANNELS_F4,
+  NOTIFICATION_CHANNELS_F7,
+  SOS_ALARM_SOUND,
+  uuidV4,
+  type EpochMs,
+  type LinkId,
+  type ShareSession,
+} from '@konum/core';
 import * as Notifications from './expoNotifications';
 import { Platform } from 'react-native';
 import { lightColors } from '../../ui/tokens';
 import { isF4PushType } from './f4Push';
 import { isF5PushType } from './f5Push';
+import { isF7PushType } from './f7Push';
 import {
   ACTION_EXTEND,
   CHANNELS,
@@ -80,28 +92,56 @@ let configured: Promise<void> | null = null;
 
 /**
  * Faz 4 Android kanalları (kanal ayarları ilk oluşturmadan sonra yalnızca kullanıcı tarafından değiştirilebilir):
- *  - `sos`: IMPORTANCE_MAX, rahatsız etme modunu aşar (`bypassDnd`; kullanıcı "Rahatsız Etme erişimi" verdiyse,
- *    ACCESS_NOTIFICATION_POLICY), kilit ekranında tam içerik, alarm sesi + uzun titreşim.
+ *  - `sos_alarm` (Faz 7; Faz 4'teki `sos` kanalının yerine): IMPORTANCE_MAX, rahatsız etme modunu aşar (`bypassDnd`; kullanıcı "Rahatsız Etme erişimi" verdiyse,
+ *    ACCESS_NOTIFICATION_POLICY), kilit ekranında tam içerik, özel alarm sesi (`sos_alarm.wav`) + uzun titreşim.
  *  - `ping`: IMPORTANCE_HIGH (afiş + ses).
  */
 export async function configureF4Channels(): Promise<void> {
-  await Notifications.setNotificationChannelAsync(CHANNELS.sos, {
-    name: 'Acil durum (SOS)',
-    description: 'Acil durum kişin olduğun biri tehlikede olduğunu bildirdiğinde',
+  // Faz 7: özel alarm sesli SOS kanalı. Android kanalın sesi / önemi kurulduktan sonra değiştirilemez: yeni kimlik
+  // (`sos_alarm`) açılır, Faz 4 kanalı (`sos`) silinir. Ses `res/raw/sos_alarm` (expo-notifications `sounds`).
+  await Notifications.setNotificationChannelAsync(CHANNELS.sosAlarm, {
+    name: 'Acil durum (SOS) alarmı',
+    description: 'Acil durum kişin olduğun biri tehlikede olduğunu bildirdiğinde alarm sesiyle çalar',
     importance: Notifications.AndroidImportance.MAX,
     bypassDnd: true,
     lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
-    sound: 'default',
+    sound: SOS_ALARM_SOUND.file,
     enableVibrate: true,
     vibrationPattern: [0, 800, 300, 800, 300, 1200],
     enableLights: true,
     lightColor: '#DC2626',
-    // [Varsayım] Alarm akışı: medya sesi kısıkken de duyulur (kullanıcı kanal ayarından değiştirebilir).
+    // Alarm akışı: medya sesi kısıkken de duyulur (kullanıcı kanal ayarından değiştirebilir).
     audioAttributes: { usage: Notifications.AndroidAudioUsage.ALARM },
   });
+  for (const legacy of LEGACY_NOTIFICATION_CHANNELS) await Notifications.deleteNotificationChannelAsync(legacy).catch(() => undefined);
   await Notifications.setNotificationChannelAsync(CHANNELS.ping, {
     name: 'Buradayım / Yoldayım',
     description: 'Arkadaşın tek dokunuşla durumunu gönderdiğinde',
+    importance: Notifications.AndroidImportance.HIGH,
+    sound: 'default',
+  });
+  await configureF7Channels();
+}
+
+/** Faz 7: heads-up kanalları (IMPORTANCE_HIGH = uygulama dışındayken üstten banner). */
+export async function configureF7Channels(): Promise<void> {
+  await Notifications.setNotificationChannelAsync(CHANNELS.movement, {
+    name: 'Varış, ayrılış ve hareket',
+    description: '"Ayşe eve girdi", "Mehmet yola çıktı" gibi anlık uyarılar',
+    importance: Notifications.AndroidImportance.HIGH,
+    lockscreenVisibility: Notifications.AndroidNotificationVisibility.PRIVATE,
+    sound: 'default',
+    enableVibrate: true,
+  });
+  await Notifications.setNotificationChannelAsync(CHANNELS.events, {
+    name: 'Etkinlikler',
+    description: 'Etkinlik davetleri, oylamalar, yanıtlar ve iptaller',
+    importance: Notifications.AndroidImportance.HIGH,
+    sound: 'default',
+  });
+  await Notifications.setNotificationChannelAsync(CHANNELS.eventReminders, {
+    name: 'Etkinlik hatırlatmaları',
+    description: 'Buluşmadan 1 gün önce ve buluşma günü sabah 08:00',
     importance: Notifications.AndroidImportance.HIGH,
     sound: 'default',
   });
@@ -123,6 +163,10 @@ async function doConfigure(): Promise<void> {
       // Faz 5: bölge olayı, buluşma önerisi / yanıtı, kural paylaşımı başladı: afiş + ses.
       if (isF5PushType(type) || type === 'zone_share_started') {
         return { shouldShowBanner: true, shouldShowList: true, shouldPlaySound: type !== 'meetup_response', shouldSetBadge: false };
+      }
+      // Faz 7: etkinlik ve hareket bildirimleri önde de afiş (+ ses; yanıtlar sessiz).
+      if (isF7PushType(type)) {
+        return { shouldShowBanner: true, shouldShowList: true, shouldPlaySound: type !== 'event_rsvp', shouldSetBadge: false };
       }
       if (isF4PushType(type)) {
         const isSos = type === 'sos';
@@ -179,6 +223,10 @@ async function doConfigure(): Promise<void> {
     previewPlaceholder: 'Acil durum uyarısı — görmek için aç',
   }).catch(() => undefined);
   await Notifications.setNotificationCategoryAsync(NOTIFICATION_CHANNELS_F4.ping, [], { showTitle: true }).catch(() => undefined);
+  // Faz 7 iOS kategorileri (backend `aps.category`): dokunma etkinliği / haritayı açar.
+  for (const c of [NOTIFICATION_CHANNELS_F7.movement, NOTIFICATION_CHANNELS_F7.events, NOTIFICATION_CHANNELS_F7.eventReminders]) {
+    await Notifications.setNotificationCategoryAsync(c, [], { showTitle: true }).catch(() => undefined);
+  }
 }
 
 /** Planlanan (ya da teslim edilmiş) bildirimlerin `prompt_at` değerleri; -1 = önceki çalıştırmadan, anı bilinmiyor. */
