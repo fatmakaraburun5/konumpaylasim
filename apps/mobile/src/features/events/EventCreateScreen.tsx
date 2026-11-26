@@ -1,15 +1,14 @@
 /**
- * Faz 7: "Etkinlik oluştur" (app/(main)/events/new.tsx).
+ * Faz 7: "Etkinlik oluştur" (app/(main)/events/new.tsx). Davetliler her şeyi TEK seferde işaretler:
  *
  *   ad (≤ 60) · açıklama (≤ 300) · tarih çipleri (bugünden 3 hafta; sunucu 180 güne kadar kabul eder)
  *   davetliler: yalnızca beni buluşmaya / etkinliğe davet etmeme izin veren arkadaşlar seçilebilir (Faz 8
  *     `meetup_invite`); izni olmayan satır pasif ve "izin yok" etiketli. En çok 20 kişi.
- *   mekan seçenekleri (isteğe bağlı, en çok 3): şimdi girilmezse katılacağını söyleyenler önerir.
- *   saat seçenekleri (isteğe bağlı, 2–4): girilirse mekan kesinleşince saat oylaması hemen başlar.
- *   oylama süresi: 2 sa · 6 sa · 1 gün · 2 gün.
+ *   mekan seçenekleri (zorunlu, 1–3; tekse sabit) · saat seçenekleri (zorunlu, 1–4; tekse sabit)
+ *   yanıt süresi: 2 sa · 6 sa · 1 gün · 2 gün. Herkes yanıtlayınca ya da süre dolunca sonuçlar düzenleyene düşer.
  * Sınırlar core şemasıyla aynı ölçüyle (kod noktası) denetlenir; sunucu ayrıca doğrular.
  */
-import { EVENT_LIMITS, EVENT_TEXT, eventTextLength, formatMinuteOfDay, parseClock, uuidV4 } from '@konum/core';
+import { EVENT_LIMITS, EVENT_TEXT, eventTextLength } from '@konum/core';
 import { useRouter } from 'expo-router';
 import { useMemo, useState } from 'react';
 import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, TextInput, View } from 'react-native';
@@ -21,13 +20,8 @@ import { pickerRowAccess } from '../access/accessModel';
 import { useCanFn } from '../access/useAccess';
 import { FriendAvatar } from '../profile/FriendAvatar';
 import { Button, cardShadow, Chip, CheckRow, IconButton, Text, useTheme } from '../../ui';
-import { dateChoices, deviceTimeZone, TIME_PRESETS, toggleMinute, voteWindowLabel } from './eventModel';
-
-interface VenueDraft {
-  key: string;
-  name: string;
-  address: string;
-}
+import { dateChoices, deviceTimeZone, voteWindowLabel } from './eventModel';
+import { newVenueDraft, optionsProblem, TimeFields, VenueFields, venueInputs, type VenueDraft } from './EventOptionsFields';
 
 export function EventCreateScreen() {
   const { colors, radius, spacing, typography } = useTheme();
@@ -42,9 +36,8 @@ export function EventCreateScreen() {
   const [description, setDescription] = useState('');
   const [date, setDate] = useState<string>(dates[1]?.date ?? dates[0]!.date);
   const [invitees, setInvitees] = useState<string[]>([]);
-  const [venues, setVenues] = useState<VenueDraft[]>([]);
+  const [venues, setVenues] = useState<VenueDraft[]>(() => [newVenueDraft()]);
   const [minutes, setMinutes] = useState<number[]>([]);
-  const [customTime, setCustomTime] = useState('');
   const [windowMs, setWindowMs] = useState<number>(EVENT_LIMITS.defaultVoteWindowMs);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -52,16 +45,18 @@ export function EventCreateScreen() {
   const titleLen = eventTextLength(title.trim());
   const descLen = eventTextLength(description.trim());
   const filledVenues = venues.filter((v) => v.name.trim().length > 0);
-  const venueTooLong = venues.some((v) => eventTextLength(v.name.trim()) > EVENT_LIMITS.venueNameMaxChars || eventTextLength(v.address.trim()) > EVENT_LIMITS.venueAddressMaxChars);
-  const timesInvalid = minutes.length === 1;
-  const canSubmit =
-    titleLen > 0 &&
-    titleLen <= EVENT_LIMITS.titleMaxChars &&
-    descLen <= EVENT_LIMITS.descriptionMaxChars &&
-    invitees.length > 0 &&
-    !venueTooLong &&
-    !timesInvalid &&
-    !busy;
+  // Gönder düğmesi pasifken nedeni altta yazılır (ilk eksik).
+  const blocker =
+    titleLen === 0
+      ? 'Etkinliğe bir ad ver.'
+      : titleLen > EVENT_LIMITS.titleMaxChars
+        ? `Ad en çok ${EVENT_LIMITS.titleMaxChars} karakter olabilir.`
+        : descLen > EVENT_LIMITS.descriptionMaxChars
+          ? `Açıklama en çok ${EVENT_LIMITS.descriptionMaxChars} karakter olabilir.`
+          : invitees.length === 0
+            ? 'Davet edilecek en az bir kişi seç.'
+            : optionsProblem(venues, minutes);
+  const canSubmit = blocker === null && !busy;
 
   const inputStyle = [typography.body, styles.input, { color: colors.text, backgroundColor: colors.surfaceAlt, borderRadius: radius.md, paddingHorizontal: spacing.md }];
   const card = [cardShadow, { backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.md, gap: spacing.sm }];
@@ -69,17 +64,6 @@ export function EventCreateScreen() {
   const toggleInvitee = (uid: string) => {
     setError(null);
     setInvitees((prev) => (prev.includes(uid) ? prev.filter((u) => u !== uid) : prev.length >= EVENT_LIMITS.maxInvitees ? prev : [...prev, uid]));
-  };
-
-  const addCustomTime = () => {
-    const m = parseClock(customTime);
-    if (m === null) {
-      setError('Saati 19:30 biçiminde yaz.');
-      return;
-    }
-    setMinutes((prev) => toggleMinute(prev.filter((x) => x !== m), m));
-    setCustomTime('');
-    setError(null);
   };
 
   const submit = async () => {
@@ -92,7 +76,7 @@ export function EventCreateScreen() {
       date,
       time_zone: timeZone,
       invitee_ids: invitees,
-      venue_options: filledVenues.map((v) => ({ name: v.name.trim(), address: v.address.trim() ? v.address.trim() : null, location: null, place_id: null })),
+      venue_options: venueInputs(venues),
       time_minutes: minutes,
       vote_window_ms: windowMs,
     });
@@ -143,7 +127,7 @@ export function EventCreateScreen() {
         <View style={card}>
           <Text variant="heading">Tarih</Text>
           <Text variant="caption" color="textSecondary">
-            Aşama 1: davetliler bu tarihe katılıp katılamayacağını bildirir.
+            Davetliler bu tarihe katılıp katılamayacağını, mekanı ve saati tek yanıtta bildirir.
           </Text>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: spacing.xs }}>
             {dates.map((d) => (
@@ -183,81 +167,41 @@ export function EventCreateScreen() {
         </View>
 
         <View style={card}>
-          <Text variant="heading">{`Mekan seçenekleri (${filledVenues.length}/${EVENT_LIMITS.venueOptions})`}</Text>
+          <Text variant="heading">{`Mekan seçenekleri (${filledVenues.length}/${EVENT_LIMITS.maxVenueOptions})`}</Text>
           <Text variant="caption" color="textSecondary">
-            Aşama 2 için 3 mekan gerekir. Şimdi eklemezsen &quot;Katılacağım&quot; diyenler önerebilir; en çok oyu alan kazanır.
+            En az 1, en çok 3 mekan. Birden çok yazarsan davetliler birini seçer; tek mekan sabit kalır.
           </Text>
-          {venues.map((v, i) => (
-            <View key={v.key} style={[styles.venue, { gap: spacing.xs, borderColor: colors.border, borderRadius: radius.md, padding: spacing.sm }]}>
-              <View style={[styles.row, { gap: spacing.xs }]}>
-                <TextInput
-                  value={v.name}
-                  onChangeText={(name) => setVenues((list) => list.map((x) => (x.key === v.key ? { ...x, name } : x)))}
-                  placeholder={`Mekan ${i + 1} adı`}
-                  placeholderTextColor={colors.textSecondary}
-                  accessibilityLabel={`Mekan ${i + 1} adı`}
-                  maxLength={EVENT_LIMITS.venueNameMaxChars * 2}
-                  style={[inputStyle, styles.flex]}
-                />
-                <IconButton icon="close" accessibilityLabel={`Mekan ${i + 1} seçeneğini kaldır`} onPress={() => setVenues((list) => list.filter((x) => x.key !== v.key))} />
-              </View>
-              <TextInput
-                value={v.address}
-                onChangeText={(address) => setVenues((list) => list.map((x) => (x.key === v.key ? { ...x, address } : x)))}
-                placeholder="Adres ya da semt (isteğe bağlı)"
-                placeholderTextColor={colors.textSecondary}
-                accessibilityLabel={`Mekan ${i + 1} adresi`}
-                maxLength={EVENT_LIMITS.venueAddressMaxChars * 2}
-                style={inputStyle}
-              />
-            </View>
-          ))}
-          {venues.length < EVENT_LIMITS.venueOptions ? (
-            <Button title="Mekan ekle" variant="secondary" onPress={() => setVenues((list) => [...list, { key: uuidV4(), name: '', address: '' }])} />
-          ) : null}
+          <VenueFields
+            venues={venues}
+            onChange={(v) => {
+              setError(null);
+              setVenues(v);
+            }}
+          />
         </View>
 
         <View style={card}>
           <Text variant="heading">{`Saat seçenekleri (${minutes.length}/${EVENT_LIMITS.maxTimeOptions})`}</Text>
-          <Text variant="caption" color={timesInvalid ? 'danger' : 'textSecondary'}>
-            {timesInvalid
-              ? 'Saat oylaması için en az 2 seçenek gerekli (ya da hiç ekleme, sonra eklersin).'
-              : 'İsteğe bağlı. Eklersen mekan kesinleşince Aşama 3 saat oylaması hemen başlar.'}
+          <Text variant="caption" color="textSecondary">
+            En az 1, en çok 4 saat; her biri en az 30 dk sonrası olmalı. Birden çoksa davetliler birini seçer.
           </Text>
-          <View style={[styles.wrap, { gap: spacing.xs }]}>
-            {TIME_PRESETS.map((m) => (
-              <Chip key={m} label={formatMinuteOfDay(m)} selected={minutes.includes(m)} onPress={() => setMinutes((prev) => toggleMinute(prev, m))} />
-            ))}
-            {minutes
-              .filter((m) => !TIME_PRESETS.includes(m))
-              .map((m) => (
-                <Chip key={`c${m}`} label={formatMinuteOfDay(m)} selected onPress={() => setMinutes((prev) => toggleMinute(prev, m))} />
-              ))}
-          </View>
-          <View style={[styles.row, { gap: spacing.xs }]}>
-            <TextInput
-              value={customTime}
-              onChangeText={setCustomTime}
-              placeholder="Başka saat: 17:45"
-              placeholderTextColor={colors.textSecondary}
-              accessibilityLabel="Başka saat"
-              keyboardType="numbers-and-punctuation"
-              maxLength={5}
-              onSubmitEditing={addCustomTime}
-              style={[inputStyle, styles.flex]}
-            />
-            <Button title="Ekle" variant="secondary" block={false} onPress={addCustomTime} disabled={!customTime.trim() || minutes.length >= EVENT_LIMITS.maxTimeOptions} />
-          </View>
+          <TimeFields
+            minutes={minutes}
+            onChange={(m) => {
+              setError(null);
+              setMinutes(m);
+            }}
+          />
         </View>
 
         <View style={card}>
-          <Text variant="heading">Oylama süresi</Text>
+          <Text variant="heading">Yanıt süresi</Text>
           <Text variant="caption" color="textSecondary">
-            Herkes oy verince oylama kendiliğinden kapanır; vermeyenleri bu süre kadar bekleriz.
+            {EVENT_TEXT.createHint}
           </Text>
           <View style={[styles.wrap, { gap: spacing.xs }]}>
             {EVENT_LIMITS.voteWindowsMs.map((ms) => (
-              <Chip key={ms} label={voteWindowLabel(ms)} selected={windowMs === ms} onPress={() => setWindowMs(ms)} />
+              <Chip key={ms} label={voteWindowLabel(ms)} selected={windowMs === ms} onPress={() => setWindowMs(ms)} testID={`event-window-${ms}`} />
             ))}
           </View>
         </View>
@@ -265,6 +209,11 @@ export function EventCreateScreen() {
         {error ? (
           <Text variant="label" color="danger" accessibilityLiveRegion="polite" testID="event-create-error">
             {error}
+          </Text>
+        ) : null}
+        {!error && blocker ? (
+          <Text variant="caption" color="textSecondary" testID="event-create-blocker">
+            {blocker}
           </Text>
         ) : null}
         <Button title={invitees.length ? `Davet et (${invitees.length} kişi)` : 'Davet edilecek kişileri seç'} onPress={() => void submit()} disabled={!canSubmit} loading={busy} testID="event-create-submit" />
@@ -281,5 +230,4 @@ const styles = StyleSheet.create({
   flex: { flex: 1 },
   input: { minHeight: 44, paddingVertical: 10 },
   multiline: { minHeight: 80, textAlignVertical: 'top' },
-  venue: { borderWidth: StyleSheet.hairlineWidth },
 });

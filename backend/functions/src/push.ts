@@ -552,14 +552,21 @@ export function buildPermissionGrantedPush(granterName: string, by: UserId, scop
 export type EventPushData = Extract<PushData, { type: 'event_invite' | 'event_stage' | 'event_rsvp' | 'event_reminder' | 'event_cancelled' }>;
 
 /**
- * Etkinlik bildirimi. Davet, aşama, yanıt ve iptal `events` kanalında (IMPORTANCE_HIGH; iOS `active`); hatırlatmalar
- * `event_reminders` kanalında (iOS `time-sensitive`: buluşma günü Odak açıkken de görünsün). Aynı etkinliğin aynı türden
- * yeni bildirimi eskisinin yerine geçer (yanıtlar kişi başına). TTL: hatırlatma 2 sa, diğerleri 1 gün. [Varsayım]
+ * Etkinlik bildirimi. Davet, sonuç / kesinleşme, yanıt ve iptal `events` kanalında (IMPORTANCE_HIGH; iOS `active`);
+ * hatırlatmalar `event_reminders` kanalında (iOS `time-sensitive`: buluşma günü Odak açıkken de görünsün). Aynı etkinliğin
+ * aynı türden yeni bildirimi eskisinin yerine geçer (yanıtlar kişi başına, durum bildirimleri `notice` başına).
+ * TTL: hatırlatma 2 sa, diğerleri 1 gün. [Varsayım]
  */
 export function buildEventPush(text: { title: string; body: string }, data: EventPushData): PushMessage {
   const reminder = data.type === 'event_reminder';
   const tag = collapseId(
-    data.type === 'event_rsvp' ? `ev_${data.event_id}_rsvp_${data.by}` : reminder ? `ev_${data.event_id}_rem` : `ev_${data.event_id}_${data.type}`,
+    data.type === 'event_rsvp'
+      ? `ev_${data.event_id}_rsvp_${data.by}`
+      : data.type === 'event_stage'
+        ? `ev_${data.event_id}_stage_${data.notice}`
+        : reminder
+          ? `ev_${data.event_id}_rem`
+          : `ev_${data.event_id}_${data.type}`,
   );
   const channelId = reminder ? NOTIFICATION_CHANNELS_F7.eventReminders : NOTIFICATION_CHANNELS_F7.events;
   return {

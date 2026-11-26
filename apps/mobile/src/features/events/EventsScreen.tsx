@@ -6,7 +6,7 @@
  *     (yakın tarih önde), sonra biten / iptal edilenler. Kart: başlık · aşama · özet (mekan · tarih saat) · katılım.
  *   Bildirimler: davet, aşama, yanıt, hatırlatma, iptal (30 gün); sekme açılınca okundu sayılır.
  */
-import { attendanceCounts, EVENT_STAGE_TEXT, EVENT_TEXT, eventSummaryLine, eventTodoFor, isActiveEventStage, sortEventsForList, type EventDoc } from '@konum/core';
+import { attendanceCounts, EVENT_TEXT, eventPhaseText, eventSummaryLine, eventTodoFor, isActiveEventStage, sortEventsForList, type EventDoc } from '@konum/core';
 import { useRouter } from 'expo-router';
 import { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, View } from 'react-native';
@@ -54,7 +54,7 @@ export function EventsScreen({ initialTab = 'events' }: { initialTab?: Tab }) {
         key={e.event_id}
         testID={`event-card-${e.event_id}`}
         accessibilityRole="button"
-        accessibilityLabel={`${e.title}. ${EVENT_STAGE_TEXT[e.stage]}. ${eventSummaryLine(e)}${todo ? `. ${TODO_TEXT[todo]}` : ''}`}
+        accessibilityLabel={`${e.title}. ${eventPhaseText(e)}. ${eventSummaryLine(e)}${todo ? `. ${TODO_TEXT[todo]}` : ''}`}
         onPress={() => open(e)}
         style={({ pressed }) => [card, { opacity: pressed ? 0.8 : ended ? 0.7 : 1 }]}
       >
@@ -69,7 +69,7 @@ export function EventsScreen({ initialTab = 'events' }: { initialTab?: Tab }) {
           ) : null}
         </View>
         <Text variant="label" color={e.stage === 'cancelled' ? 'danger' : 'primary'}>
-          {EVENT_STAGE_TEXT[e.stage]}
+          {eventPhaseText(e)}
         </Text>
         <Text variant="body">{eventSummaryLine(e)}</Text>
         <Text variant="caption" color="textSecondary">

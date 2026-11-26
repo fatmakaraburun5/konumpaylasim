@@ -12,10 +12,11 @@ export interface ChipProps {
   tone?: 'default' | 'warning';
   style?: StyleProp<ViewStyle>;
   accessibilityHint?: string;
+  testID?: string;
 }
 
 /** Seçilebilir çip (süre seçimi, uzatma). En az 44 pt yükseklik. */
-export function Chip({ label, selected = false, onPress, disabled, tone = 'default', style, accessibilityHint }: ChipProps) {
+export function Chip({ label, selected = false, onPress, disabled, tone = 'default', style, accessibilityHint, testID }: ChipProps) {
   const { colors, radius, spacing } = useTheme();
   const bg = selected ? colors.primarySoft : tone === 'warning' ? colors.surface : colors.surfaceAlt;
   const border = selected ? colors.primary : tone === 'warning' ? colors.warning : colors.border;
@@ -25,6 +26,7 @@ export function Chip({ label, selected = false, onPress, disabled, tone = 'defau
       accessibilityRole="button"
       accessibilityState={{ selected, disabled: !!disabled }}
       accessibilityHint={accessibilityHint}
+      testID={testID}
       onPress={onPress}
       disabled={disabled}
       hitSlop={4}

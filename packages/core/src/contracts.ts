@@ -75,12 +75,9 @@ export const CALLABLES = {
   consentWithdraw: 'consent_withdraw',
   // Faz 7 (bkz. `events.ts`, `privacy.ts`, `movement.ts`)
   eventCreate: 'event_create',
-  eventRsvp: 'event_rsvp',
-  eventVenuePropose: 'event_venue_propose',
-  eventVenueRemove: 'event_venue_remove',
-  eventVote: 'event_vote',
-  eventAdvance: 'event_advance',
-  eventTimeOptionsSet: 'event_time_options_set',
+  eventRespond: 'event_respond',
+  eventFinalize: 'event_finalize',
+  eventOptionsSet: 'event_options_set',
   eventUpdate: 'event_update',
   eventInviteAdd: 'event_invite_add',
   eventCancel: 'event_cancel',
@@ -541,9 +538,8 @@ export const ERROR_CODES = {
   // Faz 7 (core `EVENT_ERROR_CODES`)
   event_not_found: { retryable: false, message: 'Etkinlik bulunamadı ya da artık bu etkinlikte değilsin' },
   event_not_owner: { retryable: false, message: 'Bunu yalnızca etkinliği oluşturan yapabilir' },
-  event_stage_mismatch: { retryable: false, message: 'Etkinlik başka bir aşamaya geçti, ekran yenilendi' },
-  event_not_eligible: { retryable: false, message: 'Oy vermek ya da mekan önermek için önce "Katılacağım" demelisin' },
-  event_options_invalid: { retryable: false, message: 'Seçenekler geçersiz' },
+  event_stage_mismatch: { retryable: false, message: 'Etkinlik kesinleşti ya da sona erdi, ekran yenilendi' },
+  event_options_invalid: { retryable: false, message: 'Mekan ya da saat seçimi geçersiz, seçenekleri kontrol et' },
   event_vote_tie: { retryable: false, message: 'Oylar eşit: kazananı seçmelisin' },
   event_no_attendees: { retryable: false, message: 'Henüz "Katılacağım" diyen yok' },
   event_date_invalid: { retryable: false, message: 'Tarih bugünden sonraki 180 gün içinde olmalı' },
@@ -633,10 +629,10 @@ export type PushData =
   // Faz 7 (koordinat YOK; mekan adı gövdede olabilir, konumu `events`'ten okunur)
   /** Davetliye, görünür + uygulama içi kutu: "Ayşe seni “Kahvaltı” etkinliğine davet etti · 29 Kasım Cuma". */
   | { type: 'event_invite'; event_id: string; from: string }
-  /** Üyelere: aşama değişti (`notice` = core `EventStageNotice`). */
+  /** Durum bildirimi (`notice` = core `EventStageNotice`): sahibe `results`, davetlilere `final` / `date_changed` / `options_changed`. */
   | { type: 'event_stage'; event_id: string; notice: string }
-  /** Sahibe: davetli yanıt verdi. `round` = initial | final, `status` = going | not_going. */
-  | { type: 'event_rsvp'; event_id: string; by: string; round: string; status: string }
+  /** Sahibe: sonuç bildiriminden sonra bir davetli yanıt verdi / değiştirdi. `status` = going | not_going. */
+  | { type: 'event_rsvp'; event_id: string; by: string; status: string }
   /** Katılanlara: `kind` = day_before | morning. */
   | { type: 'event_reminder'; event_id: string; kind: string }
   | { type: 'event_cancelled'; event_id: string }

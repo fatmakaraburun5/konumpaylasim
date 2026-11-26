@@ -1,33 +1,36 @@
 /**
- * Faz 7: etkinlik kartı (app/(main)/events/[id].tsx). Üç aşamalı oylama, core `reduceEvent` sunucuda çalışır:
+ * Faz 7: etkinlik kartı (app/(main)/events/[id].tsx). Tek seferde oylama, core `reduceEvent` sunucuda çalışır:
  *
- *   Aşama 1 · Tarih ve katılım: davetli "Katılacağım" / "Katılamayacağım" der; katılamayacaksa 300 karakterlik notu
- *     kartta herkes görür. Mekan seçenekleri burada toplanır (sahip + "Katılacağım" diyen her davetli 1 öneri,
- *     toplam 3). 3 seçenek ve en az bir katılımcı olunca sahip "Mekan oylamasını başlat"a basar.
- *   Aşama 2 · Mekan oylaması: katılacaklar 3 mekandan birine oy verir; herkes oy verince ya da süre dolunca en çok
- *     oyu alan kazanır (eşitlikte sahip seçer, süre dolumunda ilk önerilen).
- *   Aşama 3 · Saat oylaması ve son onay: sahip 2–4 saat seçeneği ekler (oluştururken eklediyse hemen başlar), oylama
- *     aynı kuralla kapanır; buluşma kesinleşince herkes son onayını verir. Hatırlatmalar 1 gün önce ve günün 08:00'i.
+ *   Davetli (yanıtlar toplanırken): TEK form. "Katılacağım" + mekan + saat ya da "Katılamayacağım" + (≤ 300 karakterlik
+ *     not, kartta herkes görür). Tek düğmeyle gönderilir; düzenleyen onaylayana kadar değiştirilebilir. Oy sayıları
+ *     davetliye gösterilmez.
+ *   Düzenleyen: Sonuçlar kartı (katılım, mekan ve saat oy dağılımı, kimin neyi seçtiği). Herkes yanıtlayınca ya da yanıt
+ *     süresi dolunca sonuçların tamamı tek bildirimle gelir; düzenleyen istediği an onaylar (eşitlikte kazananı seçer).
+ *     Yanıtlar gelmeden "Seçenekleri düzenle" ile mekan / saat değiştirilebilir.
+ *   Kesinleşince: herkese bildirim, 1 gün önce ve günün 08:00'inde hatırlatma; davetli başlangıca kadar katılımını
+ *     güncelleyebilir.
  */
 import {
   ATTENDANCE_TEXT,
   ATTENDANCE_THIRD_PERSON,
   EVENT_LIMITS,
-  EVENT_STAGE_TEXT,
   EVENT_TEXT,
+  attendanceCounts,
   eventNoteCounter,
+  eventPhaseText,
   eventSummaryLine,
   eventTally,
-  eventVoters,
-  finalStatusOf,
   formatEventDate,
   formatMinuteOfDay,
-  initialStatusOf,
+  goingInvitees,
   isActiveEventStage,
-  parseClock,
+  isAnswerComplete,
+  pendingInvitees,
+  timeCandidates,
   type AttendanceStatus,
+  type EpochMs,
+  type EventAnswer,
   type EventDoc,
-  type RsvpRound,
   type UserId,
   type VoteKind,
 } from '@konum/core';
@@ -41,12 +44,33 @@ import { useFriendNames, useFriends } from '../../state/friendsStore';
 import { pickerRowAccess } from '../access/accessModel';
 import { useCanFn } from '../access/useAccess';
 import { FriendAvatar } from '../profile/FriendAvatar';
-import { Button, cardShadow, Chip, CheckRow, Icon, IconButton, MIN_TOUCH, Text, useTheme } from '../../ui';
-import { deadlineLabel, memberName, stageSteps, TIME_PRESETS, toggleMinute, voteWindowLabel } from './eventModel';
+import { Button, cardShadow, Chip, CheckRow, Icon, MIN_TOUCH, Text, IconButton, useTheme } from '../../ui';
+import { deadlineLabel, memberName, stageSteps } from './eventModel';
+import { optionsProblem, TimeFields, VenueFields, venueDraftsFrom, venueInputs, type VenueDraft } from './EventOptionsFields';
 import { useNow } from './useNow';
 
-export function EventDetailScreen({ eventId }: { eventId: string }) {
+type Act = (p: Promise<EventResult>) => Promise<boolean>;
+
+function useCard() {
   const { colors, radius, spacing } = useTheme();
+  return [cardShadow, { backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.md, gap: spacing.sm }];
+}
+
+const venueName = (doc: EventDoc, id: string | null) => doc.venue_options.find((o) => o.option_id === id)?.name ?? null;
+const timeLabel = (doc: EventDoc, id: string | null) => {
+  const t = doc.time_options.find((o) => o.option_id === id);
+  return t ? formatMinuteOfDay(t.minute_of_day) : null;
+};
+
+/** "Katılacağım · Moda Kahve · 10:00" (çoklu seçenekli türlerde seçim). */
+function answerLine(doc: EventDoc, a: EventAnswer): string {
+  if (a.status === 'not_going') return ATTENDANCE_TEXT.not_going;
+  const picks = [doc.venue_options.length > 1 ? venueName(doc, a.venue_option_id) : null, doc.time_options.length > 1 ? timeLabel(doc, a.time_option_id) : null];
+  return [ATTENDANCE_TEXT.going, ...picks.filter((x): x is string => !!x)].join(' · ');
+}
+
+export function EventDetailScreen({ eventId }: { eventId: string }) {
+  const { colors, spacing } = useTheme();
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const params = useLocalSearchParams<{ skipped?: string }>();
@@ -57,21 +81,18 @@ export function EventDetailScreen({ eventId }: { eventId: string }) {
   const friendNames = useFriendNames();
   const now = useNow(15_000);
   const [error, setError] = useState<string | null>(null);
-  const [tieLeaders, setTieLeaders] = useState<{ kind: VoteKind; ids: string[] } | null>(null);
+  const [editing, setEditing] = useState(false);
   const skipped = Number(params.skipped ?? 0);
+  const card = useCard();
 
   useEffect(() => {
     if (eventsStore.getState().focusId === eventId) eventsStore.getState().focus(null);
   }, [eventId]);
 
-  const act = async (p: Promise<EventResult>) => {
+  const act: Act = async (p) => {
     setError(null);
     const r = await p;
-    if (!r.ok) {
-      setError(r.error.message);
-      const leaders = r.extra.leaders;
-      if (r.error.code === 'event_vote_tie' && Array.isArray(leaders)) setTieLeaders((t) => (t ? { ...t, ids: leaders.map(String) } : null));
-    } else setTieLeaders(null);
+    if (!r.ok) setError(r.error.message);
     return r.ok;
   };
 
@@ -103,11 +124,8 @@ export function EventDetailScreen({ eventId }: { eventId: string }) {
 
   const isOwner = doc.owner_id === me;
   const name = (u: UserId) => memberName(doc, u, friendNames, me);
-  const card = [cardShadow, { backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.md, gap: spacing.sm }];
   const ended = !isActiveEventStage(doc.stage);
-  const myInitial = initialStatusOf(doc, me);
-  const voters = eventVoters(doc);
-  const canVote = voters.includes(me);
+  const started = doc.starts_at !== null && now >= doc.starts_at;
 
   return (
     <KeyboardAvoidingView style={[styles.root, { backgroundColor: colors.bg }]} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
@@ -115,7 +133,7 @@ export function EventDetailScreen({ eventId }: { eventId: string }) {
       <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ padding: spacing.md, gap: spacing.md, paddingBottom: insets.bottom + spacing.xl }}>
         <View style={card}>
           <Text variant="label" color={doc.stage === 'cancelled' ? 'danger' : 'primary'}>
-            {EVENT_STAGE_TEXT[doc.stage]}
+            {eventPhaseText(doc)}
           </Text>
           <Text variant="heading">{eventSummaryLine(doc)}</Text>
           <Text variant="caption" color="textSecondary">
@@ -130,89 +148,38 @@ export function EventDetailScreen({ eventId }: { eventId: string }) {
           ) : null}
         </View>
 
-        {/* Aşama 1: katılım ön onayı (oylama sürerken de verilebilir; geç gelen oy hakkı kazanır). */}
-        {!isOwner && (doc.stage === 'rsvp' || doc.stage === 'venue_vote' || doc.stage === 'time_vote') ? (
-          <RsvpCard
-            title={doc.stage === 'rsvp' ? `${formatEventDate(doc.date)} günü katılabilecek misin?` : 'Katılım durumun'}
-            current={doc.rsvp[me] ?? null}
-            round="initial"
-            busy={busy}
-            onSend={(status, note) => act(eventsStore.getState().rsvp(doc.event_id, 'initial', status, note))}
-          />
+        {doc.stage === 'voting' && !isOwner ? (
+          <BallotCard key={doc.date} doc={doc} me={me} now={now} busy={busy} act={act} />
         ) : null}
 
-        {doc.stage === 'rsvp' ? (
-          <VenueCollect doc={doc} me={me} isOwner={isOwner} busy={busy} name={name} act={act} />
-        ) : null}
-
-        {doc.stage === 'venue_vote' ? (
-          <VoteCard
-            doc={doc}
-            me={me}
-            kind="venue"
-            now={now}
-            canVote={canVote}
-            isOwner={isOwner}
-            busy={busy}
-            tie={tieLeaders?.kind === 'venue' ? tieLeaders.ids : null}
-            onVote={(id) => act(eventsStore.getState().vote(doc.event_id, 'venue', id))}
-            onClose={async (tieBreak) => {
-              setTieLeaders({ kind: 'venue', ids: tieLeaders?.ids ?? [] });
-              await act(eventsStore.getState().advance(doc.event_id, 'close_venue_vote', { tieBreak }));
-            }}
-          />
-        ) : null}
-
-        {doc.stage === 'time_vote' && doc.stage_deadline_at === null ? (
-          isOwner ? (
-            <TimeOptionsEditor doc={doc} busy={busy} onSave={(m) => act(eventsStore.getState().setTimes(doc.event_id, m))} />
+        {doc.stage === 'voting' && isOwner ? (
+          editing ? (
+            <OptionsEditor
+              doc={doc}
+              busy={busy}
+              onCancel={() => setEditing(false)}
+              onSave={async (venues, minutes) => {
+                const ok = await act(eventsStore.getState().setOptions(doc.event_id, venues, minutes));
+                if (ok) setEditing(false);
+              }}
+            />
           ) : (
-            <View style={card}>
-              <Text variant="heading">{EVENT_TEXT.waitingTimes}</Text>
-              <Text variant="label" color="textSecondary">
-                Mekan kesinleşti. Düzenleyen saat seçeneklerini ekleyince oylama başlayacak ve sana haber vereceğiz.
-              </Text>
-            </View>
+            <ResultsCard doc={doc} now={now} busy={busy} name={name} act={act} onEdit={() => setEditing(true)} />
           )
         ) : null}
 
-        {doc.stage === 'time_vote' && doc.stage_deadline_at !== null ? (
-          <VoteCard
-            doc={doc}
-            me={me}
-            kind="time"
-            now={now}
-            canVote={canVote}
-            isOwner={isOwner}
-            busy={busy}
-            tie={tieLeaders?.kind === 'time' ? tieLeaders.ids : null}
-            onVote={(id) => act(eventsStore.getState().vote(doc.event_id, 'time', id))}
-            onClose={async (tieBreak) => {
-              setTieLeaders({ kind: 'time', ids: tieLeaders?.ids ?? [] });
-              await act(eventsStore.getState().advance(doc.event_id, 'close_time_vote', { tieBreak }));
-            }}
-          />
-        ) : null}
-
-        {doc.stage === 'final' ? (
-          <View style={card}>
+        {doc.stage === 'final' || doc.stage === 'completed' ? (
+          <View style={card} testID="event-final">
             <Text variant="heading">{`Kesinleşti: ${eventSummaryLine(doc)}`}</Text>
-            <Text variant="caption" color="textSecondary">
-              {EVENT_TEXT.remindersNote}
-            </Text>
+            {doc.stage === 'final' ? (
+              <Text variant="caption" color="textSecondary">
+                {EVENT_TEXT.remindersNote}
+              </Text>
+            ) : null}
           </View>
         ) : null}
 
-        {doc.stage === 'final' && !isOwner ? (
-          <RsvpCard
-            title={EVENT_TEXT.finalQuestion}
-            current={doc.final_rsvp[me] ?? null}
-            round="final"
-            busy={busy}
-            disabled={doc.starts_at !== null && now >= doc.starts_at}
-            onSend={(status, note) => act(eventsStore.getState().rsvp(doc.event_id, 'final', status, note))}
-          />
-        ) : null}
+        {doc.stage === 'final' && !isOwner ? <AttendanceCard doc={doc} me={me} busy={busy} disabled={started} act={act} /> : null}
 
         {error ? (
           <Text variant="label" color="danger" accessibilityLiveRegion="polite" testID="event-error">
@@ -220,14 +187,9 @@ export function EventDetailScreen({ eventId }: { eventId: string }) {
           </Text>
         ) : null}
 
-        <Participants doc={doc} me={me} name={name} />
+        <Participants doc={doc} me={me} isOwner={isOwner} now={now} name={name} />
 
-        {isOwner && !ended ? <OwnerTools doc={doc} busy={busy} act={act} /> : null}
-        {!isOwner && myInitial === null && doc.stage === 'final' ? (
-          <Text variant="caption" color="textSecondary">
-            İlk aşamada yanıt vermedin; son onayını yine de verebilirsin.
-          </Text>
-        ) : null}
+        {isOwner && !ended && !started ? <OwnerTools doc={doc} busy={busy} act={act} /> : null}
       </ScrollView>
     </KeyboardAvoidingView>
   );
@@ -237,9 +199,9 @@ export function EventDetailScreen({ eventId }: { eventId: string }) {
 
 function Stepper({ doc }: { doc: EventDoc }) {
   const { colors, spacing } = useTheme();
-  const steps = stageSteps(doc.stage);
+  const steps = stageSteps(doc);
   return (
-    <View style={[styles.row, { gap: spacing.xs, marginTop: spacing.xs }]} accessibilityLabel={`İlerleme: ${EVENT_STAGE_TEXT[doc.stage]}`} testID="event-stepper">
+    <View style={[styles.row, { gap: spacing.xs, marginTop: spacing.xs }]} accessibilityLabel={`İlerleme: ${eventPhaseText(doc)}`} testID="event-stepper">
       {steps.map((s, i) => {
         const bg = s.state === 'done' ? colors.live : s.state === 'current' ? colors.primary : colors.surfaceAlt;
         const fg = s.state === 'todo' ? colors.textSecondary : colors.onPrimary;
@@ -267,386 +229,515 @@ function Stepper({ doc }: { doc: EventDoc }) {
   );
 }
 
-// --- katılım ------------------------------------------------------------------------------------
+// --- ortak: radyo satırı ve katılım düğmeleri ------------------------------------------------------------
 
-function RsvpCard({
-  title,
-  current,
-  round,
-  busy,
-  disabled = false,
-  onSend,
+function RadioRow({
+  label,
+  sub,
+  selected,
+  disabled,
+  onPress,
+  testID,
 }: {
-  title: string;
-  current: { status: AttendanceStatus; note: string | null } | null;
-  round: RsvpRound;
-  busy: boolean;
+  label: string;
+  sub?: string | null;
+  selected: boolean;
   disabled?: boolean;
-  onSend: (status: AttendanceStatus, note: string | null) => Promise<boolean>;
-}) {
-  const { colors, radius, spacing, typography } = useTheme();
-  const [noteOpen, setNoteOpen] = useState(false);
-  const [note, setNote] = useState(current?.note ?? '');
-  const counter = eventNoteCounter(note);
-  const card = [cardShadow, { backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.md, gap: spacing.sm }];
-
-  return (
-    <View style={card} testID={`event-rsvp-${round}`}>
-      <Text variant="heading">{title}</Text>
-      {current ? (
-        <Text variant="label" color={current.status === 'going' ? 'live' : 'warning'}>
-          {`Yanıtın: ${ATTENDANCE_TEXT[current.status]}`}
-        </Text>
-      ) : null}
-      <View style={[styles.row, { gap: spacing.xs }]}>
-        <Button
-          title={ATTENDANCE_TEXT.going}
-          variant={current?.status === 'going' ? 'primary' : 'secondary'}
-          block={false}
-          style={styles.flex}
-          disabled={busy || disabled}
-          onPress={() => {
-            setNoteOpen(false);
-            void onSend('going', null);
-          }}
-          testID={`event-rsvp-${round}-going`}
-        />
-        <Button
-          title={ATTENDANCE_TEXT.not_going}
-          variant={current?.status === 'not_going' ? 'danger' : 'secondary'}
-          block={false}
-          style={styles.flex}
-          disabled={busy || disabled}
-          onPress={() => setNoteOpen(true)}
-          testID={`event-rsvp-${round}-not-going`}
-        />
-      </View>
-      {noteOpen ? (
-        <View style={{ gap: spacing.xs }}>
-          <Text variant="label">{EVENT_TEXT.noteTitle}</Text>
-          <TextInput
-            value={note}
-            onChangeText={setNote}
-            placeholder={EVENT_TEXT.notePlaceholder}
-            placeholderTextColor={colors.textSecondary}
-            accessibilityLabel="Katılamama notu"
-            multiline
-            maxLength={EVENT_LIMITS.noteMaxChars * 2}
-            style={[typography.body, styles.input, styles.multiline, { color: colors.text, backgroundColor: colors.surfaceAlt, borderRadius: radius.md, paddingHorizontal: spacing.md }]}
-            testID={`event-rsvp-${round}-note`}
-          />
-          <Text variant="caption" color={counter.over ? 'danger' : 'textSecondary'} align="right" testID={`event-rsvp-${round}-counter`}>
-            {counter.label}
-          </Text>
-          <Button
-            title="Gönder"
-            variant="danger"
-            disabled={busy || counter.over}
-            loading={busy}
-            onPress={async () => {
-              const ok = await onSend('not_going', note.trim() ? note.trim() : null);
-              if (ok) setNoteOpen(false);
-            }}
-            testID={`event-rsvp-${round}-send`}
-          />
-        </View>
-      ) : current?.status === 'not_going' && current.note ? (
-        <Text variant="caption" color="textSecondary">{`Notun: “${current.note}”`}</Text>
-      ) : null}
-    </View>
-  );
-}
-
-// --- Aşama 1: mekan önerileri -------------------------------------------------------------------
-
-function VenueCollect({
-  doc,
-  me,
-  isOwner,
-  busy,
-  name,
-  act,
-}: {
-  doc: EventDoc;
-  me: UserId;
-  isOwner: boolean;
-  busy: boolean;
-  name: (u: UserId) => string;
-  act: (p: Promise<EventResult>) => Promise<boolean>;
-}) {
-  const { colors, radius, spacing, typography } = useTheme();
-  const [venueName, setVenueName] = useState('');
-  const [address, setAddress] = useState('');
-  const full = doc.venue_options.length >= EVENT_LIMITS.venueOptions;
-  const mineCount = doc.venue_options.filter((o) => o.proposed_by === me).length;
-  const going = doc.rsvp[me]?.status === 'going';
-  const canPropose = !full && (isOwner || (going && mineCount < EVENT_LIMITS.venueProposalsPerInvitee));
-  const card = [cardShadow, { backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.md, gap: spacing.sm }];
-  const inputStyle = [typography.body, styles.input, { color: colors.text, backgroundColor: colors.surfaceAlt, borderRadius: radius.md, paddingHorizontal: spacing.md }];
-
-  return (
-    <View style={card} testID="event-venues">
-      <Text variant="heading">{`Mekan seçenekleri (${doc.venue_options.length}/${EVENT_LIMITS.venueOptions})`}</Text>
-      {doc.venue_options.length === 0 ? (
-        <Text variant="label" color="textSecondary">
-          Henüz öneri yok. {isOwner ? 'Mekanları sen ekleyebilir ya da katılacakların önermesini bekleyebilirsin.' : '"Katılacağım" dersen bir mekan önerebilirsin.'}
-        </Text>
-      ) : (
-        doc.venue_options.map((o) => (
-          <View key={o.option_id} style={[styles.row, { gap: spacing.sm, minHeight: MIN_TOUCH }]}>
-            <Icon name="mapPin" size={20} color={colors.primary} />
-            <View style={styles.flex}>
-              <Text variant="body">{o.name}</Text>
-              <Text variant="caption" color="textSecondary">
-                {[o.address, `${name(o.proposed_by)} önerdi`].filter(Boolean).join(' · ')}
-              </Text>
-            </View>
-            {isOwner || o.proposed_by === me ? (
-              <IconButton icon="close" accessibilityLabel={`${o.name} önerisini kaldır`} disabled={busy} onPress={() => void act(eventsStore.getState().removeVenue(doc.event_id, o.option_id))} />
-            ) : null}
-          </View>
-        ))
-      )}
-      {canPropose ? (
-        <View style={{ gap: spacing.xs }}>
-          <TextInput
-            value={venueName}
-            onChangeText={setVenueName}
-            placeholder="Mekan adı (ör. Moda Kahve)"
-            placeholderTextColor={colors.textSecondary}
-            accessibilityLabel="Önerilen mekan adı"
-            maxLength={EVENT_LIMITS.venueNameMaxChars * 2}
-            style={inputStyle}
-            testID="event-venue-name"
-          />
-          <TextInput
-            value={address}
-            onChangeText={setAddress}
-            placeholder="Adres ya da semt (isteğe bağlı)"
-            placeholderTextColor={colors.textSecondary}
-            accessibilityLabel="Önerilen mekan adresi"
-            maxLength={EVENT_LIMITS.venueAddressMaxChars * 2}
-            style={inputStyle}
-          />
-          <Button
-            title="Mekan öner"
-            variant="secondary"
-            disabled={busy || !venueName.trim()}
-            onPress={async () => {
-              const ok = await act(eventsStore.getState().proposeVenue(doc.event_id, { name: venueName.trim(), address: address.trim() ? address.trim() : null, location: null, place_id: null }));
-              if (ok) {
-                setVenueName('');
-                setAddress('');
-              }
-            }}
-            testID="event-venue-propose"
-          />
-        </View>
-      ) : !full && !isOwner && going ? (
-        <Text variant="caption" color="textSecondary">
-          Önerini yaptın. Diğerleri de önerince sahip oylamayı başlatacak.
-        </Text>
-      ) : null}
-      {!full ? (
-        <Text variant="caption" color="textSecondary">
-          {EVENT_TEXT.venueVoteNeeds}
-        </Text>
-      ) : null}
-    </View>
-  );
-}
-
-// --- Aşama 2 / 3: oylama -------------------------------------------------------------------------
-
-function VoteCard({
-  doc,
-  me,
-  kind,
-  now,
-  canVote,
-  isOwner,
-  busy,
-  tie,
-  onVote,
-  onClose,
-}: {
-  doc: EventDoc;
-  me: UserId;
-  kind: VoteKind;
-  now: number;
-  canVote: boolean;
-  isOwner: boolean;
-  busy: boolean;
-  tie: string[] | null;
-  onVote: (optionId: string) => Promise<boolean>;
-  onClose: (tieBreak: string | null) => Promise<void>;
+  onPress: () => void;
+  testID: string;
 }) {
   const { colors, radius, spacing } = useTheme();
+  return (
+    <Pressable
+      accessibilityRole="radio"
+      accessibilityState={{ checked: selected, disabled: !!disabled }}
+      accessibilityLabel={sub ? `${label}, ${sub}` : label}
+      disabled={disabled}
+      onPress={onPress}
+      testID={testID}
+      style={({ pressed }) => [
+        styles.option,
+        {
+          minHeight: MIN_TOUCH,
+          borderColor: selected ? colors.primary : colors.border,
+          borderRadius: radius.md,
+          padding: spacing.sm,
+          opacity: disabled ? 0.5 : pressed ? 0.8 : 1,
+          backgroundColor: selected ? colors.primarySoft : colors.surface,
+        },
+      ]}
+    >
+      <View style={[styles.row, { gap: spacing.sm }]}>
+        <View style={[styles.radio, { borderColor: selected ? colors.primary : colors.border }]}>{selected ? <View style={[styles.radioDot, { backgroundColor: colors.primary }]} /> : null}</View>
+        <View style={styles.flex}>
+          <Text variant="body">{label}</Text>
+          {sub ? (
+            <Text variant="caption" color="textSecondary">
+              {sub}
+            </Text>
+          ) : null}
+        </View>
+      </View>
+    </Pressable>
+  );
+}
+
+/** Tek seçenek: oylanmaz, sabit satır. */
+function FixedRow({ icon, label, sub }: { icon: 'mapPin' | 'clock'; label: string; sub?: string | null }) {
+  const { colors, spacing } = useTheme();
+  return (
+    <View style={[styles.row, { gap: spacing.sm, minHeight: MIN_TOUCH }]}>
+      <Icon name={icon} size={20} color={colors.primary} />
+      <View style={styles.flex}>
+        <Text variant="body">{label}</Text>
+        {sub ? (
+          <Text variant="caption" color="textSecondary">
+            {sub}
+          </Text>
+        ) : null}
+      </View>
+    </View>
+  );
+}
+
+function AttendanceButtons({
+  status,
+  disabled,
+  onPick,
+  testPrefix,
+}: {
+  status: AttendanceStatus | null;
+  disabled: boolean;
+  onPick: (s: AttendanceStatus) => void;
+  testPrefix: string;
+}) {
+  const { spacing } = useTheme();
+  return (
+    <View style={[styles.row, { gap: spacing.xs }]} accessibilityRole="radiogroup">
+      <Button
+        title={ATTENDANCE_TEXT.going}
+        variant={status === 'going' ? 'primary' : 'secondary'}
+        block={false}
+        style={styles.flex}
+        disabled={disabled}
+        accessibilityState={{ selected: status === 'going', disabled }}
+        onPress={() => onPick('going')}
+        testID={`${testPrefix}-going`}
+      />
+      <Button
+        title={ATTENDANCE_TEXT.not_going}
+        variant={status === 'not_going' ? 'danger' : 'secondary'}
+        block={false}
+        style={styles.flex}
+        disabled={disabled}
+        accessibilityState={{ selected: status === 'not_going', disabled }}
+        onPress={() => onPick('not_going')}
+        testID={`${testPrefix}-not-going`}
+      />
+    </View>
+  );
+}
+
+function NoteField({ value, onChange, testPrefix }: { value: string; onChange: (v: string) => void; testPrefix: string }) {
+  const { colors, radius, spacing, typography } = useTheme();
+  const counter = eventNoteCounter(value);
+  return (
+    <View style={{ gap: spacing.xs }}>
+      <Text variant="label">{EVENT_TEXT.noteTitle}</Text>
+      <TextInput
+        value={value}
+        onChangeText={onChange}
+        placeholder={EVENT_TEXT.notePlaceholder}
+        placeholderTextColor={colors.textSecondary}
+        accessibilityLabel="Katılamama notu"
+        multiline
+        maxLength={EVENT_LIMITS.noteMaxChars * 2}
+        style={[typography.body, styles.input, styles.multiline, { color: colors.text, backgroundColor: colors.surfaceAlt, borderRadius: radius.md, paddingHorizontal: spacing.md }]}
+        testID={`${testPrefix}-note`}
+      />
+      <Text variant="caption" color={counter.over ? 'danger' : 'textSecondary'} align="right" testID={`${testPrefix}-counter`}>
+        {counter.label}
+      </Text>
+    </View>
+  );
+}
+
+// --- davetli: tek seferlik yanıt ---------------------------------------------------------------------
+
+function BallotCard({ doc, me, now, busy, act }: { doc: EventDoc; me: UserId; now: EpochMs; busy: boolean; act: Act }) {
+  const { spacing } = useTheme();
+  const card = useCard();
+  const current = doc.answers[me] ?? null;
+  const [status, setStatus] = useState<AttendanceStatus | null>(current?.status ?? null);
+  const [venue, setVenue] = useState<string | null>(current?.venue_option_id ?? null);
+  const [time, setTime] = useState<string | null>(current?.time_option_id ?? null);
+  const [note, setNote] = useState(current?.note ?? '');
+
+  const venues = doc.venue_options;
+  const times = timeCandidates(doc, now);
+  // Seçenek kaldırıldıysa (düzenleyen değiştirdi) ya da saat geçtiyse seçim temizlenir.
+  const venuePick = venues.length === 1 ? (venues[0]?.option_id ?? null) : venues.some((o) => o.option_id === venue) ? venue : null;
+  const timePick = times.length === 1 ? (times[0]?.option_id ?? null) : times.some((o) => o.option_id === time) ? time : null;
+  const counter = eventNoteCounter(note);
+  const trimmedNote = note.trim() ? note.trim() : null;
+
+  const missing =
+    status === null
+      ? 'Önce katılıp katılmayacağını seç.'
+      : status === 'going' && venues.length > 1 && !venuePick
+        ? 'Bir mekan seç.'
+        : status === 'going' && times.length > 1 && !timePick
+          ? 'Bir saat seç.'
+          : status === 'not_going' && counter.over
+            ? `Not en çok ${EVENT_LIMITS.noteMaxChars} karakter olabilir.`
+            : null;
+  const same =
+    !!current &&
+    current.status === status &&
+    (status === 'going' ? current.venue_option_id === venuePick && current.time_option_id === timePick : (current.note ?? null) === trimmedNote);
+  const complete = !!current && isAnswerComplete(doc, current, now);
+  const deadline = doc.results_at === null ? deadlineLabel(doc.respond_by, now) : null;
+
+  const send = () =>
+    act(
+      eventsStore.getState().respond(doc.event_id, {
+        status: status as AttendanceStatus,
+        note: status === 'not_going' ? trimmedNote : null,
+        venueOptionId: status === 'going' ? venuePick : null,
+        timeOptionId: status === 'going' ? timePick : null,
+      }),
+    );
+
+  return (
+    <View style={card} testID="event-ballot">
+      <Text variant="heading">{`${formatEventDate(doc.date)} · ${EVENT_TEXT.ballotTitle}`}</Text>
+      <Text variant="caption" color="textSecondary">
+        {[EVENT_TEXT.ballotHint, deadline].filter(Boolean).join(' · ')}
+      </Text>
+      {current && !complete ? (
+        <Text variant="label" color="warning">
+          Düzenleyen seçenekleri değiştirdi: yanıtını tamamla.
+        </Text>
+      ) : null}
+
+      <Text variant="label">Katılabilecek misin?</Text>
+      <AttendanceButtons status={status} disabled={busy} onPick={setStatus} testPrefix="event-ballot" />
+
+      {status === 'going' ? (
+        <View style={{ gap: spacing.xs }}>
+          <Text variant="label">{venues.length > 1 ? 'Hangi mekan?' : 'Mekan'}</Text>
+          {venues.length === 1 && venues[0] ? (
+            <FixedRow icon="mapPin" label={venues[0].name} sub={venues[0].address} />
+          ) : (
+            venues.map((o) => (
+              <RadioRow
+                key={o.option_id}
+                label={o.name}
+                sub={o.address}
+                selected={venuePick === o.option_id}
+                disabled={busy}
+                onPress={() => setVenue(o.option_id)}
+                testID={`event-ballot-venue-${o.option_id}`}
+              />
+            ))
+          )}
+          <Text variant="label" style={{ marginTop: spacing.xs }}>
+            {times.length > 1 ? 'Hangi saat?' : 'Saat'}
+          </Text>
+          {times.length === 0 ? (
+            <Text variant="caption" color="textSecondary">
+              Saat seçeneklerinin hepsi geçti.
+            </Text>
+          ) : times.length === 1 && times[0] ? (
+            <FixedRow icon="clock" label={formatMinuteOfDay(times[0].minute_of_day)} sub={formatEventDate(doc.date)} />
+          ) : (
+            times.map((t) => (
+              <RadioRow
+                key={t.option_id}
+                label={formatMinuteOfDay(t.minute_of_day)}
+                selected={timePick === t.option_id}
+                disabled={busy}
+                onPress={() => setTime(t.option_id)}
+                testID={`event-ballot-time-${t.option_id}`}
+              />
+            ))
+          )}
+        </View>
+      ) : null}
+
+      {status === 'not_going' ? <NoteField value={note} onChange={setNote} testPrefix="event-ballot" /> : null}
+
+      <Text variant="caption" color="textSecondary">
+        {EVENT_TEXT.votesHidden}
+      </Text>
+      {missing && status !== null ? (
+        <Text variant="caption" color="warning">
+          {missing}
+        </Text>
+      ) : null}
+      <Button
+        title={current ? EVENT_TEXT.resend : EVENT_TEXT.send}
+        variant={status === 'not_going' ? 'danger' : 'primary'}
+        disabled={busy || missing !== null || (same && complete)}
+        loading={busy}
+        onPress={() => void send()}
+        testID="event-ballot-send"
+      />
+      {current && complete && same ? (
+        <Text variant="caption" color="live" testID="event-ballot-sent" accessibilityLiveRegion="polite">
+          {`${answerLine(doc, current)}. ${EVENT_TEXT.sent}`}
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
+// --- düzenleyen: sonuçlar ve onay ------------------------------------------------------------------
+
+function TallyList({ doc, kind, now, name, pick, onPick }: { doc: EventDoc; kind: VoteKind; now: EpochMs; name: (u: UserId) => string; pick: string | null; onPick: (id: string) => void }) {
+  const { colors, radius, spacing } = useTheme();
+  const busy = useEventsStore((s) => !!s.busy[doc.event_id]);
   const tally = eventTally(doc, kind, now);
-  const votes = kind === 'venue' ? doc.venue_votes : doc.time_votes;
   const options =
     kind === 'venue'
       ? doc.venue_options.map((o) => ({ id: o.option_id, label: o.name, sub: o.address }))
-      : doc.time_options.filter((t) => t.starts_at > now).map((t) => ({ id: t.option_id, label: formatMinuteOfDay(t.minute_of_day), sub: formatEventDate(doc.date) }));
-  const mine = votes[me] ?? null;
-  const card = [cardShadow, { backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.md, gap: spacing.sm }];
-  const deadline = deadlineLabel(doc.stage_deadline_at, now);
-  const title = kind === 'venue' ? 'Mekan oylaması' : 'Saat oylaması';
-
-  return (
-    <View style={card} testID={`event-vote-${kind}`}>
-      <Text variant="heading">{title}</Text>
-      <Text variant="caption" color="textSecondary">
-        {`${tally.total}/${tally.eligible} oy${deadline ? ` · ${deadline}` : ''}`}
+      : timeCandidates(doc, now).map((t) => ({ id: t.option_id, label: formatMinuteOfDay(t.minute_of_day), sub: null as string | null }));
+  const title = kind === 'venue' ? 'Mekan' : 'Saat';
+  if (options.length === 0) {
+    return (
+      <Text variant="caption" color="warning">
+        Saat seçeneklerinin hepsi geçti; etkinlik onaylanamaz.
       </Text>
-      {!canVote ? (
-        <Text variant="label" color="warning">
-          {EVENT_TEXT.notEligibleVote}
-        </Text>
-      ) : null}
+    );
+  }
+  if (options.length === 1 && options[0]) {
+    return <FixedRow icon={kind === 'venue' ? 'mapPin' : 'clock'} label={options[0].label} sub={`${title} sabit · ${tally.total} kişi katılıyor`} />;
+  }
+  const tie = tally.leaders.length > 1;
+  return (
+    <View style={{ gap: spacing.xs }}>
+      <Text variant="label">{`${title} oyları (${tally.total}/${tally.eligible})`}</Text>
       {options.map((o) => {
         const count = tally.counts[o.id] ?? 0;
-        const selected = mine === o.id;
+        const who = (tally.voters[o.id] ?? []).map(name);
         const leader = tally.total > 0 && tally.leaders.includes(o.id);
         const pct = tally.eligible > 0 ? count / tally.eligible : 0;
         return (
-          <Pressable
+          <View
             key={o.id}
-            accessibilityRole="radio"
-            accessibilityState={{ checked: selected, disabled: !canVote || busy }}
-            accessibilityLabel={`${o.label}, ${count} oy${selected ? ', senin oyun' : ''}`}
-            disabled={!canVote || busy}
-            onPress={() => void onVote(o.id)}
-            testID={`event-vote-${kind}-${o.id}`}
-            style={({ pressed }) => [
-              styles.option,
-              { borderColor: selected ? colors.primary : colors.border, borderRadius: radius.md, padding: spacing.sm, opacity: pressed ? 0.8 : 1, backgroundColor: selected ? colors.primarySoft : colors.surface },
-            ]}
+            testID={`event-results-${kind}-${o.id}`}
+            accessibilityLabel={`${o.label}, ${count} oy${who.length ? `: ${who.join(', ')}` : ''}${leader && !tie ? ', önde' : ''}`}
+            style={[styles.option, { borderColor: leader ? colors.live : colors.border, borderRadius: radius.md, padding: spacing.sm }]}
           >
             <View style={[styles.fill, { width: `${Math.round(pct * 100)}%`, backgroundColor: leader ? colors.liveSoft : colors.surfaceAlt, borderRadius: radius.md }]} />
             <View style={[styles.row, { gap: spacing.sm }]}>
-              <View style={[styles.radio, { borderColor: selected ? colors.primary : colors.border }]}>{selected ? <View style={[styles.radioDot, { backgroundColor: colors.primary }]} /> : null}</View>
               <View style={styles.flex}>
                 <Text variant="body">{o.label}</Text>
-                {o.sub ? (
-                  <Text variant="caption" color="textSecondary">
-                    {o.sub}
-                  </Text>
-                ) : null}
+                <Text variant="caption" color="textSecondary">
+                  {[o.sub, who.length ? who.join(', ') : 'Henüz oy yok'].filter(Boolean).join(' · ')}
+                </Text>
               </View>
               <Text variant="label" color={leader ? 'live' : 'textSecondary'}>
                 {`${count} oy`}
               </Text>
             </View>
-          </Pressable>
+          </View>
         );
       })}
-      {isOwner ? (
-        tie && tie.length > 1 ? (
-          <View style={{ gap: spacing.xs }} testID={`event-tie-${kind}`}>
-            <Text variant="label">{EVENT_TEXT.tieTitle}</Text>
-            <View style={[styles.wrap, { gap: spacing.xs }]}>
-              {tie.map((id) => (
-                <Chip key={id} label={options.find((o) => o.id === id)?.label ?? id} onPress={() => void onClose(id)} disabled={busy} />
-              ))}
-            </View>
+      {tie ? (
+        <View style={{ gap: spacing.xs }}>
+          <Text variant="label" color="warning">{`${title}: ${EVENT_TEXT.tieTitle}`}</Text>
+          <View style={[styles.wrap, { gap: spacing.xs }]}>
+            {tally.leaders.map((id) => (
+              <Chip key={id} label={options.find((o) => o.id === id)?.label ?? id} selected={pick === id} disabled={busy} onPress={() => onPick(id)} testID={`event-tie-${kind}-${id}`} />
+            ))}
           </View>
-        ) : (
-          <Button title={EVENT_TEXT.closeVote} variant="secondary" disabled={busy || options.length === 0} onPress={() => void onClose(null)} testID={`event-close-${kind}`} />
-        )
+        </View>
       ) : null}
     </View>
   );
 }
 
-// --- Aşama 3: saat seçenekleri (sahip) ------------------------------------------------------------
+function ResultsCard({ doc, now, busy, name, act, onEdit }: { doc: EventDoc; now: EpochMs; busy: boolean; name: (u: UserId) => string; act: Act; onEdit: () => void }) {
+  const { spacing } = useTheme();
+  const card = useCard();
+  const [venuePick, setVenuePick] = useState<string | null>(null);
+  const [timePick, setTimePick] = useState<string | null>(null);
+  const c = attendanceCounts(doc);
+  const pending = pendingInvitees(doc, now);
+  const answered = doc.invitee_ids.length - pending.length;
+  const going = goingInvitees(doc).length;
+  const vt = eventTally(doc, 'venue', now);
+  const tt = eventTally(doc, 'time', now);
+  const venueTie = vt.leaders.length > 1;
+  const timeTie = tt.leaders.length > 1;
+  const venueChoice = venueTie && venuePick && vt.leaders.includes(venuePick) ? venuePick : null;
+  const timeChoice = timeTie && timePick && tt.leaders.includes(timePick) ? timePick : null;
+  const blocker =
+    going === 0
+      ? EVENT_TEXT.needAttendee
+      : tt.leaders.length === 0
+        ? 'Saat seçeneklerinin hepsi geçti.'
+        : venueTie && !venueChoice
+          ? 'Mekan için kazananı seç.'
+          : timeTie && !timeChoice
+            ? 'Saat için kazananı seç.'
+            : null;
+  const deadline = doc.results_at === null ? deadlineLabel(doc.respond_by, now) : null;
+  const status =
+    doc.results_at !== null
+      ? doc.results_reason === 'deadline'
+        ? 'Yanıt süresi doldu: sonuçlar hazır.'
+        : 'Herkes yanıtladı: sonuçlar hazır.'
+      : EVENT_TEXT.waitingResults;
 
-function TimeOptionsEditor({ doc, busy, onSave }: { doc: EventDoc; busy: boolean; onSave: (minutes: number[]) => Promise<boolean> }) {
-  const { colors, radius, spacing, typography } = useTheme();
-  const [minutes, setMinutes] = useState<number[]>(doc.time_options.map((t) => t.minute_of_day));
-  const [custom, setCustom] = useState('');
-  const [err, setErr] = useState<string | null>(null);
-  const card = [cardShadow, { backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.md, gap: spacing.sm }];
-  const add = () => {
-    const m = parseClock(custom);
-    if (m === null) {
-      setErr('Saati 19:30 biçiminde yaz.');
+  const finalize = () => act(eventsStore.getState().finalize(doc.event_id, { venueOptionId: venueChoice, timeOptionId: timeChoice }));
+  const confirm = () => {
+    if (pending.length === 0) {
+      void finalize();
       return;
     }
-    setMinutes((p) => toggleMinute(p.filter((x) => x !== m), m));
-    setCustom('');
-    setErr(null);
+    Alert.alert('Yanıt bekleyenler var', `${pending.map(name).join(', ')} henüz yanıt vermedi. Yine de onaylayıp herkese bildirelim mi?`, [
+      { text: 'Bekle', style: 'cancel' },
+      { text: 'Onayla', onPress: () => void finalize() },
+    ]);
   };
+
   return (
-    <View style={card} testID="event-times-editor">
-      <Text variant="heading">{EVENT_TEXT.needTimes}</Text>
-      <Text variant="caption" color="textSecondary">
-        {`${EVENT_LIMITS.minTimeOptions}–${EVENT_LIMITS.maxTimeOptions} saat seç. En az 30 dk sonrası olmalı; oylama ilk saatten 15 dk önce kapanır.`}
+    <View style={card} testID="event-results">
+      <Text variant="heading">{EVENT_TEXT.resultsTitle}</Text>
+      <Text variant="caption" color={doc.results_at !== null ? 'live' : 'textSecondary'} testID="event-results-status">
+        {status}
       </Text>
-      <View style={[styles.wrap, { gap: spacing.xs }]}>
-        {[...new Set([...TIME_PRESETS, ...minutes])]
-          .sort((a, b) => a - b)
-          .map((m) => (
-            <Chip key={m} label={formatMinuteOfDay(m)} selected={minutes.includes(m)} onPress={() => setMinutes((p) => toggleMinute(p, m))} />
-          ))}
-      </View>
-      <View style={[styles.row, { gap: spacing.xs }]}>
-        <TextInput
-          value={custom}
-          onChangeText={setCustom}
-          placeholder="Başka saat: 17:45"
-          placeholderTextColor={colors.textSecondary}
-          accessibilityLabel="Başka saat"
-          keyboardType="numbers-and-punctuation"
-          maxLength={5}
-          onSubmitEditing={add}
-          style={[typography.body, styles.input, styles.flex, { color: colors.text, backgroundColor: colors.surfaceAlt, borderRadius: radius.md, paddingHorizontal: spacing.md }]}
-        />
-        <Button title="Ekle" variant="secondary" block={false} onPress={add} disabled={!custom.trim()} />
-      </View>
-      {err ? (
-        <Text variant="caption" color="danger">
-          {err}
+      <Text variant="label">{`${answered}/${doc.invitee_ids.length} yanıt · ${c.going} katılacak (sen dahil) · ${c.not_going} katılamayacak${deadline ? ` · ${deadline}` : ''}`}</Text>
+      <TallyList doc={doc} kind="venue" now={now} name={name} pick={venueChoice} onPick={setVenuePick} />
+      <TallyList doc={doc} kind="time" now={now} name={name} pick={timeChoice} onPick={setTimePick} />
+      {pending.length > 0 ? (
+        <Text variant="caption" color="textSecondary">
+          {`Yanıt bekleniyor: ${pending.map(name).join(', ')}`}
         </Text>
       ) : null}
-      <Button
-        title="Saat oylamasını başlat"
-        disabled={busy || minutes.length < EVENT_LIMITS.minTimeOptions}
-        loading={busy}
-        onPress={() => void onSave(minutes)}
-        testID="event-times-save"
-      />
+      {blocker ? (
+        <Text variant="caption" color="warning">
+          {blocker}
+        </Text>
+      ) : null}
+      <Button title={EVENT_TEXT.finalize} disabled={busy || blocker !== null} loading={busy} onPress={confirm} testID="event-finalize" />
+      <Button title={EVENT_TEXT.editOptions} variant="secondary" disabled={busy} onPress={onEdit} testID="event-options-edit" style={{ marginTop: spacing.xs }} />
+    </View>
+  );
+}
+
+function OptionsEditor({
+  doc,
+  busy,
+  onCancel,
+  onSave,
+}: {
+  doc: EventDoc;
+  busy: boolean;
+  onCancel: () => void;
+  onSave: (venues: ReturnType<typeof venueInputs>, minutes: number[]) => Promise<void>;
+}) {
+  const { spacing } = useTheme();
+  const card = useCard();
+  const [venues, setVenues] = useState<VenueDraft[]>(() => venueDraftsFrom(doc.venue_options));
+  const [minutes, setMinutes] = useState<number[]>(() => doc.time_options.map((t) => t.minute_of_day));
+  const problem = optionsProblem(venues, minutes);
+  return (
+    <View style={card} testID="event-options-editor">
+      <Text variant="heading">{EVENT_TEXT.editOptions}</Text>
+      <Text variant="caption" color="textSecondary">
+        {EVENT_TEXT.optionsChangedHint}
+      </Text>
+      <Text variant="label">{`Mekanlar (en çok ${EVENT_LIMITS.maxVenueOptions})`}</Text>
+      <VenueFields venues={venues} onChange={setVenues} />
+      <Text variant="label" style={{ marginTop: spacing.xs }}>{`Saatler (en çok ${EVENT_LIMITS.maxTimeOptions})`}</Text>
+      <TimeFields minutes={minutes} onChange={setMinutes} />
+      {problem ? (
+        <Text variant="caption" color="warning">
+          {problem}
+        </Text>
+      ) : null}
+      <Button title={EVENT_TEXT.saveOptions} disabled={busy || problem !== null} loading={busy} onPress={() => void onSave(venueInputs(venues), minutes)} testID="event-options-save" />
+      <Button title="Vazgeç" variant="ghost" disabled={busy} onPress={onCancel} />
+    </View>
+  );
+}
+
+// --- davetli: kesinleşince katılım güncelleme -----------------------------------------------------------
+
+function AttendanceCard({ doc, me, busy, disabled, act }: { doc: EventDoc; me: UserId; busy: boolean; disabled: boolean; act: Act }) {
+  const card = useCard();
+  const current = doc.answers[me] ?? null;
+  const [status, setStatus] = useState<AttendanceStatus | null>(current?.status ?? null);
+  const [note, setNote] = useState(current?.note ?? '');
+  const counter = eventNoteCounter(note);
+  const trimmedNote = note.trim() ? note.trim() : null;
+  const same = !!current && current.status === status && (status === 'going' || (current.note ?? null) === trimmedNote);
+  return (
+    <View style={card} testID="event-attendance">
+      <Text variant="heading">Katılımın</Text>
+      <Text variant="caption" color="textSecondary">
+        {disabled ? 'Buluşma başladı, katılım artık değiştirilemez.' : current ? EVENT_TEXT.finalChange : 'Henüz yanıt vermedin. Katılıp katılmayacağını bildir.'}
+      </Text>
+      {current ? (
+        <Text variant="label" color={current.status === 'going' ? 'live' : 'warning'}>
+          {`Yanıtın: ${ATTENDANCE_TEXT[current.status]}`}
+        </Text>
+      ) : null}
+      <AttendanceButtons status={status} disabled={busy || disabled} onPick={setStatus} testPrefix="event-attendance" />
+      {status === 'not_going' && !disabled ? <NoteField value={note} onChange={setNote} testPrefix="event-attendance" /> : null}
+      {!disabled && status !== null && !same ? (
+        <Button
+          title="Katılımımı güncelle"
+          variant={status === 'not_going' ? 'danger' : 'primary'}
+          disabled={busy || (status === 'not_going' && counter.over)}
+          loading={busy}
+          onPress={() => void act(eventsStore.getState().respond(doc.event_id, { status, note: status === 'not_going' ? trimmedNote : null }))}
+          testID="event-attendance-send"
+        />
+      ) : null}
     </View>
   );
 }
 
 // --- katılımcılar -----------------------------------------------------------------------------------
 
-function Participants({ doc, me, name }: { doc: EventDoc; me: UserId; name: (u: UserId) => string }) {
+function Participants({ doc, me, isOwner, now, name }: { doc: EventDoc; me: UserId; isOwner: boolean; now: EpochMs; name: (u: UserId) => string }) {
   const { colors, radius, spacing } = useTheme();
-  const finalRound = doc.stage === 'final' || doc.stage === 'completed';
   const card = [cardShadow, { backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.md, gap: spacing.xs }];
   const rows = [doc.owner_id, ...doc.invitee_ids];
+  const c = attendanceCounts(doc);
   return (
     <View style={card} testID="event-participants">
-      <Text variant="heading">{finalRound ? 'Son onaylar' : 'Katılım'}</Text>
+      <Text variant="heading">Katılım</Text>
+      <Text variant="caption" color="textSecondary">{`${c.going} katılacak · ${c.not_going} katılamayacak · ${c.pending} yanıt bekleniyor`}</Text>
       {rows.map((u) => {
         const owner = u === doc.owner_id;
-        const status = owner ? 'going' : finalRound ? finalStatusOf(doc, u) : initialStatusOf(doc, u);
-        const answer = owner ? null : finalRound ? doc.final_rsvp[u] : doc.rsvp[u];
-        const label = owner ? 'Düzenleyen' : ATTENDANCE_THIRD_PERSON[status ?? 'pending'];
-        const tone = status === 'going' ? colors.live : status === 'not_going' ? colors.warning : colors.textSecondary;
+        const a = owner ? null : (doc.answers[u] ?? null);
+        const status: AttendanceStatus | null = owner ? 'going' : (a?.status ?? null);
+        const incomplete = !!a && doc.stage === 'voting' && !isAnswerComplete(doc, a, now);
+        const label = owner ? 'Düzenleyen' : incomplete ? 'Yanıtı eksik' : u === me && status === null ? 'Yanıtın bekleniyor' : ATTENDANCE_THIRD_PERSON[status ?? 'pending'];
+        const tone = incomplete ? colors.warning : status === 'going' ? colors.live : status === 'not_going' ? colors.warning : colors.textSecondary;
+        // Seçimler yalnızca düzenleyene (ve kişinin kendisine) görünür; not herkese.
+        const picks = a && a.status === 'going' && (isOwner || u === me) && doc.stage === 'voting' ? answerLine(doc, a).split(' · ').slice(1).join(' · ') : '';
         return (
-          <View key={u} style={[styles.row, { gap: spacing.sm, minHeight: MIN_TOUCH }]}>
+          <View key={u} style={[styles.row, { gap: spacing.sm, minHeight: MIN_TOUCH }]} testID={`event-participant-${u}`}>
             <FriendAvatar uid={u} fallbackName={doc.names[u] ?? 'Davetli'} size={32} />
             <View style={styles.flex}>
               <Text variant="body">{name(u)}</Text>
-              {answer?.status === 'not_going' && answer.note ? (
-                <Text variant="caption" color="textSecondary" testID={`event-note-${u}`}>{`“${answer.note}”`}</Text>
+              {picks ? (
+                <Text variant="caption" color="textSecondary">
+                  {picks}
+                </Text>
+              ) : null}
+              {a?.status === 'not_going' && a.note ? (
+                <Text variant="caption" color="textSecondary" testID={`event-note-${u}`}>{`“${a.note}”`}</Text>
               ) : null}
             </View>
             <Text variant="label" style={{ color: tone }}>
-              {u === me && !owner && status === null ? 'Yanıtın bekleniyor' : label}
+              {label}
             </Text>
           </View>
         );
@@ -657,16 +748,14 @@ function Participants({ doc, me, name }: { doc: EventDoc; me: UserId; name: (u: 
 
 // --- sahip araçları -----------------------------------------------------------------------------------
 
-function OwnerTools({ doc, busy, act }: { doc: EventDoc; busy: boolean; act: (p: Promise<EventResult>) => Promise<boolean> }) {
-  const { colors, radius, spacing } = useTheme();
+function OwnerTools({ doc, busy, act }: { doc: EventDoc; busy: boolean; act: Act }) {
+  const { spacing } = useTheme();
+  const card = useCard();
   const friends = useFriends();
   const can = useCanFn();
-  const [windowMs, setWindowMs] = useState(doc.vote_window_ms);
   const [inviteOpen, setInviteOpen] = useState(false);
   const [picked, setPicked] = useState<string[]>([]);
   const candidates = useMemo(() => friends.filter((f) => !doc.member_ids.includes(f.uid)), [friends, doc.member_ids]);
-  const anyGoing = doc.invitee_ids.some((u) => doc.rsvp[u]?.status === 'going');
-  const card = [cardShadow, { backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.md, gap: spacing.sm }];
   const roomLeft = EVENT_LIMITS.maxInvitees - doc.invitee_ids.length;
 
   const confirmCancel = () =>
@@ -678,70 +767,44 @@ function OwnerTools({ doc, busy, act }: { doc: EventDoc; busy: boolean; act: (p:
   return (
     <View style={card} testID="event-owner-tools">
       <Text variant="heading">Düzenleyen araçları</Text>
-      {doc.stage === 'rsvp' ? (
+      {inviteOpen ? (
         <View style={{ gap: spacing.xs }}>
-          <Text variant="caption" color="textSecondary">
-            Oylama süresi
-          </Text>
-          <View style={[styles.wrap, { gap: spacing.xs }]}>
-            {EVENT_LIMITS.voteWindowsMs.map((ms) => (
-              <Chip key={ms} label={voteWindowLabel(ms)} selected={windowMs === ms} onPress={() => setWindowMs(ms)} />
-            ))}
-          </View>
-          <Button
-            title={EVENT_TEXT.openVenueVote}
-            disabled={busy || doc.venue_options.length !== EVENT_LIMITS.venueOptions || !anyGoing}
-            onPress={() => void act(eventsStore.getState().advance(doc.event_id, 'open_venue_vote', { voteWindowMs: windowMs }))}
-            testID="event-open-venue-vote"
-          />
-          {!anyGoing ? (
+          <Text variant="label">{`Davet et (en çok ${roomLeft} kişi daha)`}</Text>
+          {candidates.length === 0 ? (
             <Text variant="caption" color="textSecondary">
-              Önce en az bir davetlinin &quot;Katılacağım&quot; demesi gerekiyor.
+              Davet edilecek başka arkadaşın yok.
             </Text>
-          ) : null}
+          ) : (
+            candidates.map((f) => {
+              const access = pickerRowAccess('meetup_invite', f.uid, can);
+              const selected = picked.includes(f.uid);
+              return (
+                <CheckRow
+                  key={f.uid}
+                  checked={selected}
+                  disabled={(!!access?.disabledReason && !selected) || (!selected && picked.length >= roomLeft)}
+                  onPress={() => setPicked((p) => (p.includes(f.uid) ? p.filter((x) => x !== f.uid) : [...p, f.uid]))}
+                  title={f.displayName}
+                  subtitle={access?.disabledReason ?? undefined}
+                  left={<FriendAvatar uid={f.uid} fallbackName={f.displayName} size={32} />}
+                />
+              );
+            })
+          )}
+          <Button
+            title={picked.length ? `${picked.length} kişiyi davet et` : 'Kişi seç'}
+            disabled={busy || picked.length === 0}
+            onPress={async () => {
+              const ok = await act(eventsStore.getState().inviteAdd(doc.event_id, picked));
+              if (ok) {
+                setPicked([]);
+                setInviteOpen(false);
+              }
+            }}
+          />
         </View>
-      ) : null}
-
-      {doc.stage === 'rsvp' || doc.stage === 'venue_vote' || doc.stage === 'time_vote' ? (
-        inviteOpen ? (
-          <View style={{ gap: spacing.xs }}>
-            <Text variant="label">{`Davet et (en çok ${roomLeft} kişi daha)`}</Text>
-            {candidates.length === 0 ? (
-              <Text variant="caption" color="textSecondary">
-                Davet edilecek başka arkadaşın yok.
-              </Text>
-            ) : (
-              candidates.map((f) => {
-                const access = pickerRowAccess('meetup_invite', f.uid, can);
-                const selected = picked.includes(f.uid);
-                return (
-                  <CheckRow
-                    key={f.uid}
-                    checked={selected}
-                    disabled={(!!access?.disabledReason && !selected) || (!selected && picked.length >= roomLeft)}
-                    onPress={() => setPicked((p) => (p.includes(f.uid) ? p.filter((x) => x !== f.uid) : [...p, f.uid]))}
-                    title={f.displayName}
-                    subtitle={access?.disabledReason ?? undefined}
-                    left={<FriendAvatar uid={f.uid} fallbackName={f.displayName} size={32} />}
-                  />
-                );
-              })
-            )}
-            <Button
-              title={picked.length ? `${picked.length} kişiyi davet et` : 'Kişi seç'}
-              disabled={busy || picked.length === 0}
-              onPress={async () => {
-                const ok = await act(eventsStore.getState().inviteAdd(doc.event_id, picked));
-                if (ok) {
-                  setPicked([]);
-                  setInviteOpen(false);
-                }
-              }}
-            />
-          </View>
-        ) : roomLeft > 0 ? (
-          <Button title="Daha fazla kişi davet et" variant="secondary" onPress={() => setInviteOpen(true)} />
-        ) : null
+      ) : roomLeft > 0 ? (
+        <Button title="Daha fazla kişi davet et" variant="secondary" onPress={() => setInviteOpen(true)} />
       ) : null}
 
       <Button title={EVENT_TEXT.cancel} variant="ghost" disabled={busy} onPress={confirmCancel} testID="event-cancel" />

@@ -18,7 +18,8 @@ describe('Faz 7 bildirimleri', () => {
   it('veri doğrulanır: bilinmeyen aşama / eksik alan reddedilir', () => {
     expect(parseF7Data({ type: 'event_invite', event_id: 'e1', from: 'ayse' })).toEqual({ type: 'event_invite', event_id: 'e1', from: 'ayse' });
     expect(parseF7Data({ type: 'event_stage', event_id: 'e1', notice: 'uydurma' })).toBeNull();
-    expect(parseF7Data({ type: 'event_rsvp', event_id: 'e1', by: 'can', round: 'initial' })).toBeNull();
+    expect(parseF7Data({ type: 'event_stage', event_id: 'e1', notice: 'results' })).toEqual({ type: 'event_stage', event_id: 'e1', notice: 'results' });
+    expect(parseF7Data({ type: 'event_rsvp', event_id: 'e1', by: 'can' })).toBeNull();
     expect(parseF7Data({ type: 'movement', from: 'mehmet', kind: 'departed' })).toEqual({ type: 'movement', from: 'mehmet', kind: 'departed' });
     expect(parseF7Data({ type: 'sos', sos_id: 'x' })).toBeNull();
   });
@@ -28,7 +29,7 @@ describe('Faz 7 bildirimleri', () => {
     expect(move).toMatchObject({ channelId: NOTIFICATION_CHANNELS_F7.movement, interruptionLevel: 'timeSensitive', sound: true, title: 'Mehmet yola çıktı' });
     const rem = f7ForegroundContent({ data: { type: 'event_reminder', event_id: 'e1', kind: 'morning' } });
     expect(rem).toMatchObject({ channelId: NOTIFICATION_CHANNELS_F7.eventReminders, interruptionLevel: 'timeSensitive', title: 'Bugün etkinliğin var' });
-    const rsvp = f7ForegroundContent({ data: { type: 'event_rsvp', event_id: 'e1', by: 'can', round: 'initial', status: 'not_going' } }, () => 'Can');
+    const rsvp = f7ForegroundContent({ data: { type: 'event_rsvp', event_id: 'e1', by: 'can', status: 'not_going' } }, () => 'Can');
     expect(rsvp).toMatchObject({ channelId: NOTIFICATION_CHANNELS_F7.events, sound: false, body: 'Can katılamayacak' });
     expect(f7EventRoute({ type: 'event_cancelled', event_id: 'e 1' })).toBe('/events/e%201');
     expect(f7EventRoute({ type: 'movement', from: 'm', kind: 'departed' })).toBeNull();
@@ -117,24 +118,25 @@ describe('Faz 7 harita teması', () => {
 
 describe('Faz 7 etkinlik deposu', () => {
   const doc = (version: number): EventDoc =>
-    ({ event_id: 'e1', version, owner_id: 'me', member_ids: ['me', 'a'], invitee_ids: ['a'], stage: 'venue_vote' }) as unknown as EventDoc;
+    ({ event_id: 'e1', version, owner_id: 'me', member_ids: ['me', 'a'], invitee_ids: ['a'], stage: 'voting' }) as unknown as EventDoc;
 
-  it('eşit oyda sunucunun liderleri `extra` ile döner; yüksek sürüm kazanır', async () => {
+  it('tek yanıt: katılmayanın seçimleri gönderilmez; eşitlikte liderler `extra` ile döner; yüksek sürüm kazanır', async () => {
     const api = {
-      eventAdvance: jest.fn(async () => {
-        throw new KonumError('event_vote_tie', undefined, undefined, { code: 'event_vote_tie', leaders: ['v1', 'v2'] });
+      eventFinalize: jest.fn(async () => {
+        throw new KonumError('event_vote_tie', undefined, undefined, { code: 'event_vote_tie', time_leaders: ['t3', 't4'] });
       }),
-      eventVote: jest.fn(async () => ({ event: doc(3), skipped_count: 0, server_now: 1 })),
+      eventRespond: jest.fn(async () => ({ event: doc(3), skipped_count: 0, server_now: 1 })),
     };
     const store = createEventsStore({ api: api as never, now: () => 1 });
     store.getState().setEvents('me', [doc(2)]);
-    const r = await store.getState().advance('e1', 'close_venue_vote');
+    const r = await store.getState().finalize('e1');
     expect(r.ok).toBe(false);
     if (!r.ok) {
       expect(r.error.code).toBe('event_vote_tie');
-      expect(r.extra.leaders).toEqual(['v1', 'v2']);
+      expect(r.extra.time_leaders).toEqual(['t3', 't4']);
     }
-    await store.getState().vote('e1', 'venue', 'v1');
+    await store.getState().respond('e1', { status: 'not_going', note: 'Gelemem', venueOptionId: 'v1', timeOptionId: 't3' });
+    expect(api.eventRespond).toHaveBeenCalledWith({ event_id: 'e1', status: 'not_going', note: 'Gelemem', venue_option_id: null, time_option_id: null });
     expect(store.getState().events.e1?.version).toBe(3);
     store.getState().setEvents('me', [doc(2)]); // eski dinleyici anlık görüntüsü geri almaz
     expect(store.getState().events.e1?.version).toBe(3);

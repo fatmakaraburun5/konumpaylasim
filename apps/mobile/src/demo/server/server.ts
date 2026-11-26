@@ -91,9 +91,12 @@
  *  - `event_create … event_cancel`: core `createEventDoc` / `reduceEvent` (saf durum makinesi). Davet yalnızca bana
  *    `meetup_invite` vermiş arkadaşlara (`canInvite`); diğerleri sessizce düşer, SAYISI döner. Etkiler → bildirim kutusu
  *    (`users/{uid}/notices`, 30 gün) + push; hatırlatıcılar `event_reminders` (1 gün önce, gün sabahı 08:00).
- *  - Süpürücü: oylama süresi / gün sonu / tamamlanma `tick`'i, zamanı gelen hatırlatmalar (2 sa'ten geç kalan `stale`).
- *  - Botlar üye olduğu etkinlikte birkaç saniye sonra yanıt verir (Can "Katılamayacağım" + not), mekan önerir, oy verir,
- *    son onayı verir; bot sahibi mekan oylamasını açar ve eşitlikte kazananı seçer.
+ *  - Süpürücü: yanıt süresi / gün sonu / tamamlanma `tick`'i, zamanı gelen hatırlatmalar (2 sa'ten geç kalan `stale`).
+ *  - Tek seferde oylama: davetli katılımı, mekanı ve saati TEK yanıtta işaretler; herkes yanıtlayınca ya da süre dolunca
+ *    sonuçların tamamı düzenleyene düşer, düzenleyen onaylar (eşitlikte kazananı seçer).
+ *  - Botlar üye olduğu etkinlikte birkaç saniye sonra tek yanıt verir (Can "Katılamayacağım" + not; diğerleri katılır, bir
+ *    mekan ve saat seçer); seçenekler değişince eksik kalan seçimi tamamlar. Bot sahibi sonuçlar gelince onaylar.
+ *  - Eski (aşamalı oylama) biçimindeki etkinlik kayıtları açılışta atılır (`withPhase7`).
  *  - `privacy_settings_set`: `users/{uid}.privacy` (+ RTDB aynası anlamı): pil paylaşımı KAPALIYKEN canlı paketlerde
  *    `battery_pct` / `is_charging` reddedilir ve `battery_low_notify` `suppressed` döner. Botlar pil paylaşır.
  *  - `movement_report`: etkin paylaşımlarımın alıcılarına (tercihi açık olanlara) "yola çıktı"; 30 dk soğuma.
@@ -358,37 +361,37 @@ import {
   EVENT_LIMITS,
   EVENT_REMINDER_KINDS,
   EVENT_REMINDER_MAX_LATENESS_MS,
-  EventAdvanceRequestSchema,
   EventCancelRequestSchema,
   eventCancelledPushText,
   EventCreateRequestSchema,
+  EventFinalizeRequestSchema,
   EventInviteAddRequestSchema,
+  EventOptionsSetRequestSchema,
   eventInvitePushText,
   eventNextActionAt,
   eventReminderId,
   eventReminderPlan,
   eventReminderPushText,
   eventReminderRecipients,
-  EventRsvpRequestSchema,
+  EventRespondRequestSchema,
   eventRsvpPushText,
   eventStagePushText,
   eventTally,
-  EventTimeOptionsSetRequestSchema,
   EventUpdateRequestSchema,
-  EventVenueProposeRequestSchema,
-  EventVenueRemoveRequestSchema,
-  EventVoteRequestSchema,
+  goingInvitees,
   isActiveEventStage,
+  isAnswerComplete,
   localDateOf,
-  localDateTimeToEpoch,
   MOVEMENT_LIMITS,
   movementPushText,
   MovementReportRequestSchema,
   NOTICE_LIST_LIMIT,
   NOTICE_RETENTION_MS,
+  parseEventDoc,
   parsePrivacy,
   PrivacySettingsSetRequestSchema,
   reduceEvent,
+  timeCandidates,
   type EventAction,
   type EventCtx,
   type EventDoc,
@@ -916,6 +919,14 @@ function withPhase7(db: Db): Db {
   db.event_auto ??= {};
   db.movement_cooldown ??= {};
   db.movement_last ??= null;
+  // Aşamalı oylamadan kalan (artık geçersiz biçimdeki) etkinlikler, hatırlatıcıları ve bot adımlarıyla atılır.
+  const dropped = new Set(Object.keys(db.events).filter((id) => parseEventDoc(db.events[id]) === null));
+  if (dropped.size > 0) {
+    for (const id of dropped) delete db.events[id];
+    for (const [rid, rem] of Object.entries(db.event_reminders)) if (dropped.has(rem.event_id)) delete db.event_reminders[rid];
+    for (const key of Object.keys(db.event_auto)) if (dropped.has(key.split('|')[0] ?? '')) delete db.event_auto[key];
+    for (const [uid, list] of Object.entries(db.notices)) db.notices[uid] = list.filter((n) => !dropped.has(n.event_id));
+  }
   for (const u of Object.values(db.users)) {
     if (u.privacy !== undefined) continue;
     u.privacy = u.uid === DEMO_ME ? null : { battery_share: true, movement_alerts: true, updated_at: u.created_at };
@@ -985,7 +996,6 @@ const TRANSPORT: Record<ErrorCode, string> = {
   event_not_found: 'not-found',
   event_not_owner: 'permission-denied',
   event_stage_mismatch: 'failed-precondition',
-  event_not_eligible: 'failed-precondition',
   event_options_invalid: 'invalid-argument',
   event_vote_tie: 'failed-precondition',
   event_no_attendees: 'failed-precondition',
@@ -1036,12 +1046,6 @@ const DEFAULT_TZ = 'Europe/Istanbul';
 
 // --- Faz 7 demo verisi -------------------------------------------------------------------------
 
-/** Botların etkinliğe önerdiği mekan (davetli başına bir öneri). */
-const BOT_EVENT_VENUES: Record<string, EventVenueInput> = {
-  ayse: { name: 'Moda Sahili Çay Bahçesi', address: 'Caferağa, Moda Cd., Kadıköy', location: { lat: 40.9819, lng: 29.0254 }, place_id: null },
-  mehmet: { name: 'Kadıköy Çarşı Kahvecisi', address: 'Osmanağa, Güneşli Bahçe Sk., Kadıköy', location: { lat: 40.9905, lng: 29.0275 }, place_id: null },
-  zeynep: { name: 'Yeldeğirmeni Kitap Kafe', address: 'Rasimpaşa, Karakolhane Cd., Kadıköy', location: { lat: 40.9958, lng: 29.0305 }, place_id: null },
-};
 /** "Ayşe etkinliğe davet etsin": Ayşe'nin hazır 3 mekanı. */
 const AYSE_EVENT_VENUES: EventVenueInput[] = [
   { name: 'Moda Sahili Çay Bahçesi', address: 'Caferağa, Moda Cd., Kadıköy', location: { lat: 40.9819, lng: 29.0254 }, place_id: null },
@@ -1050,8 +1054,6 @@ const AYSE_EVENT_VENUES: EventVenueInput[] = [
 ];
 /** Can her davete "Katılamayacağım" der (300 karakterlik not örneği). */
 const CAN_EVENT_NOTE = 'Bu hafta sonu ailemin yanındayım, kusura bakmayın. Fotoğrafları gruba atarsanız çok sevinirim, bir dahakini ben ayarlıyorum!';
-/** Bot sahibin "saat ekle" adayları (yerel dakika). */
-const BOT_TIME_CANDIDATES = [10 * 60, 12 * 60 + 30, 15 * 60, 18 * 60 + 30, 20 * 60, 21 * 60 + 30];
 
 /** Etkinlik etkisinden doğan tek gönderim (bildirim kutusu + push). */
 interface EventOutgoing {
@@ -2457,33 +2459,17 @@ export class DemoServer {
       // Faz 7
       case 'event_create':
         return this.eventCreateCall(payload, uid, now);
-      case 'event_rsvp': {
-        const d = this.parse(EventRsvpRequestSchema, payload);
-        return this.mutateEvent(d.event_id, uid, now, { type: 'rsvp', round: d.round, status: d.status, note: d.note });
+      case 'event_respond': {
+        const d = this.parse(EventRespondRequestSchema, payload);
+        return this.mutateEvent(d.event_id, uid, now, { type: 'respond', status: d.status, note: d.note, venue_option_id: d.venue_option_id, time_option_id: d.time_option_id });
       }
-      case 'event_venue_propose': {
-        const d = this.parse(EventVenueProposeRequestSchema, payload);
-        return this.mutateEvent(d.event_id, uid, now, { type: 'venue_propose', venue: d.venue });
+      case 'event_finalize': {
+        const d = this.parse(EventFinalizeRequestSchema, payload);
+        return this.mutateEvent(d.event_id, uid, now, { type: 'finalize', venue_option_id: d.venue_option_id, time_option_id: d.time_option_id });
       }
-      case 'event_venue_remove': {
-        const d = this.parse(EventVenueRemoveRequestSchema, payload);
-        return this.mutateEvent(d.event_id, uid, now, { type: 'venue_remove', option_id: d.option_id });
-      }
-      case 'event_vote': {
-        const d = this.parse(EventVoteRequestSchema, payload);
-        return this.mutateEvent(d.event_id, uid, now, { type: 'vote', kind: d.kind, option_id: d.option_id });
-      }
-      case 'event_advance': {
-        const d = this.parse(EventAdvanceRequestSchema, payload);
-        const action: EventAction =
-          d.action === 'open_venue_vote'
-            ? { type: 'open_venue_vote', vote_window_ms: d.vote_window_ms }
-            : { type: 'close_vote', kind: d.action === 'close_venue_vote' ? 'venue' : 'time', tie_break_option_id: d.tie_break_option_id };
-        return this.mutateEvent(d.event_id, uid, now, action);
-      }
-      case 'event_time_options_set': {
-        const d = this.parse(EventTimeOptionsSetRequestSchema, payload);
-        return this.mutateEvent(d.event_id, uid, now, { type: 'time_options_set', minutes: d.minutes });
+      case 'event_options_set': {
+        const d = this.parse(EventOptionsSetRequestSchema, payload);
+        return this.mutateEvent(d.event_id, uid, now, { type: 'options_set', venues: d.venues, minutes: d.minutes });
       }
       case 'event_update': {
         const d = this.parse(EventUpdateRequestSchema, payload);
@@ -5133,12 +5119,12 @@ export class DemoServer {
   private commitEvent(doc: EventDoc, effects: readonly EventEffect[], now: EpochMs): void {
     this.db.events[doc.event_id] = clone(doc);
     this.writeEventReminders(doc, effects);
-    for (const o of this.eventOutgoing(doc, effects)) this.deliverEventNotice(o, now);
+    for (const o of this.eventOutgoing(doc, effects, now)) this.deliverEventNotice(o, now);
     this.scheduleEventBots(doc, now);
   }
 
   /** Backend `eventOutgoing`: alıcılar üyelerle sınırlı ve tekil; metinler core push metinleri. */
-  private eventOutgoing(doc: EventDoc, effects: readonly EventEffect[]): EventOutgoing[] {
+  private eventOutgoing(doc: EventDoc, effects: readonly EventEffect[], now: EpochMs): EventOutgoing[] {
     const members = new Set(doc.member_ids);
     const ownerName = doc.names[doc.owner_id] ?? '';
     const out: EventOutgoing[] = [];
@@ -5152,14 +5138,14 @@ export class DemoServer {
           out.push({ to, type: 'event_invite', text: eventInvitePushText(ownerName, doc), data: { type: 'event_invite', event_id: id, from: doc.owner_id } });
           break;
         case 'stage':
-          out.push({ to, type: 'event_stage', text: eventStagePushText(e.notice, doc), data: { type: 'event_stage', event_id: id, notice: e.notice } });
+          out.push({ to, type: 'event_stage', text: eventStagePushText(e.notice, doc, now), data: { type: 'event_stage', event_id: id, notice: e.notice } });
           break;
         case 'rsvp':
           out.push({
             to,
             type: 'event_rsvp',
-            text: eventRsvpPushText(doc.names[e.by] ?? '', doc, e.status, e.note),
-            data: { type: 'event_rsvp', event_id: id, by: e.by, round: e.round, status: e.status },
+            text: eventRsvpPushText(doc.names[e.by] ?? '', doc, e.status, e.note, e.venue_option_id, e.time_option_id),
+            data: { type: 'event_rsvp', event_id: id, by: e.by, status: e.status },
           });
           break;
         case 'cancelled':
@@ -5237,7 +5223,7 @@ export class DemoServer {
     }
   }
 
-  /** Süpürücü: aşama süreleri, hatırlatmalar, bot adımları. */
+  /** Süpürücü: yanıt süresi / gün sonu / tamamlanma, hatırlatmalar, bot adımları. */
   private sweepPhase7(now: EpochMs): boolean {
     let changed = false;
     for (const doc of Object.values(this.db.events)) {
@@ -5311,54 +5297,37 @@ export class DemoServer {
   }
 
   /**
-   * Demo botunun etkinlikteki sıradaki adımı: davetli yanıt verir (Can "Katılamayacağım" + not), bir mekan önerir, oy
-   * verir, son onayı verir. Bot sahip: herkes yanıtlayınca mekan oylamasını açar, oy verir, eşitlikte ilk lideri seçer,
-   * saat seçeneği yoksa ekler. Yapacak bir şey yoksa null.
+   * Demo botunun etkinlikteki sıradaki adımı. Davetli: yanıtı yoksa (ya da seçenek değişince eksik kaldıysa) TEK yanıt
+   * verir: Can "Katılamayacağım" + not, diğerleri katılır ve bir mekan + saat seçer. `final`'de yanıtı olmayan (sonradan
+   * eklenen) bot katılır. Bot sahip: sonuçlar gelince onaylar, eşitlikte ilk lideri seçer. Yapacak bir şey yoksa null.
    */
   private botEventAction(doc: EventDoc, bot: UserId, now: EpochMs): EventAction | null {
     const isOwner = bot === doc.owner_id;
-    const going = isOwner || doc.rsvp[bot]?.status === 'going';
-    const seed = [...bot].reduce((a, c) => a + c.charCodeAt(0), 0);
-    switch (doc.stage) {
-      case 'rsvp': {
-        if (isOwner) {
-          const ready =
-            doc.venue_options.length === EVENT_LIMITS.venueOptions && doc.invitee_ids.every((u) => doc.rsvp[u]) && doc.invitee_ids.some((u) => doc.rsvp[u]?.status === 'going');
-          return ready ? { type: 'open_venue_vote', vote_window_ms: null } : null;
-        }
-        if (!doc.rsvp[bot]) {
-          return bot === PEOPLE.can.uid ? { type: 'rsvp', round: 'initial', status: 'not_going', note: CAN_EVENT_NOTE } : { type: 'rsvp', round: 'initial', status: 'going', note: null };
-        }
-        const venue = BOT_EVENT_VENUES[bot];
-        const free = doc.venue_options.length < EVENT_LIMITS.venueOptions;
-        const fresh = venue && !doc.venue_options.some((o) => o.proposed_by === bot || o.name.toLocaleLowerCase('tr') === venue.name.toLocaleLowerCase('tr'));
-        return going && free && venue && fresh ? { type: 'venue_propose', venue } : null;
-      }
-      case 'venue_vote':
-      case 'time_vote': {
-        const kind = doc.stage === 'venue_vote' ? 'venue' : 'time';
-        if (kind === 'time' && doc.stage_deadline_at === null) {
-          if (!isOwner) return null;
-          const offsetAt = offsetFnForTimeZone(doc.time_zone);
-          const minutes = BOT_TIME_CANDIDATES.filter((m) => localDateTimeToEpoch(doc.date, m, offsetAt) >= now + EVENT_LIMITS.minLeadMs + 5 * MINUTE).slice(0, 3);
-          return minutes.length >= EVENT_LIMITS.minTimeOptions ? { type: 'time_options_set', minutes } : null;
-        }
-        if (!going) return null;
-        const t = eventTally(doc, kind, now);
-        const ids = Object.keys(t.counts);
-        const votes = kind === 'venue' ? doc.venue_votes : doc.time_votes;
-        if (!votes[bot] && ids.length > 0) return { type: 'vote', kind, option_id: ids[seed % ids.length] as string };
-        if (isOwner && t.eligible > 0 && t.total === t.eligible && t.leaders.length > 1) return { type: 'close_vote', kind, tie_break_option_id: t.leaders[0] ?? null };
-        return null;
-      }
-      case 'final': {
-        if (isOwner || doc.final_rsvp[bot] || (doc.starts_at !== null && now >= doc.starts_at)) return null;
-        const first = doc.rsvp[bot];
-        return first?.status === 'not_going' ? { type: 'rsvp', round: 'final', status: 'not_going', note: first.note } : { type: 'rsvp', round: 'final', status: 'going', note: null };
-      }
-      default:
-        return null;
+    const answer = doc.answers[bot];
+    if (doc.stage === 'final') {
+      if (isOwner || answer || (doc.starts_at !== null && now >= doc.starts_at)) return null;
+      return { type: 'respond', status: 'going' };
     }
+    if (doc.stage !== 'voting') return null;
+    if (isOwner) {
+      if (doc.results_at === null || goingInvitees(doc).length === 0) return null;
+      const venue = eventTally(doc, 'venue', now);
+      const time = eventTally(doc, 'time', now);
+      if (time.leaders.length === 0) return null;
+      return {
+        type: 'finalize',
+        venue_option_id: venue.leaders.length > 1 ? (venue.leaders[0] ?? null) : null,
+        time_option_id: time.leaders.length > 1 ? (time.leaders[0] ?? null) : null,
+      };
+    }
+    if (answer && (answer.status === 'not_going' || isAnswerComplete(doc, answer, now))) return null;
+    if (bot === PEOPLE.can.uid) return { type: 'respond', status: 'not_going', note: CAN_EVENT_NOTE };
+    const seed = [...bot].reduce((a, c) => a + c.charCodeAt(0), 0);
+    const times = timeCandidates(doc, now);
+    if (times.length === 0) return null;
+    const venue = doc.venue_options[seed % doc.venue_options.length];
+    const time = times[(seed >> 1) % times.length];
+    return { type: 'respond', status: 'going', venue_option_id: venue?.option_id ?? null, time_option_id: time?.option_id ?? null };
   }
 
   // --- Faz 7 demo paneli --------------------------------------------------------------------------
@@ -5374,7 +5343,7 @@ export class DemoServer {
         {
           op_id: uuidV4(),
           title: 'Moda’da kahvaltı',
-          description: 'Uzun zamandır toplanamadık. Yarın kahvaltıda buluşalım mı? Mekanı ve saati birlikte seçelim.',
+          description: 'Uzun zamandır toplanamadık. Yarın kahvaltıda buluşalım mı? Katılımını, mekanı ve saati tek seferde işaretle.',
           date,
           time_zone: tz,
           invitee_ids: [DEMO_ME],

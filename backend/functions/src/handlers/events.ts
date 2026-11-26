@@ -1,9 +1,9 @@
 /**
- * Faz 7: Etkinlik Alanı — 3 aşamalı oylama (bkz. docs/PHASE7.md §1–§3, durum makinesi core `events.ts`).
+ * Faz 7: Etkinlik Alanı — tek seferde oylama (bkz. docs/PHASE7.md §1–§3, durum makinesi core `events.ts`).
  *
- * Callable'lar: `event_create`, `event_rsvp`, `event_venue_propose`, `event_venue_remove`, `event_vote`,
- * `event_advance` (sahip: mekan oylamasını aç / mekan ya da saat oylamasını kapat), `event_time_options_set`,
- * `event_update`, `event_invite_add`, `event_cancel`. Hepsi `runOp` (op_id tekilleştirme) içinde, aynı transaction'da:
+ * Callable'lar: `event_create`, `event_respond` (davetlinin TEK yanıtı: katılım + mekan + saat), `event_finalize`
+ * (sahip: sonucu onayla, eşitlikte kazananı seç), `event_options_set` (sahip: mekan / saat seçenekleri), `event_update`,
+ * `event_invite_add`, `event_cancel`. Hepsi `runOp` (op_id tekilleştirme) içinde, aynı transaction'da:
  *  1. `events/{id}` + çağıranın profili okunur; üye değilse / belge yoksa hepsi AYNI `event_not_found`.
  *  2. Onay kapısı (`readCaller`): "Katılamayacağım" yanıtı ve iptal onaysız da çalışır (core `consentExemptCall`).
  *  3. Kullanıcı başına saatlik `EVENT_LIMITS.actionsPerHour` (oluşturma günlük `createsPerDay`).
@@ -11,14 +11,19 @@
  *  5. Etkiler: hatırlatıcı belgeleri (`event_reminders`) ve bildirim kutusu kayıtları (`users/{uid}/notices`) aynı
  *     transaction'da; push commit SONRASI en iyi çabayla (`runOp.after`).
  *
+ * Sonuçlar düzenleyene TOPLU gider: son davetli eksiksiz yanıtlayınca ya da yanıt süresi dolunca (süpürücü) tek
+ * "Sonuçlar hazır" bildirimi (`event_stage` / `results`). Ondan önceki yanıtlar tek tek bildirilmez, sonrakiler
+ * `event_rsvp` ile bildirilir.
+ *
  * Davet (Faz 8 "arkadaşlık izin değildir"): yalnızca bana `meetup_invite` izni vermiş, engelsiz arkadaşlar
  * (`canInvite`). Diğerleri SESSİZCE düşer ve yalnızca SAYISI döner (`skipped_count`); hiç kalmazsa `not_permitted`
  * (arkadaş var ama izin yok) ya da `not_friends`. Görünmez mod daveti engellemez (konum içermez).
  *
- * Süpürücü (`sweepEvents`, dakikada bir): `open == true && next_action_at <= now` etkinliklere `tick` (oylama süresi
- * doldu → kapanış, gün bitti → `expired`, başlangıç + 3 sa → `completed`); `sent == false && due_at <= now`
- * hatırlatıcılar gönderilir (etkinlik hâlâ `final` ve başlangıç aynıysa; 2 saatten geç kalan `stale` sayılır).
- * Arkadaşlık bitince / engellenince (`removePairFromEvents`) ve hesap silinince (`deleteEventsOf`) üyelik temizlenir.
+ * Süpürücü (`sweepEvents`, dakikada bir): `open == true && next_action_at <= now` etkinliklere `tick` (yanıt süresi
+ * doldu → sonuç bildirimi, gün bitti / saat seçeneği kalmadı → `expired`, başlangıç + 3 sa → `completed`);
+ * `sent == false && due_at <= now` hatırlatıcılar gönderilir (etkinlik hâlâ `final` ve başlangıç aynıysa; 2 saatten
+ * geç kalan `stale` sayılır). Arkadaşlık bitince / engellenince (`removePairFromEvents`) ve hesap silinince
+ * (`deleteEventsOf`) üyelik temizlenir.
  */
 import {
   CALLABLES,
@@ -31,23 +36,20 @@ import {
   type CallableName,
   type EpochMs,
   type EventAction,
-  type EventAdvanceRequestSchema,
   type EventCancelRequestSchema,
   type EventCreateRequestSchema,
   type EventCtx,
   type EventDoc,
   type EventEffect,
+  type EventFinalizeRequestSchema,
   type EventInviteAddRequestSchema,
   type EventNoticeType,
+  type EventOptionsSetRequestSchema,
   type EventReminderKind,
+  type EventRespondRequestSchema,
   type EventResponse,
   type EventResult,
-  type EventRsvpRequestSchema,
-  type EventTimeOptionsSetRequestSchema,
   type EventUpdateRequestSchema,
-  type EventVenueProposeRequestSchema,
-  type EventVenueRemoveRequestSchema,
-  type EventVoteRequestSchema,
   type UserId,
   canInvite,
   consentExemptCall,
@@ -144,8 +146,8 @@ interface Outgoing {
   data: EventPushData;
 }
 
-/** Etkileri bildirimlere çevirir (alıcılar üyelerle sınırlı, tekil). */
-export function eventOutgoing(doc: EventDoc, effects: readonly EventEffect[]): Outgoing[] {
+/** Etkileri bildirimlere çevirir (alıcılar üyelerle sınırlı, tekil). `now`: sonuç özetindeki saat adayları için. */
+export function eventOutgoing(doc: EventDoc, effects: readonly EventEffect[], now: EpochMs = doc.updated_at): Outgoing[] {
   const members = new Set(doc.member_ids);
   const ownerName = doc.names[doc.owner_id] ?? '';
   const out: Outgoing[] = [];
@@ -159,14 +161,14 @@ export function eventOutgoing(doc: EventDoc, effects: readonly EventEffect[]): O
         out.push({ to, type: 'event_invite', text: eventInvitePushText(ownerName, doc), data: { type: 'event_invite', event_id: doc.event_id, from: doc.owner_id } });
         break;
       case 'stage':
-        out.push({ to, type: 'event_stage', text: eventStagePushText(e.notice, doc), data: { type: 'event_stage', event_id: doc.event_id, notice: e.notice } });
+        out.push({ to, type: 'event_stage', text: eventStagePushText(e.notice, doc, now), data: { type: 'event_stage', event_id: doc.event_id, notice: e.notice } });
         break;
       case 'rsvp':
         out.push({
           to,
           type: 'event_rsvp',
-          text: eventRsvpPushText(doc.names[e.by] ?? '', doc, e.status, e.note),
-          data: { type: 'event_rsvp', event_id: doc.event_id, by: e.by, round: e.round, status: e.status },
+          text: eventRsvpPushText(doc.names[e.by] ?? '', doc, e.status, e.note, e.venue_option_id, e.time_option_id),
+          data: { type: 'event_rsvp', event_id: doc.event_id, by: e.by, status: e.status },
         });
         break;
       case 'cancelled':
@@ -231,7 +233,7 @@ async function pushOutgoing(outgoing: readonly Outgoing[], send: PushSender): Pr
 function commitResult(tx: Transaction, ref: DocumentReference, doc: EventDoc, effects: readonly EventEffect[], now: EpochMs, send: PushSender) {
   tx.set(ref, toStored(doc));
   writeReminders(tx, doc, effects, now);
-  const outgoing = eventOutgoing(doc, effects);
+  const outgoing = eventOutgoing(doc, effects, now);
   writeNotices(tx, outgoing, now);
   return outgoing.length ? () => pushOutgoing(outgoing, send) : undefined;
 }
@@ -334,28 +336,23 @@ async function mutateEvent(
 
 const fixed = (action: EventAction): MutateOptions => ({ build: async () => ({ action }) });
 
-export const eventRsvp = (ctx: CallCtx, data: z.output<typeof EventRsvpRequestSchema>, deps: EventDeps = {}) =>
-  mutateEvent(ctx, CALLABLES.eventRsvp, data, deps, fixed({ type: 'rsvp', round: data.round, status: data.status, note: data.note }));
+/** Davetlinin tek yanıtı ("Katılamayacağım" onaysız da çalışır). */
+export const eventRespond = (ctx: CallCtx, data: z.output<typeof EventRespondRequestSchema>, deps: EventDeps = {}) =>
+  mutateEvent(
+    ctx,
+    CALLABLES.eventRespond,
+    data,
+    deps,
+    fixed({ type: 'respond', status: data.status, note: data.note, venue_option_id: data.venue_option_id, time_option_id: data.time_option_id }),
+  );
 
-export const eventVenuePropose = (ctx: CallCtx, data: z.output<typeof EventVenueProposeRequestSchema>, deps: EventDeps = {}) =>
-  mutateEvent(ctx, CALLABLES.eventVenuePropose, data, deps, fixed({ type: 'venue_propose', venue: data.venue }));
+/** Sahip: sonucu onayla (eşitlikte `event_vote_tie` + `venue_leaders` / `time_leaders`). */
+export const eventFinalize = (ctx: CallCtx, data: z.output<typeof EventFinalizeRequestSchema>, deps: EventDeps = {}) =>
+  mutateEvent(ctx, CALLABLES.eventFinalize, data, deps, fixed({ type: 'finalize', venue_option_id: data.venue_option_id, time_option_id: data.time_option_id }));
 
-export const eventVenueRemove = (ctx: CallCtx, data: z.output<typeof EventVenueRemoveRequestSchema>, deps: EventDeps = {}) =>
-  mutateEvent(ctx, CALLABLES.eventVenueRemove, data, deps, fixed({ type: 'venue_remove', option_id: data.option_id }));
-
-export const eventVote = (ctx: CallCtx, data: z.output<typeof EventVoteRequestSchema>, deps: EventDeps = {}) =>
-  mutateEvent(ctx, CALLABLES.eventVote, data, deps, fixed({ type: 'vote', kind: data.kind, option_id: data.option_id }));
-
-export function eventAdvance(ctx: CallCtx, data: z.output<typeof EventAdvanceRequestSchema>, deps: EventDeps = {}) {
-  const action: EventAction =
-    data.action === 'open_venue_vote'
-      ? { type: 'open_venue_vote', vote_window_ms: data.vote_window_ms }
-      : { type: 'close_vote', kind: data.action === 'close_venue_vote' ? 'venue' : 'time', tie_break_option_id: data.tie_break_option_id };
-  return mutateEvent(ctx, CALLABLES.eventAdvance, data, deps, fixed(action));
-}
-
-export const eventTimeOptionsSet = (ctx: CallCtx, data: z.output<typeof EventTimeOptionsSetRequestSchema>, deps: EventDeps = {}) =>
-  mutateEvent(ctx, CALLABLES.eventTimeOptionsSet, data, deps, fixed({ type: 'time_options_set', minutes: data.minutes }));
+/** Sahip: mekan ve saat seçenekleri (aynı kalan seçeneğin oyu korunur). */
+export const eventOptionsSet = (ctx: CallCtx, data: z.output<typeof EventOptionsSetRequestSchema>, deps: EventDeps = {}) =>
+  mutateEvent(ctx, CALLABLES.eventOptionsSet, data, deps, fixed({ type: 'options_set', venues: data.venues, minutes: data.minutes }));
 
 export const eventUpdate = (ctx: CallCtx, data: z.output<typeof EventUpdateRequestSchema>, deps: EventDeps = {}) =>
   mutateEvent(
@@ -476,8 +473,8 @@ export async function sweepEvents(now: EpochMs = Date.now(), deps: EventDeps = {
 // ---------------------------------------------------------------------------
 
 /**
- * Arkadaşlık bitti / engellendi: sahibi biri, davetlisi diğeri olan etkin etkinliklerden davetli çıkarılır (oyları ve
- * yanıtı silinir; kalanlar oy verdiyse oylama kendiliğinden kapanabilir). Commit sonrası en iyi çaba.
+ * Arkadaşlık bitti / engellendi: sahibi biri, davetlisi diğeri olan etkin etkinliklerden davetli çıkarılır (yanıtı
+ * silinir; kalanların hepsi yanıtladıysa sonuçlar şimdi düzenleyene gider). Commit sonrası en iyi çaba.
  */
 export async function removePairFromEvents(a: UserId, b: UserId, now: EpochMs, deps: EventDeps = {}): Promise<number> {
   const send = deps.send ?? sendPushToUser;

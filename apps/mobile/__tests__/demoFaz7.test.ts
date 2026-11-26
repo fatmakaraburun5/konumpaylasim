@@ -1,6 +1,6 @@
 /**
  * Web demo sunucusu Faz 7 sözleşmesi (backend `handlers/events.ts`, `handlers/privacy.ts` ile aynı anlam):
- * etkinliğin 3 aşaması bot üyelerle uçtan uca, eşitlikte `leaders`, hatırlatma; pil paylaşımı (varsayılan KAPALI)
+ * tek seferde oylama bot üyelerle uçtan uca (sonuçlar düzenleyene, eşitlikte liderler), hatırlatma; pil paylaşımı (varsayılan KAPALI)
  * RTDB kuralı ve düşük pil bastırması; "yola çıktı" bildirimi.
  */
 import {
@@ -56,97 +56,109 @@ const eventOf = (s: DemoServer, id: string): EventDoc => {
 const call = <T,>(s: DemoServer, name: string, payload: Record<string, unknown>, uid = DEMO_ME) => s.call(name, { op_id: uuidV4(), ...payload }, uid) as Promise<T>;
 
 describe('demo sunucusu Faz 7: etkinlik', () => {
-  it('3 aşama: izinsiz davetli düşer → botlar yanıtlar ve mekan önerir → eşit oyda leaders → saat oyu → son onay → hatırlatma', async () => {
+  it('tek seferde oylama: izinsiz davetli düşer → botlar katılım + mekan + saati tek yanıtta işaretler → sonuçlar bana → eşitlikte seçerek onay → hatırlatma', async () => {
     const s = await server();
     const c = fakeClock(Date.now());
     const pushes: DemoPushMessage[] = [];
     s.subscribePush(DEMO_ME, (m) => pushes.push(m));
 
-    // Aşama 1: Ayşe ve Mehmet bana etkinlik daveti izni vermiş (tohum), Can vermemiş → sessizce düşer, sayısı döner.
+    // Ayşe ve Mehmet bana etkinlik daveti izni vermiş (tohum), Can vermemiş → sessizce düşer, sayısı döner.
     const created = await call<EventResponse>(s, 'event_create', {
       title: 'Kahvaltı',
       date: tomorrow(c.now()),
       time_zone: TZ,
       invitee_ids: [AYSE, MEHMET, CAN],
-      venue_options: [{ name: 'Moda Kahve' }],
+      venue_options: [{ name: 'Moda Kahve' }, { name: 'Kadıköy Fırın' }],
       time_minutes: [10 * 60, 11 * 60],
     });
     const id = created.event.event_id;
     expect(created.skipped_count).toBe(1);
     expect(created.event.invitee_ids).toEqual([AYSE, MEHMET]);
-    expect(created.event.stage).toBe('rsvp');
+    expect(created.event.stage).toBe('voting');
+    expect(created.event.results_at).toBeNull();
     expect(s.noticesOf(AYSE)[0]).toMatchObject({ type: 'event_invite', event_id: id });
     expect(s.eventsOf(CAN)).toHaveLength(0);
 
+    // Botlar tek yanıt verir; herkes yanıtlayınca sonuçların tamamı TEK bildirimle bana düşer (ara yanıt bildirimi yok).
     c.advance(15_000);
     sweep(s);
-    let e = eventOf(s, id);
-    expect(e.rsvp[AYSE]?.status).toBe('going');
-    expect(e.rsvp[MEHMET]?.status).toBe('going');
-    expect(s.noticesOf(DEMO_ME).filter((n) => n.type === 'event_rsvp')).toHaveLength(2);
-    c.advance(15_000);
-    sweep(s);
-    e = eventOf(s, id);
-    expect(e.venue_options.map((o) => o.proposed_by)).toEqual([DEMO_ME, AYSE, MEHMET]);
+    const e = eventOf(s, id);
+    expect(e.answers[AYSE]).toMatchObject({ status: 'going', venue_option_id: 'v1', time_option_id: 't4' });
+    expect(e.answers[MEHMET]).toMatchObject({ status: 'going', venue_option_id: 'v1', time_option_id: 't3' });
+    expect(e.stage).toBe('voting');
+    expect(e.results_reason).toBe('all_answered');
+    const mine = s.noticesOf(DEMO_ME).filter((n) => n.event_id === id);
+    expect(mine.filter((n) => n.type === 'event_rsvp')).toHaveLength(0);
+    expect(mine.filter((n) => n.type === 'event_stage')).toHaveLength(1);
+    expect(mine[0]).toMatchObject({ type: 'event_stage', title: 'Sonuçlar hazır: Kahvaltı' });
+    expect(mine[0]?.body).toMatch(/^3 katılacak · Mekan: Moda Kahve \(2 oy\) · Saat: /);
 
-    // Aşama 2: mekan oylaması. Botlar farklı mekanlara oy verir; ben üçüncüsüne → eşitlik, kendiliğinden kapanmaz.
-    await call(s, 'event_advance', { event_id: id, action: 'open_venue_vote' });
-    expect(eventOf(s, id).stage).toBe('venue_vote');
-    expect(s.noticesOf(AYSE)[0]).toMatchObject({ type: 'event_stage' });
-    await call(s, 'event_vote', { event_id: id, kind: 'venue', option_id: 'v1' });
-    c.advance(15_000);
-    sweep(s);
-    e = eventOf(s, id);
-    expect(Object.keys(e.venue_votes).sort()).toEqual([AYSE, DEMO_ME, MEHMET].sort());
-    expect(new Set(Object.values(e.venue_votes)).size).toBe(3);
-    await expect(call(s, 'event_advance', { event_id: id, action: 'close_venue_vote' })).rejects.toMatchObject({
-      details: { code: 'event_vote_tie', leaders: ['v1', 'v4', 'v5'] },
-    });
-    // Davetli kapatamaz.
-    await expect(call(s, 'event_advance', { event_id: id, action: 'close_venue_vote', tie_break_option_id: 'v4' }, AYSE)).rejects.toMatchObject({
-      details: { code: 'event_not_owner' },
-    });
-    await call(s, 'event_advance', { event_id: id, action: 'close_venue_vote', tie_break_option_id: 'v4' });
-    e = eventOf(s, id);
-    expect(e.stage).toBe('time_vote');
-    expect(e.venue_option_id).toBe('v4');
-
-    // Aşama 3: saat oyu. Botlar t2'ye; herkes oy verince kendiliğinden kesinleşir → son onay + hatırlatıcılar.
-    await call(s, 'event_vote', { event_id: id, kind: 'time', option_id: 't3' });
-    c.advance(15_000);
-    sweep(s);
-    e = eventOf(s, id);
-    expect(e.stage).toBe('final');
-    expect(e.time_option_id).toBe('t2');
-    expect(s.noticesOf(DEMO_ME)[0]).toMatchObject({ type: 'event_stage' });
-    c.advance(15_000);
-    sweep(s);
-    e = eventOf(s, id);
-    expect(e.final_rsvp[AYSE]?.status).toBe('going');
-    expect(e.final_rsvp[MEHMET]?.status).toBe('going');
+    // Davetli onaylayamaz; saatte eşitlik → liderler döner; liderden biriyle onay.
+    await expect(call(s, 'event_finalize', { event_id: id }, AYSE)).rejects.toMatchObject({ details: { code: 'event_not_owner' } });
+    await expect(call(s, 'event_finalize', { event_id: id })).rejects.toMatchObject({ details: { code: 'event_vote_tie', time_leaders: ['t3', 't4'] } });
+    await call(s, 'event_finalize', { event_id: id, time_option_id: 't4' });
+    const f = eventOf(s, id);
+    expect(f.stage).toBe('final');
+    expect(f.venue_option_id).toBe('v1');
+    expect(f.time_option_id).toBe('t4');
+    expect(s.noticesOf(AYSE)[0]).toMatchObject({ type: 'event_stage', title: 'Kesinleşti: Kahvaltı' });
 
     // Hatırlatma (demo paneli: sıradaki hemen gider) → bildirim kutusu + push.
     pushes.length = 0;
     expect(s.fireMyEventRemindersNow()).toBe(1);
     expect(s.noticesOf(DEMO_ME)[0]).toMatchObject({ type: 'event_reminder', event_id: id });
     expect(s.noticesOf(AYSE)[0]).toMatchObject({ type: 'event_reminder' });
-    expect(s.fireMyEventRemindersNow()).toBeLessThanOrEqual(1); // diğer tür (varsa) bir kez daha
     await wait(800);
     expect(pushes.some((p) => p.data.type === 'event_reminder' && p.data.event_id === id)).toBe(true);
     expect(JSON.stringify(pushes)).not.toMatch(/"lat"|"lng"/);
   });
 
-  it('Can "Katılamayacağım" + not bırakır (onaysız da), not kartta görünür; iptal davetlilere bildirilir', async () => {
+  it('Ayşe davet eder: eksik yanıt reddedilir, tam yanıtla sonuçlar Ayşe\'ye gider ve Ayşe onaylar', async () => {
+    const s = await server();
+    const c = fakeClock(Date.now());
+    await grant(s, DEMO_ME, AYSE, 'meetup_invite');
+    const r = s.botCreateEvent(AYSE);
+    if (!r.ok) throw new Error(r.code);
+    expect(s.noticesOf(DEMO_ME)[0]).toMatchObject({ type: 'event_invite', event_id: r.event_id });
+    expect(eventOf(s, r.event_id).venue_options).toHaveLength(3);
+    expect(eventOf(s, r.event_id).time_options.map((t) => t.option_id)).toEqual(['t4', 't5']);
+
+    // "Katılacağım" mekan ve saat seçimi olmadan gönderilemez (tek seferde işaretlenir).
+    await expect(call(s, 'event_respond', { event_id: r.event_id, status: 'going', venue_option_id: 'v2' })).rejects.toMatchObject({
+      details: { code: 'event_options_invalid', reason: 'time_required' },
+    });
+    expect(eventOf(s, r.event_id).results_at).toBeNull();
+    await call(s, 'event_respond', { event_id: r.event_id, status: 'going', venue_option_id: 'v2', time_option_id: 't4' });
+    expect(eventOf(s, r.event_id).results_at).not.toBeNull();
+    expect(s.noticesOf(AYSE)[0]).toMatchObject({ type: 'event_stage', title: expect.stringMatching(/^Sonuçlar hazır/) });
+
+    c.advance(15_000);
+    sweep(s);
+    const e = eventOf(s, r.event_id);
+    expect(e.stage).toBe('final');
+    expect(e.venue_option_id).toBe('v2');
+    expect(e.time_option_id).toBe('t4');
+    expect(s.noticesOf(DEMO_ME)[0]).toMatchObject({ type: 'event_stage', title: expect.stringMatching(/^Kesinleşti/) });
+  });
+
+  it('Can "Katılamayacağım" + not bırakır (onaysız da), sonuçlarda sayılır; iptal davetlilere bildirilir', async () => {
     const s = await server();
     const c = fakeClock(Date.now());
     await grant(s, CAN, DEMO_ME, 'meetup_invite');
-    const { event } = await call<EventResponse>(s, 'event_create', { title: 'Sinema', date: tomorrow(c.now()), time_zone: TZ, invitee_ids: [CAN, AYSE] });
+    const { event } = await call<EventResponse>(s, 'event_create', {
+      title: 'Sinema',
+      date: tomorrow(c.now()),
+      time_zone: TZ,
+      invitee_ids: [CAN, AYSE],
+      venue_options: [{ name: 'Kadıköy Sineması' }],
+      time_minutes: [20 * 60],
+    });
     c.advance(15_000);
     sweep(s);
     const e = eventOf(s, event.event_id);
-    expect(e.rsvp[CAN]?.status).toBe('not_going');
-    expect(e.rsvp[CAN]?.note).toMatch(/ailemin yanındayım/);
-    expect(s.noticesOf(DEMO_ME).find((n) => n.body.includes('Can'))?.body).toMatch(/katılamayacak/);
+    expect(e.answers[CAN]?.status).toBe('not_going');
+    expect(e.answers[CAN]?.note).toMatch(/ailemin yanındayım/);
+    expect(s.noticesOf(DEMO_ME)[0]?.body).toMatch(/^2 katılacak · 1 katılamayacak/);
 
     await call(s, 'event_cancel', { event_id: event.event_id });
     expect(eventOf(s, event.event_id).stage).toBe('cancelled');
@@ -155,8 +167,15 @@ describe('demo sunucusu Faz 7: etkinlik', () => {
 
   it('üye olmayan için etkinlik yok gibi davranılır; arkadaşlık bitince davetli çıkarılır', async () => {
     const s = await server();
-    const { event } = await call<EventResponse>(s, 'event_create', { title: 'Yürüyüş', date: tomorrow(Date.now()), time_zone: TZ, invitee_ids: [AYSE, MEHMET] });
-    await expect(call(s, 'event_rsvp', { event_id: event.event_id, round: 'initial', status: 'going' }, CAN)).rejects.toMatchObject({ details: { code: 'event_not_found' } });
+    const { event } = await call<EventResponse>(s, 'event_create', {
+      title: 'Yürüyüş',
+      date: tomorrow(Date.now()),
+      time_zone: TZ,
+      invitee_ids: [AYSE, MEHMET],
+      venue_options: [{ name: 'Moda Sahili' }],
+      time_minutes: [18 * 60],
+    });
+    await expect(call(s, 'event_respond', { event_id: event.event_id, status: 'going' }, CAN)).rejects.toMatchObject({ details: { code: 'event_not_found' } });
     const f = s.friendshipsOf(DEMO_ME).find((x) => x.member_ids.includes(MEHMET));
     await call(s, 'friendship_remove', { friendship_id: f?.id });
     expect(eventOf(s, event.event_id).invitee_ids).toEqual([AYSE]);

@@ -22,7 +22,7 @@ işaretlenenler ürün kararıyla doğrulanmalıdır.
 ```ts
 interface EventDoc {
   event_id: string;
-  owner_id: UserId;               // düzenleyen (her zaman katılır, oy verir)
+  owner_id: UserId;               // düzenleyen (her zaman katılır; sonuçları görür ve onaylar)
   title: string;                  // ≤ 60
   description: string | null;     // ≤ 300
   date: string;                   // 'YYYY-MM-DD', sahibin saat diliminde; bugün … +180 gün
@@ -30,17 +30,16 @@ interface EventDoc {
   invitee_ids: UserId[];          // sahip hariç, ≤ 20
   member_ids: UserId[];           // [owner_id, ...invitee_ids]: kural ve array-contains sorgusu
   names: Record<UserId, string>;  // üyelerin ad anlık görüntüsü (üyeler birbirini tanımayabilir)
-  stage: 'rsvp' | 'venue_vote' | 'time_vote' | 'final' | 'completed' | 'cancelled' | 'expired';
-  stage_deadline_at: EpochMs | null;   // oylamanın kendiliğinden kapanış anı
+  stage: 'voting' | 'final' | 'completed' | 'cancelled' | 'expired';
+  respond_by: EpochMs | null;          // yanıt süresi sonu (dolunca sonuçlar düzenleyene gider)
   vote_window_ms: number;              // 2 / 6 / 24 / 48 sa (varsayılan 24 sa)
-  rsvp: Record<UserId, EventAnswer>;        // Aşama 1 ön onayı
-  final_rsvp: Record<UserId, EventAnswer>;  // son onay (yalnızca final)
-  venue_options: EventVenueOption[];        // tam 3 seçenekle oylama açılır
-  venue_votes: Record<UserId, string>;
-  venue_option_id: string | null;
-  time_options: EventTimeOption[];          // 2–4 saat; her biri tarihte ve ≥ 30 dk ileride
-  time_votes: Record<UserId, string>;
-  time_option_id: string | null;
+  answers: Record<UserId, EventAnswer>;     // davetlinin TEK yanıtı: katılım + mekan + saat
+  venue_options: EventVenueOption[];        // 1–3 mekan (tekse sabit)
+  time_options: EventTimeOption[];          // 1–4 saat (tekse sabit); her biri tarihte ve ≥ 30 dk ileride
+  results_at: EpochMs | null;               // sonuçların düzenleyene gittiği an
+  results_reason: 'all_answered' | 'deadline' | null;
+  venue_option_id: string | null;           // onaylanan mekan
+  time_option_id: string | null;            // onaylanan saat
   starts_at: EpochMs | null;                // kesinleşen başlangıç
   finalized_at: EpochMs | null;
   expires_at: EpochMs;                      // tarih gününün yerel sonu
@@ -49,7 +48,13 @@ interface EventDoc {
   seq: number;                              // v1, t2 … kimlik sayacı
   created_at: EpochMs; updated_at: EpochMs; version: number;
 }
-interface EventAnswer { status: 'going' | 'not_going'; note: string | null; at: EpochMs }   // not ≤ 300 kod noktası
+interface EventAnswer {
+  status: 'going' | 'not_going';
+  note: string | null;              // yalnızca not_going, ≤ 300 kod noktası
+  venue_option_id: string | null;   // "Katılacağım" ise zorunlu (tek seçenekte kendiliğinden)
+  time_option_id: string | null;    // "Katılacağım" ise zorunlu (tek seçenekte kendiliğinden)
+  at: EpochMs;
+}
 ```
 
 - **Kurallar** (`backend/firestore.rules`): okuma yalnızca `request.auth.uid in resource.data.member_ids`; yazma
@@ -73,18 +78,16 @@ interface EventAnswer { status: 'going' | 'not_going'; note: string | null; at: 
 
 | Callable | Kim | Ne yapar |
 | --- | --- | --- |
-| `event_create` | herkes | Başlık, açıklama, tarih, saat dilimi, davetliler, isteğe bağlı ≤ 3 mekan ve 2–4 saat, oylama süresi. Davetliler yalnızca bana `meetup_invite` vermiş arkadaşlar (Faz 8 `canInvite`); diğerleri **sessizce düşer**, yalnızca sayısı döner (`skipped_count`). Hiç kalmazsa `not_permitted` / `not_friends`. Günde 20 oluşturma, aynı anda 10 etkin etkinlik. |
-| `event_rsvp` | davetli | `round: initial | final`, `status: going | not_going`, `note` (yalnızca not_going, ≤ 300). "Katılamayacağım" onaysız da gönderilebilir (koruyucu işlem). |
-| `event_venue_propose` / `event_venue_remove` | sahip, "Katılacağım" diyen davetli | Aşama 1'de mekan önerisi (davetli başına 1, toplam 3, aynı ad/yer tekrarlanamaz). Öneren ya da sahip kaldırır. |
-| `event_vote` | sahip + "Katılacağım" diyenler | `kind: venue | time`, `option_id`. Oy değiştirilebilir. |
-| `event_advance` | sahip | `open_venue_vote` (tam 3 mekan + en az bir "Katılacağım"), `close_venue_vote`, `close_time_vote`; eşitlikte `tie_break_option_id`. |
-| `event_time_options_set` | sahip | 2–4 saat; saat oylaması sürerken değişirse oylar sıfırlanır, süre yeniden başlar. |
-| `event_update` | sahip, Aşama 1 | Başlık / açıklama / tarih. Tarih değişirse Aşama 1 yanıtları sıfırlanır, davetlilere "Tarih değişti". |
+| `event_create` | herkes | Başlık, açıklama, tarih, saat dilimi, davetliler, **zorunlu** 1–3 mekan ve 1–4 saat, yanıt süresi. Davetliler yalnızca bana `meetup_invite` vermiş arkadaşlar (Faz 8 `canInvite`); diğerleri **sessizce düşer**, yalnızca sayısı döner (`skipped_count`). Hiç kalmazsa `not_permitted` / `not_friends`. Günde 20 oluşturma, aynı anda 10 etkin etkinlik. |
+| `event_respond` | davetli | TEK yanıt: `status: going | not_going`, `venue_option_id`, `time_option_id` ("Katılacağım" ise ikisi de zorunlu; tek seçenekte kendiliğinden), `note` (yalnızca not_going, ≤ 300). Onaylanana kadar değiştirilebilir; `final`'de yalnızca katılım değişir. "Katılamayacağım" onaysız da gönderilebilir (koruyucu işlem). |
+| `event_finalize` | sahip | Sonucu onaylar → `final`. En çok oyu alan mekan ve saat; eşitlikte `event_vote_tie` (+ `venue_leaders` / `time_leaders`) döner, sahip liderlerden birini `venue_option_id` / `time_option_id` ile seçer. Herkes yanıtlamadan da onaylanabilir; en az bir "Katılacağım" gerekir. |
+| `event_options_set` | sahip, `voting` | Mekan ve saat seçeneklerini değiştirir. Aynı kalan seçenek (aynı ad / yer, aynı dakika) kimliğini ve oyunu korur; seçimi kaldırılan davetliye "seçenekler değişti" gider, yanıtı eksik kalır. |
+| `event_update` | sahip | Başlık / açıklama (başlamadan önce); tarih yalnızca `voting`'de. Tarih değişirse yanıtlar sıfırlanır, saatler yeni güne taşınır, davetlilere "Tarih değişti". |
 | `event_invite_add` | sahip | Sonradan davet (aynı izin süzgeci). |
 | `event_cancel` | sahip | `cancelled`; davetlilere bildirim, hatırlatıcılar silinir. |
 
-Hata kodları (core `ERROR_CODES`): `event_not_found`, `event_not_owner`, `event_stage_mismatch`, `event_not_eligible`,
-`event_options_invalid`, `event_vote_tie` (+ `details.leaders`), `event_no_attendees`, `event_date_invalid`,
+Hata kodları (core `ERROR_CODES`): `event_not_found`, `event_not_owner`, `event_stage_mismatch`,
+`event_options_invalid` (+ `details.reason`), `event_vote_tie` (+ `details.venue_leaders` / `time_leaders`), `event_no_attendees`, `event_date_invalid`,
 `event_note_too_long`, `event_invitee_limit`, `event_started`, `event_limit_reached`. Saatte 120 etkinlik işlemi.
 
 ## 2. Durum makinesi
@@ -94,34 +97,35 @@ Tek saf geçiş fonksiyonu: core `reduceEvent(doc, actor, action, ctx) → { doc
 onay / hız sınırı çağıranda denetlenir.
 
 ```
-                 open_venue_vote (sahip; 3 mekan + ≥1 "Katılacağım")
-   ┌────────┐ ─────────────────────────────────▶ ┌────────────┐
-   │  rsvp  │                                     │ venue_vote │── herkes oy verdi ve tek lider → kapanır
-   └────────┘                                     └────────────┘── süre doldu → en çok oy (eşitse sahip seçer / süre dolumunda ilk sıradaki)
-     │  ▲ tarih değişti: yanıtlar sıfırlanır              │ close_vote (sahip; eşitlikte tie_break)
-     │                                                    ▼
-     │                                             ┌────────────┐   saat seçeneği yoksa: sahibe "saat ekle"
-     │                                             │ time_vote  │── (stage_deadline_at = null) → time_options_set
-     │                                             └────────────┘── herkes oy verdi / süre doldu / close_vote
-     │                                                    ▼
-     │ gün bitti (expires_at)                      ┌────────────┐   son onay ("Katılacağım / Katılamayacağım"),
-     ├──────────────▶ expired ◀── oy yok ──────────│   final    │   hatırlatıcılar planlanır
-     │                                             └────────────┘
-     └── cancel (sahip) ──▶ cancelled                     │ starts_at + 3 sa
-                                                          ▼
-                                                      completed
+                       herkes yanıtladı ya da respond_by doldu
+   ┌──────────┐  ───────────────────────────────────────▶  sonuçlar düzenleyene (results_at, TEK bildirim)
+   │  voting  │       davetli: event_respond (katılım + mekan + saat, tek seferde; onaya kadar değişebilir)
+   └──────────┘       sahip: event_options_set (seçenekleri değiştir), event_update (tarih → yanıtlar sıfırlanır)
+     │      │ event_finalize (sahip; eşitlikte liderlerden seçer)
+     │      ▼
+     │   ┌────────┐  katılım değişebilir (oylar donmuş), sahibe bildirim; hatırlatıcılar planlanır
+     │   │ final  │──────────── starts_at + 3 sa ────────────▶ completed
+     │   └────────┘
+     ├── gün bitti (expires_at) ya da hiçbir saat seçeneği kalmadı ──▶ expired
+     └── cancel (sahip) ──▶ cancelled
 ```
 
-- **Aşama 1 (`rsvp`)**: tarih + katılım ön onayı. Yanıt `venue_vote` ve `time_vote` sırasında da değiştirilebilir;
-  "Katılamayacağım" diyenin oyları silinir (oylama kendiliğinden kapanabilir).
-- **Aşama 2 (`venue_vote`)**: 3 mekan, en çok oy alan kazanır. Seçmen = sahip + "Katılacağım" diyenler.
-- **Aşama 3 (`time_vote` → `final`)**: saat oylaması, kesinleşince herkesten son onay. Saat oylaması en geç ilk
-  saat seçeneğinden 15 dk önce kapanır.
-- **Sistem eylemleri**: `tick` (dakikalık süpürücü: oylama süresi, gün sonu, tamamlanma) ve `remove_member`
-  (arkadaşlık bitti / engel / hesap silindi; sahip çıkarılırsa etkinlik iptal).
-- **Etkiler** (`EventEffect`): `invite`, `stage` (`venue_vote`, `time_vote`, `need_times`, `final`, `date_changed`),
-  `rsvp` (sahibe), `cancelled`, `reminders` (planı değiştir). Sunucu bunları aynı transaction'da bildirim kutusuna ve
-  hatırlatıcılara, commit sonrası push'a çevirir. Aşama 2/3 bildirimi "Katılamayacağım" diyenleri rahatsız etmez.
+- **Tek seferde oylama**: davetli daveti açınca katılımını, mekanı ve saati TEK kartta işaretler ve gönderir.
+  "Katılacağım" mekan ve saat seçimi olmadan gönderilemez; tek mekan / tek saat sabittir (seçim kendiliğinden).
+  Yanıtlar sonuçlardan önce tek tek bildirilmez.
+- **Sonuçlar**: herkes yanıtlayınca (`all_answered`) ya da yanıt süresi dolunca (`deadline`) sonuçların tamamı TEK
+  bildirimle düzenleyene düşer: "3 katılacak · 1 katılamayacak · 1 yanıt vermedi · Mekan: Moda Kahve (3 oy) · Saat:
+  10:00 (2 oy)". Sonrasında gelen yanıt / değişiklik düzenleyene tek tek bildirilir. Oy sayımı yalnızca "Katılacağım"
+  diyenlerin seçimidir; düzenleyen oy sayılarını ve kimin neyi seçtiğini görür, davetliler görmez.
+- **Yanıt süresi** (`respond_by`): pencere (2 / 6 / 24 / 48 sa), tarih gününün sonu ve ilk saat seçeneğinden 1 sa önce;
+  hangisi erken.
+- **Onay** (`event_finalize`): yalnızca sahip; eşitlikte kazananı liderler arasından seçer. Herkes yanıtlamadan da
+  onaylanabilir (uygulama önce sorar).
+- **Sistem eylemleri**: `tick` (dakikalık süpürücü: yanıt süresi, gün sonu, tamamlanma) ve `remove_member`
+  (arkadaşlık bitti / engel / hesap silindi; sahip çıkarılırsa etkinlik iptal; kalan herkes yanıtlamışsa sonuçlar gider).
+- **Etkiler** (`EventEffect`): `invite`, `stage` (`results` sahibe, `final` davetlilere, `date_changed`,
+  `options_changed` seçimi kaldırılanlara), `rsvp` (sahibe, sonuçlardan sonra; seçimlerle), `cancelled`, `reminders`.
+  Sunucu bunları aynı transaction'da bildirim kutusuna ve hatırlatıcılara, commit sonrası push'a çevirir.
 
 ## 3. Hatırlatmalar ve davet bildirimi
 
@@ -130,8 +134,8 @@ onay / hız sınırı çağıranda denetlenir.
   - `day_before`: başlangıçtan tam 24 saat önce (o an geçtiyse planlanmaz).
   - `morning`: buluşma günü yerel 08:00 (geçtiyse ya da buluşma 08:00'de / daha önce başlıyorsa planlanmaz).
 - **Gönderim** (`event_sweeper`, dakikada bir): etkinlik hâlâ `final` ve başlangıç değişmemişse; 2 saatten geç
-  kalan ya da başlangıcı geçen hatırlatma `stale` (gönderilmez). Alıcılar: sahip + son onayda "Katılamayacağım"
-  DEMEYENLER. Uygulama içi (bildirim kutusu) ve push olarak.
+  kalan ya da başlangıcı geçen hatırlatma `stale` (gönderilmez). Alıcılar: sahip + "Katılamayacağım"
+  DEMEYEN davetliler. Uygulama içi (bildirim kutusu) ve push olarak.
 
 ## 4. Bildirim mimarisi
 
@@ -141,7 +145,7 @@ onay / hız sınırı çağıranda denetlenir.
 | --- | --- | --- |
 | `sos_alarm` (yeni; Faz 4 `sos` **silinir**) | MAX, `bypassDnd`, kilit ekranında PUBLIC, özel ses `res/raw/sos_alarm`, uzun titreşim | SOS (gelen acil durum) |
 | `movement` | HIGH (heads-up banner), kilit ekranında PRIVATE | "Ayşe eve girdi" (bölge), "Mehmet yola çıktı" |
-| `events` | HIGH | davet, aşama, yanıt, iptal |
+| `events` | HIGH | davet, sonuçlar, kesinleşme, yanıt, iptal |
 | `event_reminders` | HIGH | 1 gün önce / sabah 08:00 |
 
 Bölge (Faz 5 `zone_event`) push'u da `movement` kanalına taşındı. `ACCESS_NOTIFICATION_POLICY` izni `bypassDnd`'nin
@@ -234,7 +238,9 @@ Görünmezken, 5 dk'dan eski raporda, 30 dk soğumada ya da alıcı yoksa gitmez
 Demo sunucusu (`apps/mobile/src/demo/server/server.ts`) aynı core fonksiyonlarıyla Faz 7'yi taklit eder:
 
 - Ayşe / Mehmet / Zeynep sana buluşma daveti izni vermiş (Can vermemiş: seçicide "Bu kişi sana bu izni vermedi").
-- Botlar birkaç saniye içinde yanıt verir (Can "Katılamayacağım" + not), birer mekan önerir, oy verir, son onayı verir.
+- Botlar birkaç saniye içinde TEK yanıt verir (Can "Katılamayacağım" + not; diğerleri katılır ve bir mekan + saat seçer);
+  herkes yanıtlayınca sonuçlar sana düşer. Ayşe'nin davetinde sen işaretleyip gönderince Ayşe birkaç saniyede onaylar.
+- Eski (aşamalı oylama) biçimindeki demo etkinlikleri açılışta silinir.
 - **FAZ 7 SENARYOLARI** paneli: "Ayşe etkinliğe davet etsin" (önce Ayşe'ye buluşma daveti izni ver),
   "Hatırlatmayı şimdi gönder", "Mehmet yola çıksın"; altta etkinlik sayısı, gizlilik tercihlerin ve son "yola çıktı"
   raporun.
@@ -244,10 +250,10 @@ Demo sunucusu (`apps/mobile/src/demo/server/server.ts`) aynı core fonksiyonlar�
 
 | Katman | Kapsam |
 | --- | --- |
-| Çekirdek (`packages/core/test/faz7.test.ts`) | durum makinesi (her aşama, eşitlik, süre dolumu, tarih değişimi, üye çıkarma), hatırlatma planı (yaz saati), metinler, ilk açılış adımları, izin merkezi satırları, tema |
+| Çekirdek (`packages/core/test/faz7.test.ts`) | durum makinesi (tek yanıt, sonuçlar, onay ve eşitlik, süre dolumu, seçenek / tarih değişimi, üye çıkarma), hatırlatma planı (yaz saati), metinler, ilk açılış adımları, izin merkezi satırları, tema |
 | Backend (`backend/test/functions/faz7.test.ts`, kural testleri) | callable'lar uçtan uca emülatörde, izin süzgeci, hatırlatma gönderimi / bayatlama, pil RTDB kuralı, düşük pil bastırma, "yola çıktı" |
-| Mobil (`__tests__/faz7Mobile.test.ts`, `demoFaz7.test.ts`) | bildirim kanalları ve kesinti düzeyleri, SOS alarm kanalı, pil alanı süzgeci, gizlilik deposu sırası, tema, etkinlik deposu; demo sunucusunda 3 aşama bot üyelerle |
-| Tarayıcı | giriş → onay → ilk açılış akışı → harita teması → etkinlik oluştur → botlar → mekan oyu (eşitlik) → saat oyu → kesinleşme → hatırlatma bildirimi → Gizlilik Merkezi (Playwright) |
+| Mobil (`__tests__/faz7Mobile.test.ts`, `demoFaz7.test.ts`) | bildirim kanalları ve kesinti düzeyleri, SOS alarm kanalı, pil alanı süzgeci, gizlilik deposu sırası, tema, etkinlik deposu; demo sunucusunda tek seferde oylama bot üyelerle |
+| Tarayıcı | giriş → onay → ilk açılış akışı → harita teması → etkinlik oluştur → botlar tek yanıt verir → sonuçlar → onay → hatırlatma bildirimi; Ayşe'nin davetine tek kartla yanıt → Gizlilik Merkezi (Playwright) |
 
 ### 9.1 Cihazda doğrulanacaklar
 

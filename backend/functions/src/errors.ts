@@ -49,7 +49,6 @@ const HTTPS_CODE: Record<ErrorCode, FunctionsErrorCode> = {
   event_not_found: 'not-found',
   event_not_owner: 'permission-denied',
   event_stage_mismatch: 'failed-precondition',
-  event_not_eligible: 'failed-precondition',
   event_options_invalid: 'invalid-argument',
   event_vote_tie: 'failed-precondition',
   event_no_attendees: 'failed-precondition',

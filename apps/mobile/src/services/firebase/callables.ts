@@ -135,32 +135,26 @@ import {
   type LocationRequestCancelResponse,
   type LocationRequestRespondResponse,
   type LocationRequestSendResponse,
-  EventAdvanceRequestSchema,
   EventCancelRequestSchema,
   EventCreateRequestSchema,
+  EventFinalizeRequestSchema,
   EventInviteAddRequestSchema,
+  EventOptionsSetRequestSchema,
+  EventRespondRequestSchema,
   EventResponseSchema,
-  EventRsvpRequestSchema,
-  EventTimeOptionsSetRequestSchema,
   EventUpdateRequestSchema,
-  EventVenueProposeRequestSchema,
-  EventVenueRemoveRequestSchema,
-  EventVoteRequestSchema,
   MovementReportRequestSchema,
   MovementReportResponseSchema,
   PrivacySettingsResponseSchema,
   PrivacySettingsSetRequestSchema,
-  type EventAdvanceRequest,
   type EventCancelRequest,
   type EventCreateRequest,
+  type EventFinalizeRequest,
   type EventInviteAddRequest,
+  type EventOptionsSetRequest,
+  type EventRespondRequest,
   type EventResponse,
-  type EventRsvpRequest,
-  type EventTimeOptionsSetRequest,
   type EventUpdateRequest,
-  type EventVenueProposeRequest,
-  type EventVenueRemoveRequest,
-  type EventVoteRequest,
   type MovementReportRequest,
   type MovementReportResponse,
   type PrivacySettingsResponse,
@@ -603,30 +597,23 @@ export const locationRequestApi: LocationRequestApi = { locationRequestSend, loc
  * Etkinlik callable'ları (core `CALLABLES.eventCreate` … `eventCancel`; istek ve yanıt şemaları core `events.ts`).
  * Hepsi `op_id` taşır ve güncel etkinlik belgesini döner (ekran, dinleyici gelmeden yanıtla güncellenir).
  *  - `event_create` / `event_invite_add`: izin vermeyen / arkadaş olmayan sessizce atlanır (`skipped_count`).
- *  - `event_rsvp` "Katılamayacağım" onaysız da çalışır (çekilmek her zaman mümkün).
+ *  - `event_respond`: davetlinin TEK yanıtı (katılım + mekan + saat); "Katılamayacağım" onaysız da çalışır.
+ *  - `event_finalize`: sahip sonucu onaylar; eşitlikte `event_vote_tie` + `venue_leaders` / `time_leaders`.
+ *  - `event_options_set`: sahip mekan / saat seçeneklerini değiştirir (aynı kalanın oyu korunur).
  */
 const op = <T extends { op_id?: string }>(input: T) => ({ ...input, op_id: input.op_id ?? uuidV4() });
 
 export function eventCreate(input: WithOp<EventCreateRequest>): Promise<EventResponse> {
   return invoke(CALLABLES.eventCreate, EventCreateRequestSchema, op(input), EventResponseSchema);
 }
-export function eventRsvp(input: WithOp<EventRsvpRequest>): Promise<EventResponse> {
-  return invoke(CALLABLES.eventRsvp, EventRsvpRequestSchema, op(input), EventResponseSchema);
+export function eventRespond(input: WithOp<EventRespondRequest>): Promise<EventResponse> {
+  return invoke(CALLABLES.eventRespond, EventRespondRequestSchema, op(input), EventResponseSchema);
 }
-export function eventVenuePropose(input: WithOp<EventVenueProposeRequest>): Promise<EventResponse> {
-  return invoke(CALLABLES.eventVenuePropose, EventVenueProposeRequestSchema, op(input), EventResponseSchema);
+export function eventFinalize(input: WithOp<EventFinalizeRequest>): Promise<EventResponse> {
+  return invoke(CALLABLES.eventFinalize, EventFinalizeRequestSchema, op(input), EventResponseSchema);
 }
-export function eventVenueRemove(input: WithOp<EventVenueRemoveRequest>): Promise<EventResponse> {
-  return invoke(CALLABLES.eventVenueRemove, EventVenueRemoveRequestSchema, op(input), EventResponseSchema);
-}
-export function eventVote(input: WithOp<EventVoteRequest>): Promise<EventResponse> {
-  return invoke(CALLABLES.eventVote, EventVoteRequestSchema, op(input), EventResponseSchema);
-}
-export function eventAdvance(input: WithOp<EventAdvanceRequest>): Promise<EventResponse> {
-  return invoke(CALLABLES.eventAdvance, EventAdvanceRequestSchema, op(input), EventResponseSchema);
-}
-export function eventTimeOptionsSet(input: WithOp<EventTimeOptionsSetRequest>): Promise<EventResponse> {
-  return invoke(CALLABLES.eventTimeOptionsSet, EventTimeOptionsSetRequestSchema, op(input), EventResponseSchema);
+export function eventOptionsSet(input: WithOp<EventOptionsSetRequest>): Promise<EventResponse> {
+  return invoke(CALLABLES.eventOptionsSet, EventOptionsSetRequestSchema, op(input), EventResponseSchema);
 }
 export function eventUpdate(input: WithOp<EventUpdateRequest>): Promise<EventResponse> {
   return invoke(CALLABLES.eventUpdate, EventUpdateRequestSchema, op(input), EventResponseSchema);
@@ -640,28 +627,14 @@ export function eventCancel(input: WithOp<EventCancelRequest>): Promise<EventRes
 
 export interface EventsApi {
   eventCreate: typeof eventCreate;
-  eventRsvp: typeof eventRsvp;
-  eventVenuePropose: typeof eventVenuePropose;
-  eventVenueRemove: typeof eventVenueRemove;
-  eventVote: typeof eventVote;
-  eventAdvance: typeof eventAdvance;
-  eventTimeOptionsSet: typeof eventTimeOptionsSet;
+  eventRespond: typeof eventRespond;
+  eventFinalize: typeof eventFinalize;
+  eventOptionsSet: typeof eventOptionsSet;
   eventUpdate: typeof eventUpdate;
   eventInviteAdd: typeof eventInviteAdd;
   eventCancel: typeof eventCancel;
 }
-export const eventsApi: EventsApi = {
-  eventCreate,
-  eventRsvp,
-  eventVenuePropose,
-  eventVenueRemove,
-  eventVote,
-  eventAdvance,
-  eventTimeOptionsSet,
-  eventUpdate,
-  eventInviteAdd,
-  eventCancel,
-};
+export const eventsApi: EventsApi = { eventCreate, eventRespond, eventFinalize, eventOptionsSet, eventUpdate, eventInviteAdd, eventCancel };
 
 /**
  * İzin & Gizlilik Merkezi: pil paylaşımı (varsayılan KAPALI; sunucu RTDB kuralıyla zorlar) ve "yola çıktı" uyarıları.

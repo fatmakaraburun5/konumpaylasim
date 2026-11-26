@@ -17,14 +17,12 @@ import {
   MOVEMENT_KINDS,
   NOTIFICATION_CHANNELS_F7,
   PUSH_TYPES_F7,
-  RSVP_ROUNDS,
   ATTENDANCE_STATUSES,
   movementPushText,
   type AttendanceStatus,
   type EventReminderKind,
   type EventStageNotice,
   type MovementKind,
-  type RsvpRound,
 } from '@konum/core';
 import type { F4LocalContent, F4PushLike } from './f4Push';
 
@@ -33,7 +31,7 @@ export type F7PushType = (typeof PUSH_TYPES_F7)[number];
 export type F7EventPush =
   | { type: 'event_invite'; event_id: string; from: string }
   | { type: 'event_stage'; event_id: string; notice: EventStageNotice }
-  | { type: 'event_rsvp'; event_id: string; by: string; round: RsvpRound; status: AttendanceStatus }
+  | { type: 'event_rsvp'; event_id: string; by: string; status: AttendanceStatus }
   | { type: 'event_reminder'; event_id: string; kind: EventReminderKind }
   | { type: 'event_cancelled'; event_id: string };
 
@@ -64,9 +62,8 @@ export function parseF7Data(data: Record<string, unknown> | null | undefined): F
     }
     case 'event_rsvp': {
       const by = str(data.by);
-      const round = oneOf(RSVP_ROUNDS, data.round);
       const status = oneOf(ATTENDANCE_STATUSES, data.status);
-      return by && round && status ? { type: 'event_rsvp', event_id, by, round, status } : null;
+      return by && status ? { type: 'event_rsvp', event_id, by, status } : null;
     }
     case 'event_reminder': {
       const kind = oneOf(EVENT_REMINDER_KINDS, data.kind);
@@ -86,7 +83,11 @@ function fallbackText(ev: F7PushEvent, nameOf: (uid: string) => string | null): 
     case 'event_invite':
       return { title: 'Etkinlik daveti', body: `${nameOf(ev.from) ?? 'Bir arkadaşın'} seni bir etkinliğe davet etti` };
     case 'event_stage':
-      return { title: 'Etkinlik güncellendi', body: 'Etkinlikte yeni bir aşama başladı' };
+      return ev.notice === 'results'
+        ? { title: 'Sonuçlar hazır', body: 'Etkinliğinin yanıtları geldi, sonucu onaylayabilirsin' }
+        : ev.notice === 'final'
+          ? { title: 'Etkinlik kesinleşti', body: 'Mekan ve saat belli oldu' }
+          : { title: 'Etkinlik güncellendi', body: 'Yanıtını gözden geçir' };
     case 'event_rsvp':
       return { title: 'Etkinlik yanıtı', body: `${nameOf(ev.by) ?? 'Bir davetli'} ${ev.status === 'going' ? 'katılacak' : 'katılamayacak'}` };
     case 'event_reminder':
@@ -106,7 +107,7 @@ export function f7ForegroundContent(m: F4PushLike, nameOf: (uid: string) => stri
   const text = { title: m.notification?.title ?? fb.title, body: m.notification?.body ?? fb.body };
   if (ev.type === 'movement') return { ...text, channelId: NOTIFICATION_CHANNELS_F7.movement, data, interruptionLevel: 'timeSensitive', sound: true };
   if (ev.type === 'event_reminder') return { ...text, channelId: NOTIFICATION_CHANNELS_F7.eventReminders, data, interruptionLevel: 'timeSensitive', sound: true };
-  // Yanıt bildirimleri (yalnızca sahibe) sessiz: kalabalık davette telefonu sürekli çaldırmasın.
+  // Tek tek yanıt bildirimleri (sonuçlardan sonra, yalnızca sahibe) sessiz: kalabalık davette telefonu sürekli çaldırmasın.
   return { ...text, channelId: NOTIFICATION_CHANNELS_F7.events, data, interruptionLevel: 'active', sound: ev.type !== 'event_rsvp' };
 }
 

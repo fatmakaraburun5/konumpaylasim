@@ -2,9 +2,9 @@
  * Web önizleme · Faz 7 (yalnızca tarayıcı paketi): "FAZ 7 SENARYOLARI" panel grubu.
  *
  *  - "Ayşe etkinliğe davet etsin": yarın için 3 mekanlı, 2 saat seçenekli etkinlik → sana davet (push + Etkinlikler).
- *    Yanıt verince Ayşe mekan oylamasını açar; oyunu verince Ayşe de oy verir, saat oylaması ve son onay gelir.
- *  - Kendi etkinliğinde: Ayşe / Mehmet / Zeynep birkaç saniye içinde "Katılacağım" der ve birer mekan önerir, Can
- *    "Katılamayacağım" + not bırakır; oylamalarda botlar da oy verir.
+ *    Katılımını, mekanı ve saati tek seferde işaretleyip gönderince sonuçlar Ayşe'ye düşer, Ayşe birkaç saniyede onaylar.
+ *  - Kendi etkinliğinde: Ayşe / Mehmet / Zeynep birkaç saniye içinde "Katılacağım" der ve birer mekan + saat seçer, Can
+ *    "Katılamayacağım" + not bırakır; herkes yanıtlayınca sonuçların tamamı sana gelir, sen onaylarsın.
  *  - "Hatırlatmayı şimdi gönder": kesinleşmiş etkinliğin sıradaki hatırlatması (1 gün önce / sabah 08:00) hemen gider.
  *  - "Mehmet yola çıksın": paylaşan arkadaştan "Mehmet yola çıktı" heads-up bildirimi (demo: 30 dk soğuma sıfırlanır).
  * Altta etkinlik sayısı, gizlilik tercihlerin (pil paylaşımı varsayılan KAPALI) ve son "yola çıktı" raporun görünür.
@@ -38,7 +38,7 @@ export function Faz7Section({ snap, renderRow }: Faz7Props) {
     {
       key: 'f7-ayse-event',
       title: 'Ayşe etkinliğe davet etsin',
-      hint: 'Yarın için "Moda’da kahvaltı": davet bildirimi + Etkinlikler. Önce Ayşe\'ye buluşma daveti izni ver (Kişi izinleri). Sonra yanıt ver, mekan ve saat oylamasına katıl, son onayı ver.',
+      hint: 'Yarın için "Moda’da kahvaltı": davet bildirimi + Etkinlikler. Önce Ayşe\'ye buluşma daveti izni ver (Kişi izinleri). Sonra katılımını, mekanı ve saati tek seferde işaretle; sonuçlar Ayşe\'ye gider, Ayşe onaylayınca kesinleşir.',
       run: () => {
         const r = demoControls.ayseCreatesEvent();
         if (r.ok) return 'Ayşe seni "Moda’da kahvaltı" etkinliğine davet etti.';

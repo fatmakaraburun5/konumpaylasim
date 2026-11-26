@@ -306,10 +306,10 @@ hesabının Storage nesnelerini silme yetkisi olmalı (varsayılan hesapta var).
 Tasarım: `docs/PHASE7.md`. Durum makinesi core `events.ts` (`reduceEvent`, `createEventDoc`); backend yalnızca
 okur, izin / onay / hız sınırını denetler ve etkileri yazar.
 
-- **Callable'lar:** `event_create`, `event_rsvp`, `event_venue_propose`, `event_venue_remove`, `event_vote`,
-  `event_advance`, `event_time_options_set`, `event_update`, `event_invite_add`, `event_cancel`
+- **Callable'lar:** `event_create`, `event_respond` (tek yanıt: katılım + mekan + saat), `event_finalize`,
+  `event_options_set`, `event_update`, `event_invite_add`, `event_cancel`
   (`src/handlers/events.ts`); `privacy_settings_set`, `movement_report` (`src/handlers/privacy.ts`).
-- **Zamanlanmış:** `event_sweeper` (dakikada bir): oylama süresi / gün sonu / tamamlanma `tick`'i ve zamanı gelen
+- **Zamanlanmış:** `event_sweeper` (dakikada bir): yanıt süresi (sonuçlar düzenleyene) / gün sonu / tamamlanma `tick`'i ve zamanı gelen
   hatırlatmalar (1 gün önce, buluşma günü 08:00; 2 saatten geç kalan `stale`).
 - **Veri:** `events/{id}` (üyeler okur), `event_reminders`, `users/{uid}/notices` (30 gün TTL), `users/{uid}.privacy`
   + RTDB aynası `privacy/{uid}`, `movement_cooldowns`. İndeksler ve TTL alanları `firestore.indexes.json`'da.

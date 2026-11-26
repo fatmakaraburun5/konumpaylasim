@@ -49,16 +49,13 @@ import {
   PermissionRequestSendSchema,
   PermissionSetSchema,
   // Faz 7
-  EventAdvanceRequestSchema,
   EventCancelRequestSchema,
   EventCreateRequestSchema,
+  EventFinalizeRequestSchema,
   EventInviteAddRequestSchema,
-  EventRsvpRequestSchema,
-  EventTimeOptionsSetRequestSchema,
+  EventOptionsSetRequestSchema,
+  EventRespondRequestSchema,
   EventUpdateRequestSchema,
-  EventVenueProposeRequestSchema,
-  EventVenueRemoveRequestSchema,
-  EventVoteRequestSchema,
   MovementReportRequestSchema,
   PrivacySettingsSetRequestSchema,
 } from '@konum/core';
@@ -103,16 +100,13 @@ import {
   permissionSet,
 } from './handlers/access';
 import {
-  eventAdvance,
   eventCancel,
   eventCreate,
+  eventFinalize,
   eventInviteAdd,
-  eventRsvp,
-  eventTimeOptionsSet,
+  eventOptionsSet,
+  eventRespond,
   eventUpdate,
-  eventVenuePropose,
-  eventVenueRemove,
-  eventVote,
   sweepEvents,
 } from './handlers/events';
 import { movementReport, privacySettingsSet } from './handlers/privacy';
@@ -213,16 +207,13 @@ export const invisible_set = callable('invisible_set', InvisibleSetRequestSchema
 export const consent_accept = callable('consent_accept', ConsentAcceptRequestSchema, consentAccept);
 export const consent_withdraw = callable('consent_withdraw', ConsentWithdrawSchema, consentWithdraw);
 
-// --- Faz 7: etkinlik oylaması, gizlilik tercihleri, "yola çıktı" ---
-// Onay ön kapısı: event_cancel her zaman, event_rsvp yalnızca "Katılamayacağım", privacy_settings_set yalnızca
+// --- Faz 7: etkinlik (tek seferde oylama), gizlilik tercihleri, "yola çıktı" ---
+// Onay ön kapısı: event_cancel her zaman, event_respond yalnızca "Katılamayacağım", privacy_settings_set yalnızca
 // paylaşımı kısarken onaysız çalışır (core `consentExemptCall`).
 export const event_create = callable('event_create', EventCreateRequestSchema, (ctx, data) => eventCreate(ctx, data));
-export const event_rsvp = callable('event_rsvp', EventRsvpRequestSchema, (ctx, data) => eventRsvp(ctx, data));
-export const event_venue_propose = callable('event_venue_propose', EventVenueProposeRequestSchema, (ctx, data) => eventVenuePropose(ctx, data));
-export const event_venue_remove = callable('event_venue_remove', EventVenueRemoveRequestSchema, (ctx, data) => eventVenueRemove(ctx, data));
-export const event_vote = callable('event_vote', EventVoteRequestSchema, (ctx, data) => eventVote(ctx, data));
-export const event_advance = callable('event_advance', EventAdvanceRequestSchema, (ctx, data) => eventAdvance(ctx, data));
-export const event_time_options_set = callable('event_time_options_set', EventTimeOptionsSetRequestSchema, (ctx, data) => eventTimeOptionsSet(ctx, data));
+export const event_respond = callable('event_respond', EventRespondRequestSchema, (ctx, data) => eventRespond(ctx, data));
+export const event_finalize = callable('event_finalize', EventFinalizeRequestSchema, (ctx, data) => eventFinalize(ctx, data));
+export const event_options_set = callable('event_options_set', EventOptionsSetRequestSchema, (ctx, data) => eventOptionsSet(ctx, data));
 export const event_update = callable('event_update', EventUpdateRequestSchema, (ctx, data) => eventUpdate(ctx, data));
 export const event_invite_add = callable('event_invite_add', EventInviteAddRequestSchema, (ctx, data) => eventInviteAdd(ctx, data));
 export const event_cancel = callable('event_cancel', EventCancelRequestSchema, (ctx, data) => eventCancel(ctx, data));

@@ -14,7 +14,6 @@ import {
   type EpochMs,
   type EventDoc,
   type EventNoticeType,
-  type EventStage,
   type EventTodo,
   type UserId,
 } from '@konum/core';
@@ -69,40 +68,37 @@ export function voteWindowLabel(ms: number): string {
   return h >= 24 && h % 24 === 0 ? `${h / 24} gün` : `${h} saat`;
 }
 
-/** "Oylama 5 sa 12 dk sonra kapanır" · "Oylama 1 dk içinde kapanır". */
+/** "Yanıt süresi 5 sa 12 dk sonra doluyor" · "Yanıt süresi 1 dk içinde doluyor" · "Yanıt süresi doldu". */
 export function deadlineLabel(deadline: EpochMs | null, now: EpochMs): string | null {
   if (deadline === null) return null;
   const left = deadline - now;
-  if (left <= 60_000) return 'Oylama 1 dk içinde kapanır';
+  if (left <= 0) return 'Yanıt süresi doldu';
+  if (left <= 60_000) return 'Yanıt süresi 1 dk içinde doluyor';
   const totalMin = Math.ceil(left / 60_000);
   const d = Math.floor(totalMin / (24 * 60));
   const h = Math.floor((totalMin % (24 * 60)) / 60);
   const m = totalMin % 60;
   const parts = d > 0 ? [`${d} gün`, h ? `${h} sa` : ''] : h > 0 ? [`${h} sa`, m ? `${m} dk` : ''] : [`${m} dk`];
-  return `Oylama ${parts.filter(Boolean).join(' ')} sonra kapanır`;
+  return `Yanıt süresi ${parts.filter(Boolean).join(' ')} sonra doluyor`;
 }
 
 export const TODO_TEXT: Record<Exclude<EventTodo, null>, string> = {
-  rsvp: 'Yanıtını bekliyor',
-  vote_venue: 'Mekan oyu bekleniyor',
-  vote_time: 'Saat oyu bekleniyor',
-  final_rsvp: 'Son onayını bekliyor',
-  add_times: 'Saat seçeneklerini ekle',
-  open_venue_vote: 'Mekan oylamasını başlat',
+  respond: 'Yanıtını bekliyor',
+  complete_answer: 'Yanıtını tamamla',
+  finalize: 'Sonuçları onayla',
 };
 
 export type StepState = 'done' | 'current' | 'todo';
 
-/** Üç adımlı ilerleme: 1 Tarih ve katılım · 2 Mekan · 3 Saat ve son onay. */
-export function stageSteps(stage: EventStage): { label: string; state: StepState }[] {
-  const step = eventStep(stage);
-  const labels = ['Tarih ve katılım', 'Mekan', 'Saat ve onay'];
-  const ended = stage === 'cancelled' || stage === 'expired';
+/** Üç adımlı ilerleme: 1 Yanıtlar · 2 Sonuçlar · 3 Kesinleşti (core `eventStep`). */
+export function stageSteps(doc: Pick<EventDoc, 'stage' | 'results_at'>): { label: string; state: StepState }[] {
+  const step = eventStep(doc);
+  const labels = ['Yanıtlar', 'Sonuçlar', 'Kesinleşti'];
   return labels.map((label, i) => {
     const n = i + 1;
-    if (ended) return { label, state: 'todo' as StepState };
-    if (step === 4 || n < step) return { label, state: 'done' as StepState };
-    if (n === step) return { label, state: stage === 'final' ? 'done' : ('current' as StepState) };
+    if (step === 0) return { label, state: 'todo' as StepState };
+    if (n < step || step >= 3) return { label, state: 'done' as StepState };
+    if (n === step) return { label, state: 'current' as StepState };
     return { label, state: 'todo' as StepState };
   });
 }

@@ -8,7 +8,7 @@ import {
   EVENT_LIMITS,
   EventCreateRequestSchema,
   EventDocSchema,
-  EventRsvpRequestSchema,
+  EventRespondRequestSchema,
   HOUR,
   MINUTE,
   MOVEMENT_LIMITS,
@@ -20,8 +20,12 @@ import {
   eventReminderPlan,
   eventReminderPushText,
   eventReminderRecipients,
+  eventRsvpPushText,
+  eventStagePushText,
+  eventTally,
   eventTodoFor,
   formatEventDate,
+  isAnswerComplete,
   localDateTimeToEpoch,
   movementPushText,
   nextOnboardingStep,
@@ -58,8 +62,17 @@ const C = 'can';
 
 const names = { [OWNER]: 'Erim', [A]: 'Ayşe', [B]: 'Bora', [C]: 'Can' };
 
+const venues = [{ name: 'Moda Kahve', address: 'Moda Cd. 1' }, { name: 'Kadıköy Fırın' }, { name: 'Yeldeğirmeni Bahçe' }];
+/** 3 mekan (v1–v3) ve 3 saat: 10:00 (t4), 12:00 (t5), 18:00 (t6); 29 Kasım. */
+const MINUTES = [600, 720, 1080];
+
 function created(extra: Partial<Parameters<typeof createEventDoc>[2]> = {}): EventDoc {
-  const r = createEventDoc('ev1', OWNER, { title: 'Kahvaltı', date: '2026-11-29', time_zone: TZ, invitee_ids: [A, B, C], names, ...extra }, ctx);
+  const r = createEventDoc(
+    'ev1',
+    OWNER,
+    { title: 'Kahvaltı', date: '2026-11-29', time_zone: TZ, invitee_ids: [A, B, C], names, venue_options: venues, time_minutes: MINUTES, ...extra },
+    ctx,
+  );
   if (!r.ok) throw new Error(r.error);
   return r.doc;
 }
@@ -70,279 +83,236 @@ function act(doc: EventDoc, actor: string, action: EventAction, now = T0) {
   return r;
 }
 
-const venues = [
-  { name: 'Moda Kahve', address: 'Moda Cd. 1' },
-  { name: 'Kadıköy Fırın' },
-  { name: 'Yeldeğirmeni Bahçe' },
-];
+const going = (venue: string, time: string): EventAction => ({ type: 'respond', status: 'going', venue_option_id: venue, time_option_id: time });
+const startsAt10 = localDateTimeToEpoch('2026-11-29', 600, offsetAt);
 
 describe('Faz 7 · etkinlik oluşturma', () => {
-  it('belge doğru kurulur, davet etkisi tüm davetlilere', () => {
-    const r = createEventDoc('ev1', OWNER, { title: '  Kahvaltı  ', date: '2026-11-29', time_zone: TZ, invitee_ids: [A, B, B, OWNER], names }, ctx);
+  it('belge doğru kurulur: yanıt toplama aşaması, seçenek kimlikleri, yanıt süresi, davet etkisi', () => {
+    const r = createEventDoc('ev1', OWNER, { title: '  Kahvaltı  ', date: '2026-11-29', time_zone: TZ, invitee_ids: [A, B, B, OWNER], names, venue_options: venues, time_minutes: MINUTES }, ctx);
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.doc.title).toBe('Kahvaltı');
     expect(r.doc.invitee_ids).toEqual([A, B]);
     expect(r.doc.member_ids).toEqual([OWNER, A, B]);
-    expect(r.doc.stage).toBe('rsvp');
+    expect(r.doc.stage).toBe('voting');
     expect(r.doc.version).toBe(1);
+    expect(r.doc.venue_options.map((o) => o.option_id)).toEqual(['v1', 'v2', 'v3']);
+    expect(r.doc.time_options.map((o) => o.option_id)).toEqual(['t4', 't5', 't6']);
+    expect(r.doc.respond_by).toBe(T0 + EVENT_LIMITS.defaultVoteWindowMs);
+    expect(r.doc.results_at).toBeNull();
     expect(r.effects).toEqual([{ type: 'invite', to: [A, B] }]);
     expect(EventDocSchema.safeParse(r.doc).success).toBe(true);
     expect(parseEventDoc(JSON.parse(JSON.stringify(r.doc)))).toEqual(r.doc);
-    // Gün sonu: 30 Kasım 00:00 İstanbul (bu andan itibaren süresi dolmuş sayılır)
     expect(r.doc.expires_at).toBe(localDateTimeToEpoch('2026-11-30', 0, offsetAt));
   });
 
-  it('geçersiz tarih / boş davet / fazla davetli reddedilir', () => {
-    const base = { title: 'X', time_zone: TZ, names };
+  it('yanıt süresi ilk saatten 1 saat önce kapanır', () => {
+    const d = created({ date: '2026-11-26', time_minutes: [12 * 60], vote_window_ms: 48 * HOUR });
+    expect(d.respond_by).toBe(localDateTimeToEpoch('2026-11-26', 11 * 60, offsetAt));
+  });
+
+  it('geçersiz tarih / boş davet / fazla davetli / eksik ya da fazla seçenek reddedilir', () => {
+    const base = { title: 'X', time_zone: TZ, names, venue_options: venues, time_minutes: MINUTES };
     expect(createEventDoc('e', OWNER, { ...base, date: '2026-11-25', invitee_ids: [A] }, ctx)).toMatchObject({ ok: false, error: 'event_date_invalid' });
-    expect(createEventDoc('e', OWNER, { ...base, date: '2027-12-01', invitee_ids: [A] }, ctx)).toMatchObject({ ok: false, error: 'event_date_invalid' });
     expect(createEventDoc('e', OWNER, { ...base, date: '2026-02-30', invitee_ids: [A] }, ctx)).toMatchObject({ ok: false, error: 'event_date_invalid' });
     expect(createEventDoc('e', OWNER, { ...base, date: '2026-11-29', invitee_ids: [OWNER] }, ctx)).toMatchObject({ ok: false, error: 'invalid_argument' });
     const many = Array.from({ length: EVENT_LIMITS.maxInvitees + 1 }, (_, i) => `u${i}`);
     expect(createEventDoc('e', OWNER, { ...base, date: '2026-11-29', invitee_ids: many }, ctx)).toMatchObject({ ok: false, error: 'event_invitee_limit' });
-    expect(createEventDoc('e', OWNER, { ...base, date: '2026-11-29', invitee_ids: [A], time_zone: 'Mars/Olympus' }, ctx)).toMatchObject({ ok: false, error: 'invalid_argument' });
+    const d = { ...base, date: '2026-11-29', invitee_ids: [A] };
+    expect(createEventDoc('e', OWNER, { ...d, venue_options: [] }, ctx)).toMatchObject({ ok: false, error: 'event_options_invalid' });
+    expect(createEventDoc('e', OWNER, { ...d, venue_options: [...venues, { name: 'Dördüncü' }] }, ctx)).toMatchObject({ ok: false, error: 'event_options_invalid' });
+    expect(createEventDoc('e', OWNER, { ...d, venue_options: [{ name: 'Moda' }, { name: 'MODA' }] }, ctx)).toMatchObject({ ok: false, error: 'event_options_invalid' });
+    expect(createEventDoc('e', OWNER, { ...d, time_minutes: [] }, ctx)).toMatchObject({ ok: false, error: 'event_options_invalid' });
+    expect(createEventDoc('e', OWNER, { ...d, time_minutes: [600, 660, 720, 780, 840] }, ctx)).toMatchObject({ ok: false, error: 'event_options_invalid' });
+    // Bugün 09:00: 09:15 en az 30 dk sonra değil
+    expect(createEventDoc('e', OWNER, { ...d, date: '2026-11-26', time_minutes: [555] }, ctx)).toMatchObject({ ok: false, error: 'event_options_invalid' });
   });
 
-  it('istek şeması: başlık zorunlu, varsayılanlar dolar', () => {
-    const p = EventCreateRequestSchema.parse({ op_id: '3f1c2d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f', title: 'Kahve', date: '2026-11-29', time_zone: TZ, invitee_ids: [A] });
-    expect(p.vote_window_ms).toBe(EVENT_LIMITS.defaultVoteWindowMs);
-    expect(p.venue_options).toEqual([]);
-    expect(EventCreateRequestSchema.safeParse({ op_id: '3f1c2d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f', title: '   ', date: '2026-11-29', time_zone: TZ, invitee_ids: [A] }).success).toBe(false);
+  it('istek şeması: başlık, mekan ve saat zorunlu; varsayılan süre dolar', () => {
+    const op = '3f1c2d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f';
+    const ok = { op_id: op, title: 'Kahve', date: '2026-11-29', time_zone: TZ, invitee_ids: [A], venue_options: [{ name: 'Moda' }], time_minutes: [600] };
+    expect(EventCreateRequestSchema.parse(ok).vote_window_ms).toBe(EVENT_LIMITS.defaultVoteWindowMs);
+    expect(EventCreateRequestSchema.safeParse({ ...ok, title: '   ' }).success).toBe(false);
+    expect(EventCreateRequestSchema.safeParse({ ...ok, venue_options: [] }).success).toBe(false);
+    expect(EventCreateRequestSchema.safeParse({ ...ok, time_minutes: [] }).success).toBe(false);
   });
 });
 
-describe('Faz 7 · Aşama 1: tarih ve katılım ön onayı', () => {
-  it('Katılacağım / Katılamayacağım + 300 karakter not; sahibe bildirim', () => {
+describe('Faz 7 · tek seferde yanıt', () => {
+  it('"Katılacağım" mekan + saat seçimini birlikte ister; yanlış seçenek reddedilir', () => {
+    const d = created();
+    const r = (action: EventAction) => reduceEvent(d, A, action, ctx);
+    expect(r({ type: 'respond', status: 'going', time_option_id: 't4' })).toMatchObject({ ok: false, error: 'event_options_invalid', extra: { reason: 'venue_required' } });
+    expect(r({ type: 'respond', status: 'going', venue_option_id: 'v1' })).toMatchObject({ ok: false, error: 'event_options_invalid', extra: { reason: 'time_required' } });
+    expect(r(going('v9', 't4'))).toMatchObject({ ok: false, error: 'event_options_invalid', extra: { reason: 'unknown_option' } });
+    expect(r(going('v1', 'v2'))).toMatchObject({ ok: false, error: 'event_options_invalid' });
+    // Sahip yanıt vermez; üye olmayan bulamaz
+    expect(reduceEvent(d, OWNER, going('v1', 't4'), ctx)).toMatchObject({ ok: false, error: 'invalid_argument' });
+    expect(reduceEvent(d, 'yabanci', going('v1', 't4'), ctx)).toMatchObject({ ok: false, error: 'event_not_found' });
+  });
+
+  it('tek seçenekte seçim kendiliğinden; sonuçlardan önce yanıt bildirimi yok; aynı yanıt değişiklik değil', () => {
+    const one = created({ venue_options: [{ name: 'Moda Kahve' }], time_minutes: [600] });
+    const r = act(one, A, { type: 'respond', status: 'going' });
+    expect(r.doc.answers[A]).toMatchObject({ status: 'going', venue_option_id: 'v1', time_option_id: 't2' });
+    expect(r.effects).toEqual([]);
+    expect(act(r.doc, A, { type: 'respond', status: 'going' }).changed).toBe(false);
+  });
+
+  it('"Katılamayacağım" + 300 karakter not; seçimler boşalır; şema notu sınırlar', () => {
+    const d = created();
+    const note = 'n'.repeat(EVENT_LIMITS.noteMaxChars);
+    const r = act(d, C, { type: 'respond', status: 'not_going', note, venue_option_id: 'v1', time_option_id: 't4' });
+    expect(r.doc.answers[C]).toMatchObject({ status: 'not_going', note, venue_option_id: null, time_option_id: null });
+    expect(reduceEvent(d, C, { type: 'respond', status: 'not_going', note: `${note}x` }, ctx)).toMatchObject({ ok: false, error: 'event_note_too_long' });
+    expect(eventNoteCounter(note)).toMatchObject({ used: 300, over: false });
+    const op = '3f1c2d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f';
+    expect(EventRespondRequestSchema.safeParse({ op_id: op, event_id: 'ev1', status: 'going', note: 'x'.repeat(2000) }).success).toBe(false);
+    expect(EventRespondRequestSchema.parse({ op_id: op, event_id: 'ev1', status: 'going' })).toMatchObject({ note: null, venue_option_id: null, time_option_id: null });
+  });
+
+  it('herkes yanıtlayınca sonuçların tamamı TEK bildirimle düzenleyene; sonrasındaki değişiklik tek tek bildirilir', () => {
     let d = created();
-    const r1 = act(d, A, { type: 'rsvp', round: 'initial', status: 'going' });
-    expect(r1.effects).toEqual([{ type: 'rsvp', to: [OWNER], by: A, round: 'initial', status: 'going', note: null }]);
-    d = r1.doc;
-    const note = 'Ailemle olacağım '.repeat(30).slice(0, 300);
-    const r2 = act(d, B, { type: 'rsvp', round: 'initial', status: 'not_going', note });
-    expect(r2.doc.rsvp[B]).toMatchObject({ status: 'not_going', note: note.trim() });
-    expect(attendanceCounts(r2.doc)).toEqual({ going: 2, not_going: 1, pending: 1 });
-    // 301 karakter reddedilir; emoji tek karakter sayılır
-    expect(reduceEvent(d, B, { type: 'rsvp', round: 'initial', status: 'not_going', note: 'a'.repeat(301) }, ctx)).toMatchObject({ ok: false, error: 'event_note_too_long' });
-    expect(eventNoteCounter('😀'.repeat(300))).toMatchObject({ used: 300, over: false });
-    expect(eventNoteCounter('😀'.repeat(301)).over).toBe(true);
-    // Katılacağım derken not saklanmaz
-    expect(act(d, C, { type: 'rsvp', round: 'initial', status: 'going', note: 'gelirim' }).doc.rsvp[C]?.note).toBeNull();
+    d = act(d, A, going('v1', 't4')).doc;
+    d = act(d, B, going('v2', 't4')).doc;
+    expect(eventTodoFor(d, OWNER, T0)).toBeNull();
+    const r = act(d, C, { type: 'respond', status: 'not_going', note: 'Ailemle olacağım' });
+    expect(r.doc.results_at).toBe(T0);
+    expect(r.doc.results_reason).toBe('all_answered');
+    expect(r.effects).toEqual([{ type: 'stage', notice: 'results', to: [OWNER] }]);
+    expect(eventStagePushText('results', r.doc, T0)).toEqual({
+      title: 'Sonuçlar hazır: Kahvaltı',
+      body: '3 katılacak · 1 katılamayacak · Mekan: eşitlik (Moda Kahve / Kadıköy Fırın) · Saat: 10:00 (2 oy)',
+    });
+    expect(eventTodoFor(r.doc, OWNER, T0)).toBe('finalize');
+    expect(eventTally(r.doc, 'venue', T0)).toMatchObject({ counts: { v1: 1, v2: 1, v3: 0 }, leaders: ['v1', 'v2'], total: 2, eligible: 2 });
+    // Sonuçlardan sonra: B fikrini değiştirir → sahibe tek bildirim, seçimleriyle
+    const r2 = act(r.doc, B, going('v1', 't5'));
+    expect(r2.effects).toEqual([{ type: 'rsvp', to: [OWNER], by: B, status: 'going', note: null, venue_option_id: 'v1', time_option_id: 't5' }]);
+    expect(eventRsvpPushText('Bora', r2.doc, 'going', null, 'v1', 't5').body).toBe('Bora katılacak · Moda Kahve · 12:00');
+    expect(eventRsvpPushText('Can', r2.doc, 'not_going', 'Ailemle olacağım').body).toBe('Can katılamayacak: “Ailemle olacağım”');
   });
 
-  it('aynı yanıt tekrar = değişiklik yok; sahip yanıt veremez; üye olmayan bulamaz', () => {
-    const d = act(created(), A, { type: 'rsvp', round: 'initial', status: 'going' }).doc;
-    expect(reduceEvent(d, A, { type: 'rsvp', round: 'initial', status: 'going' }, ctx)).toMatchObject({ ok: true, changed: false });
-    expect(reduceEvent(d, OWNER, { type: 'rsvp', round: 'initial', status: 'going' }, ctx)).toMatchObject({ ok: false });
-    expect(reduceEvent(d, 'yabanci', { type: 'rsvp', round: 'initial', status: 'going' }, ctx)).toMatchObject({ ok: false, error: 'event_not_found' });
-    expect(reduceEvent(d, A, { type: 'rsvp', round: 'final', status: 'going' }, ctx)).toMatchObject({ ok: false, error: 'event_stage_mismatch' });
-  });
-
-  it('RSVP şeması notu sınırlar', () => {
-    expect(EventRsvpRequestSchema.safeParse({ op_id: '3f1c2d4e-5a6b-4c7d-8e9f-0a1b2c3d4e5f', event_id: 'ev1', round: 'initial', status: 'not_going', note: 'x'.repeat(1201) }).success).toBe(false);
-  });
-
-  it('tarih değişince Aşama 1 sıfırlanır ve davetlilere bildirim gider', () => {
-    let d = act(created({ time_minutes: [600, 660] }), A, { type: 'rsvp', round: 'initial', status: 'going' }).doc;
-    const r = act(d, OWNER, { type: 'update', date: '2026-11-30' });
-    d = r.doc;
-    expect(d.rsvp).toEqual({});
-    expect(d.time_options.map((t) => t.minute_of_day)).toEqual([600, 660]);
-    expect(d.time_options[0]?.starts_at).toBe(localDateTimeToEpoch('2026-11-30', 600, offsetAt));
-    expect(r.effects).toEqual([{ type: 'stage', notice: 'date_changed', to: [A, B, C] }]);
+  it('yanıt süresi dolunca sonuçlar (yanıt vermeyenlerle) düzenleyene; süre dolmadan değişiklik yok', () => {
+    let d = created();
+    d = act(d, A, going('v1', 't4')).doc;
+    expect(act(d, 'system', { type: 'tick' }, (d.respond_by as number) - 1).changed).toBe(false);
+    const r = act(d, 'system', { type: 'tick' }, d.respond_by as number);
+    expect(r.doc.results_reason).toBe('deadline');
+    expect(r.effects).toEqual([{ type: 'stage', notice: 'results', to: [OWNER] }]);
+    expect(eventStagePushText('results', r.doc).body).toBe('2 katılacak · 2 yanıt vermedi · Mekan: Moda Kahve (1 oy) · Saat: 10:00 (1 oy)');
+    // Süre dolduktan sonra da yanıt verilebilir (onaylanana kadar)
+    expect(act(r.doc, B, going('v2', 't5'), (d.respond_by as number) + 1).effects[0]).toMatchObject({ type: 'rsvp', by: B });
   });
 });
 
-describe('Faz 7 · Aşama 2: mekan oylaması', () => {
-  function withVenues(): EventDoc {
-    let d = created({ venue_options: venues.slice(0, 2) });
-    d = act(d, A, { type: 'rsvp', round: 'initial', status: 'going' }).doc;
-    d = act(d, B, { type: 'rsvp', round: 'initial', status: 'going' }).doc;
-    d = act(d, A, { type: 'venue_propose', venue: venues[2]! }).doc;
-    return d;
-  }
+describe('Faz 7 · düzenleyenin onayı ve sonrası', () => {
+  const answered = () => {
+    let d = created();
+    d = act(d, A, going('v1', 't4')).doc;
+    d = act(d, B, going('v2', 't4')).doc;
+    return act(d, C, { type: 'respond', status: 'not_going' }).doc;
+  };
 
-  it('katılımcı en çok 1 mekan önerir; en çok 3 seçenek; yinelenen ad reddedilir', () => {
-    let d = created({ venue_options: [venues[0]!] });
-    expect(reduceEvent(d, A, { type: 'venue_propose', venue: venues[1]! }, ctx)).toMatchObject({ ok: false, error: 'event_not_eligible' });
-    d = act(d, A, { type: 'rsvp', round: 'initial', status: 'going' }).doc;
-    expect(reduceEvent(d, A, { type: 'venue_propose', venue: { name: 'moda kahve' } }, ctx)).toMatchObject({ ok: false, extra: { reason: 'venue_duplicate' } });
-    d = act(d, A, { type: 'venue_propose', venue: venues[1]! }).doc;
-    expect(reduceEvent(d, A, { type: 'venue_propose', venue: venues[2]! }, ctx)).toMatchObject({ ok: false, extra: { reason: 'proposal_limit' } });
-    d = act(d, OWNER, { type: 'venue_propose', venue: venues[2]! }).doc;
-    expect(d.venue_options.map((o) => o.option_id)).toEqual(['v1', 'v2', 'v3']);
-    expect(reduceEvent(d, OWNER, { type: 'venue_propose', venue: { name: 'Dördüncü' } }, ctx)).toMatchObject({ ok: false, extra: { reason: 'venue_limit' } });
-    // Öneren kendi önerisini geri alabilir, başkasınınkini alamaz
-    expect(reduceEvent(d, A, { type: 'venue_remove', option_id: 'v1' }, ctx)).toMatchObject({ ok: false, error: 'event_not_owner' });
-    expect(act(d, A, { type: 'venue_remove', option_id: 'v2' }).doc.venue_options).toHaveLength(2);
+  it('yalnızca sahip onaylar; eşitlikte liderler döner, lider olmayan seçilemez', () => {
+    const d = answered();
+    expect(reduceEvent(d, A, { type: 'finalize' }, ctx)).toMatchObject({ ok: false, error: 'event_not_owner' });
+    expect(reduceEvent(d, OWNER, { type: 'finalize' }, ctx)).toMatchObject({ ok: false, error: 'event_vote_tie', extra: { venue_leaders: ['v1', 'v2'] } });
+    expect(reduceEvent(d, OWNER, { type: 'finalize', venue_option_id: 'v3' }, ctx)).toMatchObject({ ok: false, error: 'event_options_invalid', extra: { reason: 'not_leader' } });
   });
 
-  it('oylama 3 seçenek + en az 1 "Katılacağım" ister; yalnızca sahip açar', () => {
-    const d2 = created({ venue_options: venues.slice(0, 2) });
-    expect(reduceEvent(d2, OWNER, { type: 'open_venue_vote' }, ctx)).toMatchObject({ ok: false, error: 'event_options_invalid', extra: { reason: 'venue_required' } });
-    const d3 = created({ venue_options: venues });
-    expect(reduceEvent(d3, OWNER, { type: 'open_venue_vote' }, ctx)).toMatchObject({ ok: false, error: 'event_no_attendees' });
-    const d = withVenues();
-    expect(reduceEvent(d, A, { type: 'open_venue_vote' }, ctx)).toMatchObject({ ok: false, error: 'event_not_owner' });
-    expect(eventTodoFor(d, OWNER, T0)).toBe('open_venue_vote');
-    const r = act(d, OWNER, { type: 'open_venue_vote' });
-    expect(r.doc.stage).toBe('venue_vote');
-    expect(r.doc.stage_deadline_at).toBe(T0 + EVENT_LIMITS.defaultVoteWindowMs);
-    // Bildirim: sahip hariç, "Katılamayacağım" demeyenler (yanıtsız C dahil)
-    expect(r.effects).toEqual([{ type: 'stage', notice: 'venue_vote', to: [A, B, C] }]);
-  });
-
-  it('en çok oyu alan kazanır; herkes oy verince kendiliğinden kapanır', () => {
-    let d = act(act(withVenues(), C, { type: 'rsvp', round: 'initial', status: 'not_going', note: 'Yokum' }).doc, OWNER, { type: 'open_venue_vote' }).doc;
-    // C katılmıyor → oy veremez
-    expect(reduceEvent(d, C, { type: 'vote', kind: 'venue', option_id: 'v1' }, ctx)).toMatchObject({ ok: false, error: 'event_not_eligible' });
-    d = act(d, OWNER, { type: 'vote', kind: 'venue', option_id: 'v2' }).doc;
-    d = act(d, A, { type: 'vote', kind: 'venue', option_id: 'v3' }).doc;
-    expect(d.stage).toBe('venue_vote');
-    const r = act(d, B, { type: 'vote', kind: 'venue', option_id: 'v2' });
-    expect(r.doc.stage).toBe('time_vote');
+  it('onay → kesinleşir, davetlilere bildirim + hatırlatıcı planı; final yanıtı yalnızca katılımı değiştirir; 3 sa sonra tamamlanır', () => {
+    const r = act(answered(), OWNER, { type: 'finalize', venue_option_id: 'v2' });
+    expect(r.doc.stage).toBe('final');
     expect(r.doc.venue_option_id).toBe('v2');
-    // Saat seçeneği yok → sahibe "saat ekle"
-    expect(r.doc.stage_deadline_at).toBeNull();
-    expect(r.effects).toContainEqual({ type: 'stage', notice: 'need_times', to: [OWNER] });
-    expect(eventTodoFor(r.doc, OWNER, T0)).toBe('add_times');
-  });
-
-  it('eşitlikte sahip seçer; süre dolarsa ilk önerilen kazanır', () => {
-    let d = act(withVenues(), OWNER, { type: 'open_venue_vote' }).doc;
-    d = act(d, A, { type: 'vote', kind: 'venue', option_id: 'v3' }).doc;
-    d = act(d, B, { type: 'vote', kind: 'venue', option_id: 'v1' }).doc;
-    const tie = reduceEvent(d, OWNER, { type: 'close_vote', kind: 'venue' }, ctx);
-    expect(tie).toMatchObject({ ok: false, error: 'event_vote_tie', extra: { leaders: ['v1', 'v3'] } });
-    expect(act(d, OWNER, { type: 'close_vote', kind: 'venue', tie_break_option_id: 'v3' }).doc.venue_option_id).toBe('v3');
-    const later = T0 + EVENT_LIMITS.defaultVoteWindowMs + 1;
-    const ticked = act(d, 'system', { type: 'tick' }, later);
-    expect(ticked.doc.stage).toBe('time_vote');
-    expect(ticked.doc.venue_option_id).toBe('v1');
-  });
-
-  it('"Katılamayacağım" diyenin oyu silinir', () => {
-    let d = act(withVenues(), OWNER, { type: 'open_venue_vote' }).doc;
-    d = act(d, A, { type: 'vote', kind: 'venue', option_id: 'v3' }).doc;
-    d = act(d, A, { type: 'rsvp', round: 'initial', status: 'not_going' }).doc;
-    expect(d.venue_votes[A]).toBeUndefined();
-  });
-});
-
-describe('Faz 7 · Aşama 3: saat oylaması ve son onay', () => {
-  function toTimeVote(minutes = [600, 690, 780]): EventDoc {
-    let d = created({ venue_options: venues, time_minutes: minutes });
-    d = act(d, A, { type: 'rsvp', round: 'initial', status: 'going' }).doc;
-    d = act(d, B, { type: 'rsvp', round: 'initial', status: 'going' }).doc;
-    d = act(d, C, { type: 'rsvp', round: 'initial', status: 'not_going' }).doc;
-    d = act(d, OWNER, { type: 'open_venue_vote' }).doc;
-    for (const u of [OWNER, A, B]) d = act(d, u, { type: 'vote', kind: 'venue', option_id: 'v1' }).doc;
-    return d;
-  }
-
-  it('saat oylaması açılır, süre ilk seçenekten 15 dk önce sınırlanır', () => {
-    const d = toTimeVote();
-    expect(d.stage).toBe('time_vote');
-    expect(d.stage_deadline_at).toBe(Math.min(T0 + EVENT_LIMITS.defaultVoteWindowMs, localDateTimeToEpoch('2026-11-29', 600, offsetAt) - 15 * MINUTE));
-    expect(eventTodoFor(d, A, T0)).toBe('vote_time');
-  });
-
-  it('seçenek kimlikleri: önce mekanlar (v1–v3), sonra saatler (t4–t6)', () => {
-    const d = toTimeVote();
-    expect(d.time_options.map((t) => `${t.option_id}:${t.minute_of_day}`)).toEqual(['t4:600', 't5:690', 't6:780']);
-  });
-
-  it('herkes oy verdi, 2–1 → çoğunluk kazanır; eşitlikte açık kalır', () => {
-    let d = toTimeVote();
-    d = act(d, OWNER, { type: 'vote', kind: 'time', option_id: 't4' }).doc;
-    d = act(d, A, { type: 'vote', kind: 'time', option_id: 't5' }).doc;
-    // Eşitlik (1–1) ve B henüz oy vermedi → açık
-    expect(d.stage).toBe('time_vote');
-    const r = act(d, B, { type: 'vote', kind: 'time', option_id: 't5' });
-    expect(r.doc.stage).toBe('final');
-    expect(r.doc.time_option_id).toBe('t5');
-  });
-
-  it('herkes oy verdi ve tek lider → final; hatırlatıcı planı', () => {
-    let d = toTimeVote();
-    d = act(d, OWNER, { type: 'vote', kind: 'time', option_id: 't4' }).doc;
-    d = act(d, A, { type: 'vote', kind: 'time', option_id: 't4' }).doc;
-    const r = act(d, B, { type: 'vote', kind: 'time', option_id: 't4' });
-    expect(r.doc.stage).toBe('final');
     expect(r.doc.time_option_id).toBe('t4');
-    const startsAt = localDateTimeToEpoch('2026-11-29', 600, offsetAt);
-    expect(r.doc.starts_at).toBe(startsAt);
-    expect(r.effects).toContainEqual({ type: 'stage', notice: 'final', to: [OWNER, A, C] });
+    expect(r.doc.starts_at).toBe(startsAt10);
+    expect(r.effects).toContainEqual({ type: 'stage', notice: 'final', to: [A, B, C] });
     expect(r.effects).toContainEqual({
       type: 'reminders',
       items: [
-        { kind: 'day_before', due_at: startsAt - 24 * HOUR },
+        { kind: 'day_before', due_at: startsAt10 - 24 * HOUR },
         { kind: 'morning', due_at: localDateTimeToEpoch('2026-11-29', 480, offsetAt) },
       ],
     });
-    // Son onay herkese açık (önceden katılamayacağım diyen C de)
-    let f = act(r.doc, C, { type: 'rsvp', round: 'final', status: 'going' }).doc;
-    f = act(f, A, { type: 'rsvp', round: 'final', status: 'not_going', note: 'Hastayım' }).doc;
-    expect(eventReminderRecipients(f)).toEqual([OWNER, B, C]);
-    expect(attendanceCounts(f)).toEqual({ going: 2, not_going: 1, pending: 1 });
-    expect(eventTodoFor(f, B, T0)).toBe('final_rsvp');
-    // Başladıktan sonra yanıt yok
-    expect(reduceEvent(f, B, { type: 'rsvp', round: 'final', status: 'going' }, ctxAt(startsAt))).toMatchObject({ ok: false, error: 'event_started' });
-    // 3 sa sonra tamamlanır
-    expect(act(f, 'system', { type: 'tick' }, startsAt + 3 * HOUR).doc.stage).toBe('completed');
-    expect(eventReminderPushText('morning', f).title).toBe('Bugün: Kahvaltı');
-    expect(eventReminderPushText('day_before', f)).toEqual({ title: 'Yarın: Kahvaltı', body: 'Moda Kahve · 10:00' });
+    expect(eventStagePushText('final', r.doc).title).toBe('Kesinleşti: Kahvaltı');
+    // Final: A katılamayacak der (seçimi korunur), C katılır; sahibe bildirim
+    let f = act(r.doc, A, { type: 'respond', status: 'not_going', note: 'Hastayım' });
+    expect(f.effects).toEqual([{ type: 'rsvp', to: [OWNER], by: A, status: 'not_going', note: 'Hastayım', venue_option_id: 'v1', time_option_id: 't4' }]);
+    f = act(f.doc, C, { type: 'respond', status: 'going' });
+    expect(eventReminderRecipients(f.doc)).toEqual([OWNER, B, C]);
+    expect(attendanceCounts(f.doc)).toEqual({ going: 3, not_going: 1, pending: 0 }); // sahip dahil
+    expect(reduceEvent(f.doc, B, { type: 'respond', status: 'going' }, ctxAt(startsAt10))).toMatchObject({ ok: false, error: 'event_started' });
+    expect(reduceEvent(f.doc, OWNER, { type: 'options_set', venues, minutes: MINUTES }, ctx)).toMatchObject({ ok: false, error: 'event_stage_mismatch' });
+    expect(act(f.doc, 'system', { type: 'tick' }, startsAt10 + 3 * HOUR).doc.stage).toBe('completed');
+    expect(eventReminderPushText('day_before', f.doc)).toEqual({ title: 'Yarın: Kahvaltı', body: 'Kadıköy Fırın · 10:00' });
+  });
+
+  it('herkes yanıtlamadan da onaylanabilir; kimse katılmıyorsa onaylanamaz', () => {
+    const d = act(created(), A, going('v3', 't6')).doc;
+    expect(act(d, OWNER, { type: 'finalize' }).doc).toMatchObject({ stage: 'final', venue_option_id: 'v3', time_option_id: 't6' });
+    const none = act(created(), A, { type: 'respond', status: 'not_going' }).doc;
+    expect(reduceEvent(none, OWNER, { type: 'finalize' }, ctx)).toMatchObject({ ok: false, error: 'event_no_attendees' });
   });
 
   it('08:00 veya öncesi başlayan buluşmada sabah hatırlatması yok; geçmiş hatırlatma planlanmaz', () => {
     const doc = { stage: 'final' as const, date: '2026-11-27', starts_at: localDateTimeToEpoch('2026-11-27', 480, offsetAt) };
-    expect(eventReminderPlan(doc, T0, offsetAt)).toEqual([]); // 1 gün önce = 26 Kas 08:00 (geçti), sabah = başlangıç
+    expect(eventReminderPlan(doc, T0, offsetAt)).toEqual([]);
     const doc2 = { ...doc, starts_at: localDateTimeToEpoch('2026-11-27', 1200, offsetAt) };
     expect(eventReminderPlan(doc2, T0, offsetAt).map((i) => i.kind)).toEqual(['day_before', 'morning']);
   });
+});
 
-  it('saat seçenekleri yokken sahip ekler; oylama sırasında değişirse oylar sıfırlanır', () => {
-    let d = toTimeVote([]);
-    expect(d.stage_deadline_at).toBeNull();
-    expect(reduceEvent(d, A, { type: 'vote', kind: 'time', option_id: 't1' }, ctx)).toMatchObject({ ok: false, error: 'event_stage_mismatch' });
-    expect(reduceEvent(d, OWNER, { type: 'time_options_set', minutes: [600] }, ctx)).toMatchObject({ ok: false, error: 'event_options_invalid' });
-    const r = act(d, OWNER, { type: 'time_options_set', minutes: [660, 600] });
-    expect(r.doc.time_options.map((t) => t.minute_of_day)).toEqual([600, 660]);
-    expect(r.effects).toEqual([{ type: 'stage', notice: 'time_vote', to: [A, B] }]);
-    d = act(r.doc, A, { type: 'vote', kind: 'time', option_id: r.doc.time_options[0]!.option_id }).doc;
-    d = act(d, OWNER, { type: 'time_options_set', minutes: [600, 720] }).doc;
-    expect(d.time_votes).toEqual({});
-    // Geçmişte kalan saat reddedilir
-    expect(reduceEvent(d, OWNER, { type: 'time_options_set', minutes: [0, 60] }, ctxAt(localDateTimeToEpoch('2026-11-29', 30, offsetAt)))).toMatchObject({ ok: false });
+describe('Faz 7 · seçenek ve tarih değişikliği, bitiş', () => {
+  it('seçenekler değişince aynı kalanın oyu korunur; kaldırılan seçim boşalır ve o kişiye haber gider', () => {
+    let d = created();
+    d = act(d, A, going('v2', 't5')).doc;
+    d = act(d, B, going('v1', 't4')).doc;
+    const r = act(d, OWNER, { type: 'options_set', venues: [{ name: 'moda kahve' }, { name: 'Yeni Yer' }], minutes: [600, 720] });
+    expect(r.doc.venue_options.map((o) => [o.option_id, o.name])).toEqual([
+      ['v1', 'moda kahve'], // aynı mekan (büyük/küçük harf): kimlik ve oy korunur
+      ['v7', 'Yeni Yer'],
+    ]);
+    expect(r.doc.time_options.map((o) => o.option_id)).toEqual(['t4', 't5']);
+    expect(r.doc.answers[B]).toMatchObject({ venue_option_id: 'v1', time_option_id: 't4' });
+    expect(r.doc.answers[A]).toMatchObject({ venue_option_id: null, time_option_id: 't5' });
+    expect(r.effects).toEqual([{ type: 'stage', notice: 'options_changed', to: [A] }]);
+    expect(isAnswerComplete(r.doc, r.doc.answers[A]!, T0)).toBe(false);
+    expect(eventTodoFor(r.doc, A, T0)).toBe('complete_answer');
+    expect(reduceEvent(d, A, { type: 'options_set', venues, minutes: MINUTES }, ctx)).toMatchObject({ ok: false, error: 'event_not_owner' });
   });
 
-  it('final olmadan gün biterse süresi dolar; iptal hatırlatıcıları siler', () => {
+  it('tarih değişince yanıtlar sıfırlanır, saatler yeni güne taşınır ve davetlilere haber gider', () => {
+    let d = act(created(), A, going('v1', 't4')).doc;
+    const r = act(d, OWNER, { type: 'update', date: '2026-11-30' });
+    d = r.doc;
+    expect(d.answers).toEqual({});
+    expect(d.results_at).toBeNull();
+    expect(d.time_options[0]?.starts_at).toBe(localDateTimeToEpoch('2026-11-30', 600, offsetAt));
+    expect(r.effects).toEqual([{ type: 'stage', notice: 'date_changed', to: [A, B, C] }]);
+  });
+
+  it('onaylanmadan gün biterse ya da hiçbir saat kalmazsa süresi dolar; iptal davetlilere bildirilir', () => {
     const d = created();
-    const end = act(d, 'system', { type: 'tick' }, d.expires_at);
-    expect(end.doc.stage).toBe('expired');
+    expect(act(d, 'system', { type: 'tick' }, localDateTimeToEpoch('2026-11-29', 1080, offsetAt) + 1).doc.stage).toBe('expired');
     const c = act(d, OWNER, { type: 'cancel' });
     expect(c.doc.stage).toBe('cancelled');
-    expect(c.effects).toEqual([{ type: 'cancelled', to: [A, B, C] }, { type: 'reminders', items: [] }]);
-    expect(reduceEvent(d, A, { type: 'cancel' }, ctx)).toMatchObject({ ok: false, error: 'event_not_owner' });
+    expect(c.effects).toContainEqual({ type: 'cancelled', to: [A, B, C] });
   });
 
-  it('üye çıkarılınca oyları silinir ve kalanlar oy verdiyse kapanır; sahip çıkarılırsa iptal', () => {
-    let d = created({ venue_options: venues });
-    d = act(d, A, { type: 'rsvp', round: 'initial', status: 'going' }).doc;
-    d = act(d, B, { type: 'rsvp', round: 'initial', status: 'going' }).doc;
-    d = act(d, C, { type: 'rsvp', round: 'initial', status: 'not_going' }).doc;
-    d = act(d, OWNER, { type: 'open_venue_vote' }).doc;
-    d = act(d, OWNER, { type: 'vote', kind: 'venue', option_id: 'v2' }).doc;
-    d = act(d, A, { type: 'vote', kind: 'venue', option_id: 'v2' }).doc;
-    const r = act(d, 'system', { type: 'remove_member', uid: B });
-    expect(r.doc.invitee_ids).toEqual([A, C]);
-    expect(r.doc.stage).toBe('time_vote');
+  it('üye çıkarılınca yanıtı silinir ve kalanlar yanıtladıysa sonuçlar gider; sahip çıkarılırsa iptal', () => {
+    let d = created();
+    d = act(d, A, going('v1', 't4')).doc;
+    d = act(d, B, going('v1', 't4')).doc;
+    const r = act(d, 'system', { type: 'remove_member', uid: C });
+    expect(r.doc.invitee_ids).toEqual([A, B]);
+    expect(r.effects).toEqual([{ type: 'stage', notice: 'results', to: [OWNER] }]);
     expect(act(d, 'system', { type: 'remove_member', uid: OWNER }).doc.stage).toBe('cancelled');
   });
 
   it('liste sırası: önce benden eylem bekleyenler', () => {
     const a = created();
-    const b = { ...act(created(), A, { type: 'rsvp', round: 'initial', status: 'going' }).doc, event_id: 'ev2' };
+    const b = { ...act(created(), A, going('v1', 't4')).doc, event_id: 'ev2' };
     expect(sortEventsForList([b, a], A, T0).map((x) => x.event_id)).toEqual(['ev1', 'ev2']);
   });
 
@@ -360,8 +330,8 @@ describe('Faz 7 · sözleşme', () => {
     expect(PUSH_TYPES_F7).toContain('event_invite');
     expect(PUSH_TYPES_F7).toContain('movement');
     expect(CONSENT_EXEMPT_CALLABLES).toContain(CALLABLES.eventCancel);
-    expect(consentExemptCall(CALLABLES.eventRsvp, { status: 'not_going' })).toBe(true);
-    expect(consentExemptCall(CALLABLES.eventRsvp, { status: 'going' })).toBe(false);
+    expect(consentExemptCall(CALLABLES.eventRespond, { status: 'not_going' })).toBe(true);
+    expect(consentExemptCall(CALLABLES.eventRespond, { status: 'going' })).toBe(false);
     expect(consentExemptCall(CALLABLES.privacySettingsSet, { battery_share: false })).toBe(true);
     expect(consentExemptCall(CALLABLES.privacySettingsSet, { battery_share: true })).toBe(false);
     expect(consentExemptCall(CALLABLES.eventCreate, {})).toBe(false);

@@ -517,7 +517,7 @@ Tasarım ve sözleşmeler: `docs/PHASE7.md`.
 
 | Parça | Dosyalar |
 | --- | --- |
-| Etkinlik ekranları | `app/(main)/events/{index,new,[id]}.tsx` → `src/features/events/` (`EventsScreen`: Etkinlikler / Bildirimler sekmeleri; `EventCreateScreen`: tarih çipleri, izinli davetliler, ≤ 3 mekan, 2–4 saat, oylama süresi; `EventDetailScreen`: aşama göstergesi, ön onay / son onay + 300 karakter not, mekan önerisi, mekan / saat oylaması, eşitlikte kazanan seçimi, düzenleyen araçları) |
+| Etkinlik ekranları | `app/(main)/events/{index,new,[id]}.tsx` → `src/features/events/` (`EventsScreen`: Etkinlikler / Bildirimler sekmeleri; `EventCreateScreen`: tarih çipleri, izinli davetliler, 1–3 mekan, 1–4 saat, yanıt süresi; `EventDetailScreen`: adım göstergesi, davetliye tek oy kartı (katılım + mekan + saat + 300 karakter not), düzenleyene sonuçlar kartı (oy sayıları, eşitlikte kazanan seçimi, onay), seçenekleri düzenleme, düzenleyen araçları) |
 | Durum | `src/state/eventsStore.ts` (dinleyici + callable yanıtı; yüksek sürüm kazanır, okunmamış bildirim sayısı cihazda), `src/state/privacyStore.ts`, `src/state/onboardingStore.ts`, `src/ui/themePref.ts` |
 | Veri | `src/services/firebase/eventsRepo.ts` (`events where member_ids array-contains`, `users/{uid}/notices`), `callables.ts` (`eventsApi`, `privacyApi`) |
 | Bildirimler | `src/services/notifications/f7Push.ts` (doğrulama, ön plan içeriği, yönlendirme), `expiryNotifications.ts` (kanallar: `sos_alarm`, `movement`, `events`, `event_reminders`; eski `sos` silinir), `assets/sounds/sos_alarm.wav` |

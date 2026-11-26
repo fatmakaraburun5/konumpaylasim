@@ -1,26 +1,25 @@
 /**
  * Faz 7: Etkinlik Alanı durumu (core `events.ts` durum makinesi sunucuda çalışır; istemci yalnızca okur ve komut gönderir).
+ * Akış: davetli TEK yanıt verir (`respond`: katılım + mekan + saat), sonuçlar düzenleyene toplu gider, düzenleyen
+ * `finalize` ile onaylar.
  *
  *  - `events`: Firestore `events` dinleyicisi (`member_ids array-contains ben`) + callable yanıtları. Aynı etkinliğin
  *    iki kaynağından YÜKSEK `version` kazanır (yanıt dinleyiciden önce gelirse ekran beklemeden güncellenir).
  *  - `notices`: uygulama içi bildirim kutusu (`users/{ben}/notices`); okunmamış = son görülme anından yeni olanlar.
  *    Son görülme anı cihazda, hesaba göre saklanır.
- *  - Komutlar (`create`, `rsvp`, `vote` …): `Result` döner; hata core Türkçe mesajıyla gelir. `event_vote_tie`
- *    yanıtındaki `leaders` (eşit oy alan seçenekler) sahibin kazananı seçmesi için `extra` ile döner.
+ *  - Komutlar (`create`, `respond`, `finalize` …): `Result` döner; hata core Türkçe mesajıyla gelir. `event_vote_tie`
+ *    yanıtındaki `venue_leaders` / `time_leaders` (eşit oy alan seçenekler) sahibin kazananı seçmesi için `extra` ile döner.
  *  - `focus`: bildirime dokunma / derin bağlantı ile açılacak etkinlik (f7Services → `/events/{id}`).
  */
 import {
   type AttendanceStatus,
   type EpochMs,
-  type EventAdvanceAction,
   type EventCreateRequest,
   type EventDoc,
   type EventNotice,
   type EventVenueInputSchema,
-  type RsvpRound,
   type SharingError,
   type UserId,
-  type VoteKind,
   unreadNoticeCount,
 } from '@konum/core';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -37,6 +36,20 @@ const LOCAL_GRACE_MS = 15_000;
 export type EventResult<T = {}> = ({ ok: true } & T) | { ok: false; error: SharingError; extra: Readonly<Record<string, unknown>> };
 
 export type EventVenueInput = z.input<typeof EventVenueInputSchema>;
+
+/** Davetlinin tek yanıtı (katılmıyorsa mekan / saat gönderilmez). */
+export interface EventAnswerDraft {
+  status: AttendanceStatus;
+  note?: string | null;
+  venueOptionId?: string | null;
+  timeOptionId?: string | null;
+}
+
+/** Sahibin onayı: eşitlikte seçilen kazananlar (yoksa tek lider). */
+export interface EventFinalizePick {
+  venueOptionId?: string | null;
+  timeOptionId?: string | null;
+}
 
 export interface EventsState {
   uid: UserId | null;
@@ -58,12 +71,9 @@ export interface EventsState {
   reset(): void;
 
   create(input: Omit<EventCreateRequest, 'op_id'>): Promise<EventResult<{ event: EventDoc; skipped: number }>>;
-  rsvp(eventId: string, round: RsvpRound, status: AttendanceStatus, note?: string | null): Promise<EventResult>;
-  proposeVenue(eventId: string, venue: EventVenueInput): Promise<EventResult>;
-  removeVenue(eventId: string, optionId: string): Promise<EventResult>;
-  vote(eventId: string, kind: VoteKind, optionId: string): Promise<EventResult>;
-  advance(eventId: string, action: EventAdvanceAction, opts?: { tieBreak?: string | null; voteWindowMs?: number | null }): Promise<EventResult>;
-  setTimes(eventId: string, minutes: number[]): Promise<EventResult>;
+  respond(eventId: string, answer: EventAnswerDraft): Promise<EventResult>;
+  finalize(eventId: string, pick?: EventFinalizePick): Promise<EventResult>;
+  setOptions(eventId: string, venues: EventVenueInput[], minutes: number[]): Promise<EventResult>;
   update(eventId: string, patch: { title?: string; description?: string | null; date?: string }): Promise<EventResult>;
   inviteAdd(eventId: string, inviteeIds: UserId[]): Promise<EventResult<{ skipped: number }>>;
   cancel(eventId: string): Promise<EventResult>;
@@ -190,15 +200,21 @@ export function createEventsStore(deps: EventsStoreDeps = { api: eventsApi, now:
           return fail(e);
         }
       },
-      rsvp: (eventId, round, status, note = null) => run(eventId, () => deps.api.eventRsvp({ event_id: eventId, round, status, note: status === 'not_going' ? note : null })),
-      proposeVenue: (eventId, venue) => run(eventId, () => deps.api.eventVenuePropose({ event_id: eventId, venue })),
-      removeVenue: (eventId, optionId) => run(eventId, () => deps.api.eventVenueRemove({ event_id: eventId, option_id: optionId })),
-      vote: (eventId, kind, optionId) => run(eventId, () => deps.api.eventVote({ event_id: eventId, kind, option_id: optionId })),
-      advance: (eventId, action, opts = {}) =>
-        run(eventId, () =>
-          deps.api.eventAdvance({ event_id: eventId, action, tie_break_option_id: opts.tieBreak ?? null, vote_window_ms: opts.voteWindowMs ?? null }),
-        ),
-      setTimes: (eventId, minutes) => run(eventId, () => deps.api.eventTimeOptionsSet({ event_id: eventId, minutes })),
+      respond: (eventId, a) => {
+        const going = a.status === 'going';
+        return run(eventId, () =>
+          deps.api.eventRespond({
+            event_id: eventId,
+            status: a.status,
+            note: going ? null : (a.note ?? null),
+            venue_option_id: going ? (a.venueOptionId ?? null) : null,
+            time_option_id: going ? (a.timeOptionId ?? null) : null,
+          }),
+        );
+      },
+      finalize: (eventId, pick = {}) =>
+        run(eventId, () => deps.api.eventFinalize({ event_id: eventId, venue_option_id: pick.venueOptionId ?? null, time_option_id: pick.timeOptionId ?? null })),
+      setOptions: (eventId, venues, minutes) => run(eventId, () => deps.api.eventOptionsSet({ event_id: eventId, venues, minutes })),
       update: (eventId, patch) => run(eventId, () => deps.api.eventUpdate({ event_id: eventId, ...patch })),
       inviteAdd: (eventId, inviteeIds) =>
         run(eventId, async () => {
