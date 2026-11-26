@@ -8,7 +8,8 @@
  * Varsayılanlar (gizlilik öncelikli, KVKK m.4 ölçülülük):
  *  - `battery_share: false` — pil seviyesi ve şarj durumu ancak kullanıcı açıkça açarsa paylaşılır (ilk açılış
  *    izin akışında ve Gizlilik Merkezi'nde anahtar). Kapalıyken alıcıya %15 düşük pil bildirimi de GİTMEZ.
- *  - `movement_alerts: true` — bana konumunu paylaşan arkadaşın "yola çıktı" bildirimini alırım (alıcı tercihi).
+ *  - `movement_alerts: true` — bana konumunu paylaşan arkadaşın "yola çıktı" ve (Faz 9) "neredeyse vardım"
+ *    bildirimlerini alırım (alıcı tercihi).
  *
  * Sıralama (yarış koşulu): açarken önce RTDB aynası sonra Firestore; kapatırken önce Firestore (istemci hemen
  * bırakır) sonra RTDB. Böylece istemcinin bildiği değer hiçbir an aynadan daha "açık" olmaz.
@@ -74,6 +75,6 @@ export const PrivacySettingsResponseSchema: z.ZodType<PrivacySettingsResponse> =
 export const PRIVACY_TEXT = {
   batteryTitle: 'Pil durumumu paylaş',
   batteryBody: 'Konumunu paylaştığın kişiler pil yüzdeni ve şarjda olup olmadığını görür; pilin %15\'in altına inince haber alır. Kapalıyken bu bilgiler hiç gönderilmez.',
-  movementTitle: '"Yola çıktı" bildirimleri',
-  movementBody: 'Sana konumunu paylaşan bir arkadaşın bir süre durduktan sonra harekete geçince bildirim alırsın.',
+  movementTitle: '"Yola çıktı" ve "Neredeyse vardım" bildirimleri',
+  movementBody: 'Sana konumunu paylaşan bir arkadaşın bir süre durduktan sonra harekete geçince ya da hedefine 200 metre kala bildirim alırsın.',
 } as const;

@@ -392,23 +392,29 @@ describe('Faz 7 · ilk açılış izin akışı ve Gizlilik Merkezi', () => {
     cameraCanAskAgain: true,
     photos: 'undetermined',
     photosCanAskAgain: true,
+    contacts: 'undetermined',
+    contactsCanAskAgain: true,
+    smsAvailable: true,
     motion: null,
     batteryOptimization: null,
   };
 
-  it('sıra: hoş geldin → Kullanırken → Her zaman → bildirim → pil → kamera/galeri → bitti', () => {
+  it('sıra: hoş geldin → Kullanırken → Her zaman → bildirim → rehber → SMS → pil → kamera/galeri → bitti', () => {
     const steps: string[] = [];
     let perms = { ...base };
     const done: Parameters<typeof nextOnboardingStep>[0]['done'][number][] = [];
     let battery = false;
-    for (let i = 0; i < 10; i++) {
-      const s = nextOnboardingStep({ perms, batteryShareDecided: battery, done });
+    let sms = false;
+    for (let i = 0; i < 12; i++) {
+      const s = nextOnboardingStep({ perms, batteryShareDecided: battery, smsFallbackDecided: sms, done });
       steps.push(`${s.step}:${s.action}`);
       if (s.step === 'done') break;
       done.push(s.step);
       if (s.step === 'location') perms = { ...perms, foreground: 'granted' };
       if (s.step === 'location_always') perms = { ...perms, background: 'granted' };
       if (s.step === 'notifications') perms = { ...perms, notifications: 'granted' };
+      if (s.step === 'contacts') perms = { ...perms, contacts: 'granted' };
+      if (s.step === 'sms') sms = true;
       if (s.step === 'battery_share') battery = true;
     }
     expect(steps).toEqual([
@@ -416,6 +422,8 @@ describe('Faz 7 · ilk açılış izin akışı ve Gizlilik Merkezi', () => {
       'location:system_prompt',
       'location_always:system_prompt',
       'notifications:system_prompt',
+      'contacts:system_prompt',
+      'sms:in_app_toggle',
       'battery_share:in_app_toggle',
       'camera_photos:system_prompt',
       'done:none',

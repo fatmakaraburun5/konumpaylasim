@@ -45,3 +45,8 @@ export * from './privacy';
 export * from './movement';
 export * from './appearance';
 export * from './permissionCenter';
+// Faz 9: anlık fotoğraf ispatı, 200 m yaklaşma, Güvenli Dönüş, çevrimdışı SOS SMS yedeği
+export * from './proof';
+export * from './approach';
+export * from './safeReturn';
+export * from './smsFallback';

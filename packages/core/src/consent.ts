@@ -15,7 +15,7 @@ import { sha256Hex } from './link';
 import type { UserId } from './model';
 import type { EpochMs } from './time';
 
-export const CONSENT_VERSION = '2026-11-25';
+export const CONSENT_VERSION = '2026-11-26';
 export const CONSENT_TITLE = 'Güvenlik Sözleşmesi ve KVKK Aydınlatma / Açık Rıza Metni';
 
 /** Yayından önce veri sorumlusunun dolduracağı yer tutucular (sürüm kontrol listesi bunları arar). */
@@ -53,6 +53,9 @@ export const CONSENT_DOCUMENT: readonly ConsentSection[] = [
       'Görünmez mod: açtığında tüm paylaşımların ve QR bağlantıların durur, arka planda konum gönderilmez. Arkadaşlarına görünmez olduğun söylenmez. Süren bir SOS uyarısı görünmez moddan etkilenmez; kapatana kadar acil durum kişilerin SOS konumunu görmeye devam eder. Görünür olunca hiçbir paylaşım kendiliğinden başlamaz; hangilerinin yeniden başlayacağını sen seçersin.',
       'Engelleme: engellediğin kişiyle arkadaşlığın, iki yöndeki izinler ve paylaşımlar biter; o kişi sana yeniden istek gönderemez.',
       "SOS: seçtiğin en çok 5 acil durum kişisine tam konumunu, adresini ve pil durumunu gönderir; onlarla 1 saatlik paylaşım da başlatabilir. Görünmez moddayken de gider ve görünmez modu kapatır. SOS resmi acil çağrının yerini tutmaz; hayati tehlikede 112'yi ara.",
+      'Çevrimdışı SOS SMS yedeği: internet yokken SOS’a basarsan, açık onay verdiysen, son doğrulanmış konumun, zamanı, pil yüzden ve harita bağlantısı seçtiğin numaralara gönderilmek üzere telefonunun mesaj uygulamasında hazır açılır; mesajı sen gönderirsin. SMS yedeği bir yardımcıdır, iletilmesini garanti edemeyiz.',
+      'Güvenli Dönüş: başlattığın zamanlayıcının süresi (15, 30, 45 ya da 60 dakika) dolduğunda hedefine varmamışsan ve kısa son uyarıdan sonra da “Güvendeyim” demediysen, seçtiğin acil durum kişilerine son doğrulanmış konumun ve pil durumunla otomatik alarm gider. Telefonun kapalı ya da çevrimdışı olsa da alarm, en son bildirdiğin konumla sunucudan gönderilir. Zamanlayıcıyı istediğin an iptal edebilir ya da uzatabilirsin.',
+      'Anlık fotoğraf: paylaşım sırasında yalnızca o an kamerayla çektiğin fotoğrafı ekleyebilirsin (galeriden seçilemez). Fotoğraf, konumunu o an gören kişilere 1 saat gösterilir ve sonra silinir. Başkalarını rızaları olmadan çekme; fotoğrafta başkalarının özel bilgileri görünmesin.',
       'Yasak kullanımlar: birini bilgisi ve rızası olmadan izlemek ya da onun telefonunu kullanarak konumunu paylaştırmak; başkalarının konumunu, fotoğrafını veya bilgilerini izinsiz kaydetmek ya da yaymak; uygulamayı taciz, ısrarlı takip, tehdit veya baskı için kullanmak; sahte kimlik ya da başkasının numarasını kullanmak; sistemi otomatik araçlarla zorlamak.',
       'Reşit olmayanlar: uygulama 18 yaşından küçüklere yönelik değildir; 18 yaşından küçüksen yalnızca velinin ya da vasinin izniyle kullanabilirsin. Hiç kimse bir çocuğu ya da başka birini, onun bilgisi olmadan izlemek için uygulamayı kullanamaz.',
       'Kurallara aykırı kullanımda hesabını askıya alabilir ya da kapatabiliriz.',
@@ -69,6 +72,10 @@ export const CONSENT_DOCUMENT: readonly ConsentSection[] = [
       'Cihaz: pil seviyesi ve şarj durumu, bildirim jetonu, platform ve uygulama sürümü, uygulama bütünlüğü doğrulaması (App Check).',
       'Sosyal: arkadaşların, arkadaşlık ve izin istekleri, verdiğin ve aldığın izinler, engellediğin kişiler, favorilerin, acil durum kişilerin.',
       'İçerik: durum ve yer notların, kayıtlı bölgelerin (Ev, İş gibi; merkez ve yarıçap), koordinatsız bölge olay kaydı, buluşma önerileri ve SOS kayıtları (tam konum, adres, pil).',
+      'Anlık fotoğraf: paylaşım sırasında kameranla o an çektiğin fotoğraf, açıklaması (durum notun), çekildiği an ve çekildiği yer. Fotoğraf yeniden kodlanır; içindeki konum ve cihaz bilgisi (EXIF) silinir.',
+      'Yaklaşma ve hedef: paylaşımına eklediğin hedefin adı ve durumu (yolda, neredeyse vardı, vardı). Hedefin koordinatı telefonunda kalır; sunucuya yalnızca koordinat içermeyen bir anahtar gider.',
+      'Güvenli Dönüş: hedefinin adı, süre, seçtiğin acil durum kişileri ve zamanlayıcı sürerken son doğrulanmış konumun (doğrulukla) ile pil durumun. Bu kayıt yalnızca sana açıktır; acil durum kişilerin konumunu yalnızca alarm anında görür.',
+      'Rehber ve SMS: rehberinden seçtiğin SMS acil durum numaraları (ad ve numara) ve SMS yedeği tercihin YALNIZCA telefonunda saklanır. Rehberin, SMS’lerin ve SMS içeriği bize ulaşmaz; uygulama SMS’lerini okumaz.',
       'Güvenlik kayıtları: işlem kimlikleri (aynı işlemin iki kez uygulanmasını önler), hız sınırı sayaçları ve onay kayıtların (sürüm, metin özeti, zaman, platform, uygulama sürümü).',
     ],
     closing: ['Hareket etkinliği bilgisi telefonundan çıkmaz; paylaşımda yalnızca hareket durumu gönderilir. Konum geçmişi tutmayız.'],
@@ -79,8 +86,11 @@ export const CONSENT_DOCUMENT: readonly ConsentSection[] = [
     bullets: [
       'Konumunu yalnızca izin verdiğin ve paylaşım başlattığın kişilere canlı göstermek, süreyi yönetmek ve süre bitince paylaşımı kapatmak.',
       'Ping, not, varış / ayrılış bildirimi, buluşma noktası, rota ve varış süresi, widget ile hızlı paylaşım gibi kullandığın özellikleri çalıştırmak.',
-      'Acil durumda seçtiğin kişilere tam konumunu ulaştırmak.',
-      'İstek, süre bitiyor ve düşük pil gibi bildirimleri göndermek. Bildirimlerde koordinat yer almaz; yalnızca SOS bildiriminde adres bulunur.',
+      'Acil durumda seçtiğin kişilere tam konumunu ulaştırmak; internet yokken SOS mesajını SMS ile göndermene yardım etmek (mesaj telefonunda hazırlanır).',
+      'Güvenli Dönüş zamanlayıcın dolduğunda, hedefine varmadıysan ve onay vermediysen seçtiğin acil durum kişilerine alarm, son konumunu ve pil durumunu iletmek.',
+      'Hedefine 200 metre kala konumunu görenlere bir kez “Neredeyse vardım” bildirimi göndermek ve haritadaki durumunu güncellemek.',
+      'Paylaşım sırasında eklediğin anlık fotoğrafı, konumunu o an görenlere 1 saat göstermek.',
+      'İstek, süre bitiyor, düşük pil, neredeyse vardım ve Güvenli Dönüş gibi bildirimleri göndermek. Bildirimlerde koordinat yer almaz; yalnızca SOS ve Güvenli Dönüş alarmı bildiriminde adres bulunur.',
       'Pilini korumak için güncelleme sıklığını hareket durumuna göre ayarlamak.',
       'Hesabını korumak; sahte hesapları, SMS dolandırıcılığını, taciz amaçlı istekleri ve kötüye kullanımı önlemek; hukuki yükümlülükleri yerine getirmek ve onayını ispat etmek.',
     ],
@@ -92,7 +102,8 @@ export const CONSENT_DOCUMENT: readonly ConsentSection[] = [
       'KVKK m.5/2-c, sözleşmenin kurulması ve ifası: hesabın, arkadaşlıkların, izinlerin, bildirimlerin ve başlattığın özelliklerin çalışması.',
       'KVKK m.5/2-ç, hukuki yükümlülük: yetkili kurumların kanuna dayalı talepleri ve saklama yükümlülükleri.',
       'KVKK m.5/2-f, meşru menfaat: güvenlik, kötüye kullanımın önlenmesi, hız sınırları ve işlem kayıtları; temel hak ve özgürlüklerine zarar vermemek kaydıyla.',
-      'KVKK m.5/1, açık rıza: konum verilerinin (anlık ve arka plan konumu, iz noktaları, ping, buluşma ve SOS konumu) işlenmesi ve gerekli olduğu ölçüde KVKK m.9 kapsamında yurt dışına aktarılması.',
+      'KVKK m.5/1, açık rıza: konum verilerinin (anlık ve arka plan konumu, iz noktaları, ping, buluşma, SOS ve Güvenli Dönüş konumu), anlık fotoğrafların işlenmesi ve gerekli olduğu ölçüde KVKK m.9 kapsamında yurt dışına aktarılması.',
+      'KVKK m.5/2-b ve m.5/2-c: Güvenli Dönüş alarmı ve SOS, hayati tehlikede bulunan senin korunman ve başlattığın özelliğin ifası için de işlenir.',
     ],
     closing: ['Özel nitelikli kişisel veri (KVKK m.6) işlemeyiz: Face ID / Touch ID doğrulaması telefonunda yapılır, biyometrik veri bize ulaşmaz.'],
   },
@@ -100,7 +111,7 @@ export const CONSENT_DOCUMENT: readonly ConsentSection[] = [
     id: 'uygulama_izinleri',
     heading: '6. Uygulama izinleri',
     paragraphs: [
-      'İzinleri açılışta toplu istemeyiz; her birini ilk gerektiği anda, nedenini açıklayarak isteriz. Hepsini telefonunun ayarlarından istediğin an kapatabilirsin; o zaman yalnızca ilgili özellik çalışmaz.',
+      'İlk açılıştaki kurulum rehberinde her izni tek tek, nedenini açıklayarak sorarız; her birini “Şimdi değil” ile geçebilirsin, atladığın izni ilk gerektiği anda yeniden sorarız. Hepsini telefonunun ayarlarından ya da İzin & Gizlilik Merkezi’nden istediğin an kapatabilirsin; o zaman yalnızca ilgili özellik çalışmaz.',
     ],
     bullets: [
       'Konum (uygulama açıkken): ilk paylaşımda istenir; kısa paylaşımlar için yeterlidir.',
@@ -109,7 +120,10 @@ export const CONSENT_DOCUMENT: readonly ConsentSection[] = [
       'Bildirimler: istekler, süre bitiyor, ping, bölge ve SOS bildirimleri için; ilk paylaşımda istenir.',
       "Pil: pil seviyesi ve şarj durumu izinsiz okunur, yalnızca paylaşım ya da SOS sırasında konumunu görenlere gider. Android'de uzun paylaşım kesilmesin diye pil optimizasyonu istisnası için seni ayarlara yönlendirebiliriz; karar senindir.",
       "Hareket ve fiziksel etkinlik: hareketsizken GPS'i kapatıp pili korumak için; isteğe bağlıdır.",
-      'Kamera ve fotoğraflar: yalnızca profil fotoğrafı için; yalnızca seçtiğin fotoğraf yüklenir.',
+      'Kamera: profil fotoğrafı ve anlık fotoğraf için. Anlık fotoğraf YALNIZCA kamerayla o an çekilir; galeriden seçim kapalıdır.',
+      'Fotoğraflar (galeri): yalnızca profil fotoğrafını galeriden seçmek için; yalnızca seçtiğin fotoğraf yüklenir.',
+      'Rehber (Kişiler): yalnızca SMS acil durum numaralarını rehberinden seçmen için, açık onayınla istenir. Rehberin sunucuya yüklenmez ve taranmaz; yalnızca seçtiğin numaralar telefonunda saklanır. Vermezsen numarayı elle yazabilirsin.',
+      'SMS: SMS yedeği için açık onayını alırız. iPhone’da uygulamalar SMS’i kendiliğinden gönderemez; internet yokken SOS mesajı Mesajlar uygulamasında hazır açılır ve sen gönderirsin. Android’de de mesaj SMS uygulamanda hazır açılır; bunun için SMS gönderme ya da okuma izni istemeyiz. SMS operatörün üzerinden şifrelenmeden iletilir ve operatör tarifene göre ücretlendirilebilir.',
       "Face ID / Touch ID (ya da ekran kilidi): kilitli telefonda widget'tan hızlı paylaşım başlatırken kimliğini telefonun doğrular.",
     ],
   },
@@ -121,7 +135,10 @@ export const CONSENT_DOCUMENT: readonly ConsentSection[] = [
       "Firebase Authentication (telefon numarası, SMS doğrulaması) ve Firebase Cloud Messaging (bildirim jetonu ve içeriği) için bölge seçilemez; bu veriler ABD'de de işlenebilir. iOS bildirimleri Apple üzerinden iletilir.",
       'Google Maps Platform: harita, rota, varış süresi, adres ve buluşma yeri araması için. Adres sorgusunda tam konumun yerine yaklaşık 150 metrelik bir alanın merkezi gönderilir; buluşma hesabındaki konumlar saklanmaz.',
       'Arkadaşların: görünen adını, fotoğrafını ve çerçeve rengini görür; gerisini yalnızca verdiğin izinler kadar görür. Konum izni verdiysen paylaşım sürerken canlı konumunu (doğruluk, hız, yön ve hareket durumuyla), pil seviyeni ve şarj durumunu, bağlantı koptuğunda biriken iz noktalarını, durum notunu ve paylaşımın bitiş saatini; ayrıca gönderdiğin pingleri (konum izni verdiysen konumuyla), görmelerine izin verdiğin yer notlarını, bölge bildirimi izni verdiysen varış / ayrılış bildirimlerini ve buluşma önerilerini (önerdiğin buluşmada senin varış süren dahil) görür.',
-      'QR bağlantısı: bağlantıyı açan herkes, bağlantı süresince görünen adını, son konumunu (doğruluk, hız ve yön dahil), pil durumunu ve bağlantının bitiş saatini görür; numaran ve kullanıcı kimliğin gösterilmez.',
+      'QR bağlantısı: bağlantıyı açan herkes, bağlantı süresince görünen adını, son konumunu (doğruluk, hız ve yön dahil), pil durumunu ve bağlantının bitiş saatini görür; numaran ve kullanıcı kimliğin gösterilmez. Anlık fotoğraf ve hedef bilgisi QR bağlantısına gitmez.',
+      'Anlık fotoğraf ve hedef: konumunu o an paylaştığın kişiler, eklediğin anlık fotoğrafı (1 saat) ve paylaşımına eklediğin hedefin adını ve durumunu görür.',
+      'Güvenli Dönüş: seçtiğin acil durum kişileri zamanlayıcıyı başlattığını ve bitirdiğini (hedefin adıyla) öğrenir; süre dolup yanıt vermezsen son doğrulanmış konumunu, adresini, pil durumunu ve harita bağlantısını görür.',
+      'SMS yedeği: mesaj senin telefonundan ve mobil operatörün üzerinden seçtiğin numaraya gider; içeriği (koordinat, zaman, pil, harita bağlantısı) bize ulaşmaz.',
       'Yetkili kamu kurum ve kuruluşları: yalnızca kanunen zorunlu olduğunda.',
     ],
     closing: [
@@ -137,6 +154,9 @@ export const CONSENT_DOCUMENT: readonly ConsentSection[] = [
       'Biten paylaşım ve yanıtlanan istek kayıtları (koordinatsız) 7 gün sonra silinir. Gönderdiğin arkadaşlık isteğinin kendi kaydın (maskelenmiş numarayla) ve düşük pil bildirimi durumu (koordinatsız) 30 gün tutulur. Konum istekleri 15 dakika, izin istekleri 48 saat içinde yanıtlanmazsa geçersiz olur. Süresi dolan kayıtlar, süre dolduktan sonra en geç bir gün içinde silinir.',
       'Ping konumu 15 dakika, buluşma önerileri 12 saat sonra, yer notları seçtiğin sürenin (en çok 1 hafta) sonunda silinir. Rota ve buluşma sonuçları birkaç dakikalık önbellekte kalır ve en geç bir gün içinde silinir. Adres sorgularının sonucu yaklaşık 150 metrelik alana göre, kişiyle ilişkilendirilmeden 30 gün önbellekte tutulur. Koordinatsız bölge olay kaydı 30 gün tutulur.',
       'SOS kayıtları çözüldükten en geç 7 gün sonra silinir; açık kalan SOS 24 saat sonra kendiliğinden kapanır.',
+      'Anlık fotoğraflar eklendikten 1 saat sonra sunucudan (depolama alanı ve kayıt) ve uygulamanın tüm cihazlardaki önbelleğinden silinir; daha önce kaldırırsan hemen silinir. Fotoğrafsız kayıt özeti en geç 1 gün içinde silinir.',
+      'Güvenli Dönüş kayıtları (son konum dahil) bittikten 7 gün sonra, “Neredeyse vardım” tekrar önleme kaydı (koordinatsız) 2 gün sonra silinir.',
+      'Rehberden seçtiğin SMS numaraları ve SMS yedeği tercihin yalnızca telefonundadır; uygulamayı silince ya da listeden çıkarınca silinir.',
       'İşlem kimlikleri yaklaşık 1 gün, widget oturumları en çok 30 gün tutulur; hız sınırı sayaçları hesabınla birlikte silinir.',
       'Onay kayıtların, onayını ispat edebilmek için hesabın silinene kadar saklanır.',
       'Hesabını silince profilin, numaran, fotoğrafların, arkadaşlıkların, izinlerin, notların, bölgelerin ve cihaz kayıtların silinir. Silme kaydı (yalnızca kullanıcı kimliği ve zaman) 30 gün, karşı tarafta görünen biten paylaşım kayıtları en geç 7 gün sonra silinir. Başkalarının seni engellediği kayıt (numaranın gizli anahtarlı özeti dahil) onların güvenliği için kalır.',
@@ -163,7 +183,8 @@ export const CONSENT_DOCUMENT: readonly ConsentSection[] = [
     id: 'acik_riza',
     heading: '10. Açık rıza beyanı',
     paragraphs: [
-      '“Okudum, Onaylıyorum” düğmesine basarak; konum verilerimin (anlık ve arka plan konumu, doğruluk, hız, yön, hareket durumu, iz noktaları, ping, buluşma ve SOS konumu) bu metinde anlatılan amaçlarla işlenmesine ve 7. bölümdeki hizmet sağlayıcılar aracılığıyla yurt dışına aktarılmasına açık rıza veriyorum.',
+      '“Okudum, Onaylıyorum” düğmesine basarak; konum verilerimin (anlık ve arka plan konumu, doğruluk, hız, yön, hareket durumu, iz noktaları, ping, buluşma, SOS ve Güvenli Dönüş konumu) ve anlık fotoğraflarımın bu metinde anlatılan amaçlarla işlenmesine, Güvenli Dönüş süresi dolup yanıt vermediğimde son konumumun ve pil durumumun seçtiğim acil durum kişilerine iletilmesine ve 7. bölümdeki hizmet sağlayıcılar aracılığıyla yurt dışına aktarılmasına açık rıza veriyorum.',
+      'Rehber ve SMS izinleri için ayrıca açık onayım alınır: rehberime yalnızca SMS acil durum numarası seçmek için erişilmesine ve internet yokken SOS mesajının telefonumun mesaj uygulamasında hazırlanmasına onay veriyorum. Bu onayları İzin & Gizlilik Merkezi’nden istediğim an geri alabilirim.',
       'Açık rızamı istediğim an Profil > Sözleşme ve KVKK > “Açık rızamı geri çek” ile geri alabilirim. Geri aldığımda tüm paylaşımlarım ve QR bağlantılarım hemen durur, süren SOS uyarım kapanır (kişilerime güvende olduğum bildirilir), yer notlarım silinir ve önerdiğim buluşmalar iptal edilir; bundan sonra konumum işlenmez. Uygulamayı yeniden kullanmak için metni yeniden onaylamam gerekir. Geri alma, önceki işlemlerin hukuka uygunluğunu etkilemez.',
     ],
   },
@@ -197,11 +218,11 @@ export const CONSENT_TEXT_SHA256: string = sha256Hex(CONSENT_TEXT);
 
 /** Yeniden onayda "Neler değişti?" altında gösterilir (bu sürüm için). */
 export const CONSENT_CHANGES: readonly string[] = [
-  'Arkadaşlık artık konum izni değil: her izin kişiye özel ve tek yönlü.',
-  'Konum, ping, bölge bildirimi ve buluşma izinlerini Kişi izinleri sayfasından ayrı ayrı yönetebilirsin.',
-  'Görünmez mod eklendi: tek dokunuşla tüm paylaşımların durur.',
-  "Açık rızanı Profil > Sözleşme ve KVKK'dan istediğin an geri çekebilirsin.",
-];
+  'Anlık fotoğraf: paylaşım sırasında yalnızca kamerayla o an çekilen fotoğraf eklenir; 1 saat sonra her yerden silinir.',
+  'Hedefine 200 metre kala konumunu görenlere bir kez "Neredeyse vardım" bildirimi gider; hedefin koordinatı telefonunda kalır.',
+  'Güvenli Dönüş: süre dolup yanıt vermezsen acil kişilerine son konumun ve pil durumunla otomatik alarm gider.',
+  'Rehber ve SMS izinleri: internet yokken SOS mesajı telefonunun mesaj uygulamasında hazır açılır; rehberin ve numaraların sunucuya gitmez.',
+]
 
 const TR_MONTHS = ['Ocak', 'Şubat', 'Mart', 'Nisan', 'Mayıs', 'Haziran', 'Temmuz', 'Ağustos', 'Eylül', 'Ekim', 'Kasım', 'Aralık'];
 
@@ -366,6 +387,10 @@ export const CONSENT_EXEMPT_CALLABLES: readonly CallableName[] = [
   CALLABLES.privacySettingsSet,
   CALLABLES.consentAccept,
   CALLABLES.consentWithdraw,
+  // Faz 9: kendi fotoğrafını kaldırmak ve Güvenli Dönüş'ü bitirmek / iptal etmek her zaman çalışır.
+  CALLABLES.proofDelete,
+  CALLABLES.safeReturnCheckIn,
+  CALLABLES.safeReturnCancel,
 ];
 
 /**

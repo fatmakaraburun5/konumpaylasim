@@ -51,6 +51,17 @@ export const SOS_MESSAGE = 'Şu anda olduğum konumda tehlikedeyim';
 export const EMERGENCY_NUMBER = '112';
 
 export type SosStatus = 'active' | 'resolved';
+/** Faz 9: uyarının kaynağı. `safe_return` = Güvenli Dönüş süresi dolunca sunucunun açtığı otomatik alarm. */
+export const SOS_ORIGINS = ['manual', 'safe_return'] as const;
+export type SosOrigin = (typeof SOS_ORIGINS)[number];
+
+/** Faz 9: Güvenli Dönüş alarmının özeti (alıcı kartında). Hedef koordinatı YOK. */
+export interface SosSafeReturnInfo {
+  safe_return_id: string;
+  destination_name: string;
+  duration_min: number;
+  due_at: EpochMs;
+}
 export type SosResolveReason = 'safe' | 'timeout' | 'account_deleted';
 
 export interface SosLocation {
@@ -92,6 +103,10 @@ export interface SosAlert {
   /** Alıcı → "Gördüm" anı. */
   acks: Record<UserId, EpochMs>;
   update_count: number;
+  /** Faz 9 (eski kayıtta yok = `manual`). */
+  origin?: SosOrigin;
+  /** Faz 9: yalnızca `origin: 'safe_return'`. */
+  safe_return?: SosSafeReturnInfo | null;
 }
 
 const uid = z.string().min(1).max(128).regex(/^[A-Za-z0-9_-]+$/);
@@ -183,6 +198,12 @@ export const SosAlertSchema: z.ZodType<SosAlert> = z.object({
   resolved_at: z.number().nullable(),
   acks: z.record(z.string(), z.number()),
   update_count: z.number(),
+  origin: z.enum(SOS_ORIGINS).optional().catch(undefined),
+  safe_return: z
+    .object({ safe_return_id: z.string(), destination_name: z.string(), duration_min: z.number(), due_at: z.number() })
+    .nullable()
+    .optional()
+    .catch(undefined),
 });
 
 export const SosSendResponseSchema: z.ZodType<SosSendResponse> = z.object({
@@ -227,12 +248,23 @@ export function isSosVisible(a: Pick<SosAlert, 'status' | 'resolved_at'>, now: E
 export const isSosLocationStale = (loc: Pick<SosLocation, 'timestamp'>, now: EpochMs): boolean =>
   now - loc.timestamp > SOS_LIMITS.staleLocationMs;
 
-/** Push metni. Ham koordinat İÇERMEZ (bkz. dosya başı). */
-export function sosPushText(a: Pick<SosAlert, 'sender_name' | 'address' | 'location' | 'battery_pct'>): { title: string; body: string } {
+/** Push metni. Ham koordinat İÇERMEZ (bkz. dosya başı). Faz 9: Güvenli Dönüş alarmı kendi başlığıyla. */
+export function sosPushText(
+  a: Pick<SosAlert, 'sender_name' | 'address' | 'location' | 'battery_pct'> & Partial<Pick<SosAlert, 'origin' | 'safe_return' | 'message'>>,
+): { title: string; body: string } {
   const parts = [a.address ?? 'Adres bulunamadı, konumu görmek için dokun', formatAccuracyTr(a.location.accuracy)];
   if (a.battery_pct !== null) parts.push(`Pil %${a.battery_pct}`);
+  if (a.origin === 'safe_return') {
+    const dest = a.safe_return?.destination_name ?? 'hedefine';
+    const mins = a.safe_return?.duration_min;
+    const lead = mins ? `${dest} hedefine ${mins} dk içinde varmadı ve yanıt vermedi` : 'Güvenli Dönüş süresi doldu';
+    return { title: `ACİL: ${a.sender_name} Güvenli Dönüş'te yanıt vermedi`, body: `${lead}. Son konum: ${parts.join(' · ')}` };
+  }
   return { title: `ACİL: ${a.sender_name} tehlikede`, body: `${SOS_MESSAGE}. ${parts.join(' · ')}` };
 }
+
+/** Faz 9: uyarının kaynağı (eski kayıt = manual). */
+export const sosOrigin = (a: Pick<SosAlert, 'origin'>): SosOrigin => a.origin ?? 'manual';
 
 export function sosResolvedPushText(senderName: string): { title: string; body: string } {
   return { title: `${senderName} güvende`, body: 'Acil durum uyarısı kapatıldı.' };

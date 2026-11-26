@@ -83,6 +83,16 @@ export const CALLABLES = {
   eventCancel: 'event_cancel',
   privacySettingsSet: 'privacy_settings_set',
   movementReport: 'movement_report',
+  // Faz 9 (bkz. `proof.ts`, `approach.ts`, `safeReturn.ts`, `smsFallback.ts`)
+  proofCreate: 'proof_create',
+  proofGet: 'proof_get',
+  proofDelete: 'proof_delete',
+  approachReport: 'approach_report',
+  safeReturnStart: 'safe_return_start',
+  safeReturnUpdate: 'safe_return_update',
+  safeReturnCheckIn: 'safe_return_check_in',
+  safeReturnExtend: 'safe_return_extend',
+  safeReturnCancel: 'safe_return_cancel',
 } as const;
 
 export type CallableName = (typeof CALLABLES)[keyof typeof CALLABLES];
@@ -172,6 +182,19 @@ export const PATHS = {
   privacyMirror: (uid: UserId) => `privacy/${uid}`,
   /** Firestore: "yola çıktı" soğuması (yalnızca sunucu). */
   movementCooldown: (uid: UserId) => `movement_cooldowns/${uid}`,
+  // --- Faz 9 ---
+  /** Firestore: anlık fotoğraf kayıtları (istemciye TAMAMEN kapalı; `proof_get` aracılık eder), TTL `purge_at`. */
+  photoProofs: 'photo_proofs',
+  photoProof: (id: string) => `photo_proofs/${id}`,
+  /** Storage: anlık fotoğraf nesnesi (istemciye kapalı; yalnızca Admin SDK yazar/okur/siler). */
+  proofObject: (uid: UserId, proofId: string) => `proofs/${uid}/${proofId}.jpg`,
+  proofFolder: (uid: UserId) => `proofs/${uid}`,
+  /** Firestore: "neredeyse vardım" tek sefer kaydı `approach_marks/{uid}_{session}_{dest_key}` (yalnızca sunucu), TTL. */
+  approachMarks: 'approach_marks',
+  approachMark: (uid: UserId, sessionId: SessionId, destKey: string) => `approach_marks/${uid}_${sessionId}_${destKey}`,
+  /** Firestore: Güvenli Dönüş zamanlayıcıları (YALNIZCA sahibi okur, callable / sunucu yazar), TTL `purge_at`. */
+  safeReturns: 'safe_returns',
+  safeReturn: (id: string) => `safe_returns/${id}`,
 } as const;
 
 const opId = z.uuid();
@@ -547,6 +570,15 @@ export const ERROR_CODES = {
   event_invitee_limit: { retryable: false, message: 'Bir etkinliğe en çok 20 kişi davet edilebilir' },
   event_started: { retryable: false, message: 'Buluşma başladı, yanıt artık değiştirilemez' },
   event_limit_reached: { retryable: false, message: 'Aynı anda en çok 10 etkin etkinliğin olabilir' },
+  // Faz 9
+  proof_not_found: { retryable: false, message: 'Fotoğraf bulunamadı' },
+  proof_expired: { retryable: false, message: 'Fotoğrafın süresi doldu' },
+  proof_invalid: { retryable: false, message: 'Fotoğraf okunamadı. Yeniden çek.' },
+  proof_stale_capture: { retryable: false, message: 'Yalnızca az önce kamerayla çekilen fotoğraf eklenebilir. Yeniden çek.' },
+  proof_limit_reached: { retryable: false, message: 'Bugünlük anlık fotoğraf sınırına ulaştın' },
+  safe_return_active: { retryable: false, message: 'Zaten süren bir Güvenli Dönüş zamanlayıcın var' },
+  safe_return_not_active: { retryable: false, message: 'Güvenli Dönüş zamanlayıcısı artık aktif değil' },
+  safe_return_extend_limit: { retryable: false, message: 'Güvenli Dönüş en çok 3 saate kadar uzatılabilir' },
 } as const;
 export type ErrorCode = keyof typeof ERROR_CODES;
 
@@ -594,8 +626,11 @@ export type PushData =
   // Faz 4
   /** Alıcıya, görünür: "Ayşe · 📍 Buradayım". `kind` = PingKind. Konum push'ta YOK, `ping_inbox`'tan okunur. */
   | { type: 'ping'; ping_id: string; from: string; kind: string }
-  /** Alıcıya, kritik/yüksek öncelik: acil durum. Gövde adres + doğruluk + pil; koordinat `sos_alerts`'tan okunur. */
-  | { type: 'sos'; sos_id: string; sender_id: string }
+  /**
+   * Alıcıya, kritik/yüksek öncelik: acil durum. Gövde adres + doğruluk + pil; koordinat `sos_alerts`'tan okunur.
+   * Faz 9: `origin` = `manual` | `safe_return` (Güvenli Dönüş otomatik alarmı; eski istemci yok sayar).
+   */
+  | { type: 'sos'; sos_id: string; sender_id: string; origin?: string }
   /** Alıcıya, görünür: gönderen "Güvendeyim" dedi. */
   | { type: 'sos_resolved'; sos_id: string; sender_id: string }
   /** Gönderene, görünür: alıcı uyarıyı gördü. */
@@ -637,7 +672,16 @@ export type PushData =
   | { type: 'event_reminder'; event_id: string; kind: string }
   | { type: 'event_cancelled'; event_id: string }
   /** Canlı paylaşım alıcılarına, heads-up: "Mehmet yola çıktı". Koordinat YOK. */
-  | { type: 'movement'; from: string; kind: string };
+  | { type: 'movement'; from: string; kind: string }
+  // Faz 9 (koordinat YOK)
+  /** Oturumun etkin paylaşım alıcılarına, heads-up: "Ayşe: Neredeyse vardım (1 dk)" · "Ev". `eta_min` "1". */
+  | { type: 'approach'; from: string; dest_name: string; eta_min: string }
+  /** Acil kişilere, görünür (`active`): "Ayşe Güvenli Dönüş başlattı". `due_at` epoch ms metni. */
+  | { type: 'safe_return_started'; safe_return_id: string; from: string; due_at: string }
+  /** Acil kişilere: `reason` = arrived | checked_in | cancelled. */
+  | { type: 'safe_return_ended'; safe_return_id: string; from: string; reason: string }
+  /** Sahibin KENDİ cihazlarına, görünür + eylemli (kategori `SAFE_RETURN`): "Güvende misin?". */
+  | { type: 'safe_return_due'; safe_return_id: string; grace_until: string };
 
 /** Faz 3 FCM veri türleri (istemci işleyicileri ve sözleşme testi için). */
 export const PUSH_TYPES_F3 = ['battery_low', 'resume_tracking', 'tracking_stalled'] as const satisfies readonly PushData['type'][];
@@ -679,6 +723,29 @@ export const PUSH_TYPES_F7 = ['event_invite', 'event_stage', 'event_rsvp', 'even
  *  - `eventReminders`: IMPORTANCE_HIGH, 1 gün önce ve günün 08:00'i. iOS `time-sensitive`.
  */
 export const NOTIFICATION_CHANNELS_F7 = { sosAlarm: 'sos_alarm', movement: 'movement', events: 'events', eventReminders: 'event_reminders' } as const;
+
+/** Faz 9 FCM veri türleri. Güvenli Dönüş alarmı Faz 4 `sos` türüyle (`origin: 'safe_return'`) gider. */
+export const PUSH_TYPES_F9 = ['approach', 'safe_return_started', 'safe_return_ended', 'safe_return_due'] as const satisfies readonly PushData['type'][];
+
+/**
+ * Faz 9 bildirim kanalları / kategorileri.
+ *  - Yaklaşma (`approach`) Faz 7 `movement` kanalını kullanır (heads-up, iOS `time-sensitive`).
+ *  - Güvenli Dönüş alarmı Faz 7 `sos_alarm` kanalını kullanır (SOS ile aynı).
+ *  - `safeReturn`: sahibin kendi "Güvende misin?" bildirimi. Android IMPORTANCE_HIGH, varsayılan ses (sahip tehlikedeyse
+ *    yüksek alarm sesi onu ele vermesin) [Varsayım]; iOS `time-sensitive`. Başlangıç / bitiş bildirimleri (kişilere)
+ *    `events` önem düzeyiyle ama bu kanalda gider.
+ */
+export const NOTIFICATION_CHANNELS_F9 = { safeReturn: 'safe_return' } as const;
+
+/**
+ * iOS kategori / Android eylem kimlikleri: "Güvende misin?" bildiriminde "Güvendeyim" (kilit açmayı ister:
+ * `isAuthenticationRequired`, telefonu ele geçiren biri kilit ekranından iptal edemesin) ve "+15 dk".
+ */
+export const NOTIFICATION_CATEGORIES_F9 = {
+  safeReturn: 'SAFE_RETURN',
+  actionSafe: 'SAFE_RETURN_OK',
+  actionExtend: 'SAFE_RETURN_EXTEND',
+} as const;
 
 /** Faz 7'de yerine yenisi açılan, istemcinin silmesi gereken Android kanalları. */
 export const LEGACY_NOTIFICATION_CHANNELS = ['sos'] as const;

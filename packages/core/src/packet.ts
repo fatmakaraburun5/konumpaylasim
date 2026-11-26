@@ -14,8 +14,13 @@ import { roundCoord } from './geo';
 import { shareId as makeShareId } from './ids';
 import type { ShareId, UserId } from './model';
 import { MINUTE, SECOND, type EpochMs } from './time';
+import { PROOF_ID_RE } from './proof';
 
 export const LIVE_PACKET_VERSION = 1 as const;
+
+/** Faz 9: paylaşım hedefinin durumu (bkz. `approach.ts`). Döngüsel içe aktarma olmasın diye burada tanımlı. */
+export const DEST_STATES = ['en_route', 'near', 'arrived'] as const;
+export type DestState = (typeof DEST_STATES)[number];
 
 export type ActivityState = 'still' | 'walking' | 'running' | 'cycling' | 'automotive' | 'unknown';
 export const ACTIVITY_STATES: readonly ActivityState[] = ['still', 'walking', 'running', 'cycling', 'automotive', 'unknown'];
@@ -56,6 +61,17 @@ export interface LocationPacket {
   note?: string;
   /** Notun bitiş anı (sunucu saati, epoch ms). Alıcı bu andan sonra notu göstermez. */
   note_exp?: EpochMs;
+  // --- Faz 9: isteğe bağlı (eski istemciler yok sayar) ---
+  /** Anlık fotoğraf kimliği (`PROOF_ID_RE`); bayt `proof_get` ile, yalnızca sunucu izin verirse gelir. */
+  photo_id?: string;
+  /** Fotoğrafın bitişi (sunucu saati). `photo_id` ile birlikte; en çok 1 saat ileride. */
+  photo_exp?: EpochMs;
+  /** Paylaşımın hedef ADI ("Ev"); koordinat YOK. ≤ 30 karakter. */
+  dest_name?: string;
+  /** Hedef durumu: `en_route` | `near` (≤ 200 m, "Neredeyse vardım") | `arrived`. `dest_name` ile birlikte. */
+  dest_state?: DestState;
+  /** Tahmini varış (dk), yalnızca `near`. */
+  dest_eta?: number;
 }
 
 /** Faz 3 isteğe bağlı paket alanları (kuyruk / kalp atışı). */
@@ -66,6 +82,13 @@ export interface PacketExtras {
   /** Faz 4: durum notu ve bitişi (ikisi birlikte; süresi geçmiş not pakete girmez). */
   note?: string;
   note_exp?: EpochMs;
+  /** Faz 9: anlık fotoğraf (ikisi birlikte). */
+  photo_id?: string;
+  photo_exp?: EpochMs;
+  /** Faz 9: hedef adı + durumu (+ yalnızca near iken varış dakikası). */
+  dest_name?: string;
+  dest_state?: DestState;
+  dest_eta?: number;
 }
 
 export interface DeliveredLocation extends Omit<LocationPacket, 'receiver_ids'> {
@@ -107,6 +130,12 @@ export const DELIVERED_FIELDS = [
   // Faz 4 (isteğe bağlı)
   'note',
   'note_exp',
+  // Faz 9 (isteğe bağlı)
+  'photo_id',
+  'photo_exp',
+  'dest_name',
+  'dest_state',
+  'dest_eta',
 ] as const satisfies readonly (keyof DeliveredLocation)[];
 
 /** Faz 3'te eklenen, isteğe bağlı canlı paket alanları. */
@@ -114,6 +143,17 @@ export const DELIVERED_OPTIONAL_F3_FIELDS = ['hb', 'q', 'recorded_at'] as const 
 
 /** Faz 4'te eklenen, isteğe bağlı canlı paket alanları (durum notu). */
 export const DELIVERED_OPTIONAL_F4_FIELDS = ['note', 'note_exp'] as const satisfies readonly (keyof DeliveredLocation)[];
+
+/** Faz 9'da eklenen, isteğe bağlı canlı paket alanları (anlık fotoğraf, hedef durumu). QR bağlantısına GİTMEZ. */
+export const DELIVERED_OPTIONAL_F9_FIELDS = ['photo_id', 'photo_exp', 'dest_name', 'dest_state', 'dest_eta'] as const satisfies readonly (keyof DeliveredLocation)[];
+
+/** Faz 9: paket kuralı sınırları (RTDB kuralı aynısını uygular). */
+export const PACKET_F9_LIMITS = {
+  destNameMaxChars: 30,
+  /** `photo_exp` en çok `now + bu` (1 sa ömür + saat payı). */
+  photoExpMaxAheadMs: 61 * MINUTE,
+  destEtaMax: 120,
+} as const;
 
 /** Faz 4: paketteki durum notu sınırı (RTDB kuralı da `note.length <= 60` uygular). */
 export const PACKET_NOTE_MAX_CHARS = 60;
@@ -332,6 +372,22 @@ export function cleanExtras(extras: PacketExtras): PacketExtras {
       out.note_exp = Math.round(extras.note_exp);
     }
   }
+  // Faz 9: fotoğraf yalnızca bitişiyle ve geçerli kimlikle; hedef yalnızca ad + durumla.
+  if (typeof extras.photo_id === 'string' && PROOF_ID_RE.test(extras.photo_id) && typeof extras.photo_exp === 'number' && Number.isFinite(extras.photo_exp)) {
+    out.photo_id = extras.photo_id;
+    out.photo_exp = Math.round(extras.photo_exp);
+  }
+  if (typeof extras.dest_name === 'string' && extras.dest_state && (DEST_STATES as readonly string[]).includes(extras.dest_state)) {
+    let name = extras.dest_name.trim();
+    while (name.length > PACKET_F9_LIMITS.destNameMaxChars) name = Array.from(name).slice(0, -1).join('');
+    if (name.length > 0) {
+      out.dest_name = name;
+      out.dest_state = extras.dest_state;
+      if (extras.dest_state === 'near' && typeof extras.dest_eta === 'number' && Number.isFinite(extras.dest_eta)) {
+        out.dest_eta = Math.min(PACKET_F9_LIMITS.destEtaMax, Math.max(0, Math.round(extras.dest_eta)));
+      }
+    }
+  }
   return out;
 }
 
@@ -381,6 +437,11 @@ export const LocationPacketSchema = z.object({
   recorded_at: z.number().int().positive().optional(),
   note: z.string().min(1).max(PACKET_NOTE_MAX_CHARS).optional(),
   note_exp: z.number().int().positive().optional(),
+  photo_id: z.string().regex(PROOF_ID_RE).optional(),
+  photo_exp: z.number().int().positive().optional(),
+  dest_name: z.string().min(1).max(PACKET_F9_LIMITS.destNameMaxChars).optional(),
+  dest_state: z.enum(DEST_STATES).optional(),
+  dest_eta: z.number().int().min(0).max(PACKET_F9_LIMITS.destEtaMax).optional(),
 });
 
 /** RTDB'den okunan kopya: eksik alanlar null olur, bilinmeyen alanlar yok sayılır (ileri uyumluluk). */
@@ -407,12 +468,30 @@ export const DeliveredLocationSchema = z.object({
   // Faz 4: bozuk not paketi düşürmez.
   note: z.string().max(PACKET_NOTE_MAX_CHARS * 2).optional().catch(undefined),
   note_exp: z.number().optional().catch(undefined),
+  // Faz 9: bozuk değer paketi düşürmez.
+  photo_id: z.string().regex(PROOF_ID_RE).optional().catch(undefined),
+  photo_exp: z.number().optional().catch(undefined),
+  dest_name: z.string().max(PACKET_F9_LIMITS.destNameMaxChars * 2).optional().catch(undefined),
+  dest_state: z.enum(DEST_STATES).optional().catch(undefined),
+  dest_eta: z.number().optional().catch(undefined),
 });
 
 /** Faz 4: alıcı tarafında gösterilecek durum notu (yoksa ya da süresi geçtiyse null). */
 export function visibleStatusNote(loc: { note?: string; note_exp?: EpochMs }, now: EpochMs): string | null {
   if (!loc.note || typeof loc.note_exp !== 'number' || loc.note_exp <= now) return null;
   return loc.note;
+}
+
+/** Faz 9: alıcıda gösterilecek anlık fotoğraf referansı (yoksa ya da süresi geçtiyse null). */
+export function visibleProofRef(loc: { photo_id?: string; photo_exp?: EpochMs }, now: EpochMs): { photo_id: string; photo_exp: EpochMs } | null {
+  if (!loc.photo_id || typeof loc.photo_exp !== 'number' || loc.photo_exp <= now) return null;
+  return { photo_id: loc.photo_id, photo_exp: loc.photo_exp };
+}
+
+/** Faz 9: alıcıda gösterilecek hedef durumu (yoksa null). */
+export function visibleDestination(loc: { dest_name?: string; dest_state?: DestState; dest_eta?: number }): { name: string; state: DestState; eta_min: number | null } | null {
+  if (!loc.dest_name || !loc.dest_state) return null;
+  return { name: loc.dest_name, state: loc.dest_state, eta_min: loc.dest_state === 'near' && typeof loc.dest_eta === 'number' ? loc.dest_eta : null };
 }
 
 /** Okuma tarafı: bozuk kaydı sessizce atar (bir arkadaşın hatalı paketi haritayı çökertmesin). */
