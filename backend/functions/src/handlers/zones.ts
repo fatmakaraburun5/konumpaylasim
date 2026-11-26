@@ -309,7 +309,7 @@ export async function zoneEventReport(
     tx.set(refs.zoneEvent(ctx.uid, data.op_id), log);
 
     const response: ZoneEventReportResponse = { notified: notifyIds.length, start_share: startShare, suppressed, server_now: now };
-    const msg = notifyIds.length > 0 ? buildZoneEventPush(me.display_name ?? '', ctx.uid, zone.name, data.transition) : null;
+    const msg = notifyIds.length > 0 ? buildZoneEventPush(me.display_name ?? '', ctx.uid, zone.name, data.transition, zone.kind ?? null) : null;
     return { response, after: msg ? () => pushAll(notifyIds, msg, send, 'zone_event_report') : undefined };
   });
 }

@@ -1,5 +1,5 @@
 /**
- * Konum Cloud Functions giriş noktası (Faz 1 + Faz 2 + Faz 3 + Faz 4 + Faz 5 + Faz 6 + Faz 8). Dışa aktarılan adlar core `CALLABLES` ile birebir aynıdır
+ * Konum Cloud Functions giriş noktası (Faz 1 + Faz 2 + Faz 3 + Faz 4 + Faz 5 + Faz 6 + Faz 7 + Faz 8). Dışa aktarılan adlar core `CALLABLES` ile birebir aynıdır
  * (istemci `httpsCallable(functions, 'share_start')` çağırır, bölge europe-west1).
  *
  * Burada YALNIZCA fonksiyon tanımları dışa aktarılır; saf mantık `handlers/*` içindedir.
@@ -48,6 +48,19 @@ import {
   PermissionRequestRespondSchema,
   PermissionRequestSendSchema,
   PermissionSetSchema,
+  // Faz 7
+  EventAdvanceRequestSchema,
+  EventCancelRequestSchema,
+  EventCreateRequestSchema,
+  EventInviteAddRequestSchema,
+  EventRsvpRequestSchema,
+  EventTimeOptionsSetRequestSchema,
+  EventUpdateRequestSchema,
+  EventVenueProposeRequestSchema,
+  EventVenueRemoveRequestSchema,
+  EventVoteRequestSchema,
+  MovementReportRequestSchema,
+  PrivacySettingsSetRequestSchema,
 } from '@konum/core';
 import { setGlobalOptions } from 'firebase-functions';
 import { onDocumentWritten } from 'firebase-functions/firestore';
@@ -89,6 +102,20 @@ import {
   permissionRequestSend,
   permissionSet,
 } from './handlers/access';
+import {
+  eventAdvance,
+  eventCancel,
+  eventCreate,
+  eventInviteAdd,
+  eventRsvp,
+  eventTimeOptionsSet,
+  eventUpdate,
+  eventVenuePropose,
+  eventVenueRemove,
+  eventVote,
+  sweepEvents,
+} from './handlers/events';
+import { movementReport, privacySettingsSet } from './handlers/privacy';
 import {
   AccountDeleteSchema,
   BatteryLowNotifySchema,
@@ -186,7 +213,42 @@ export const invisible_set = callable('invisible_set', InvisibleSetRequestSchema
 export const consent_accept = callable('consent_accept', ConsentAcceptRequestSchema, consentAccept);
 export const consent_withdraw = callable('consent_withdraw', ConsentWithdrawSchema, consentWithdraw);
 
+// --- Faz 7: etkinlik oylaması, gizlilik tercihleri, "yola çıktı" ---
+// Onay ön kapısı: event_cancel her zaman, event_rsvp yalnızca "Katılamayacağım", privacy_settings_set yalnızca
+// paylaşımı kısarken onaysız çalışır (core `consentExemptCall`).
+export const event_create = callable('event_create', EventCreateRequestSchema, (ctx, data) => eventCreate(ctx, data));
+export const event_rsvp = callable('event_rsvp', EventRsvpRequestSchema, (ctx, data) => eventRsvp(ctx, data));
+export const event_venue_propose = callable('event_venue_propose', EventVenueProposeRequestSchema, (ctx, data) => eventVenuePropose(ctx, data));
+export const event_venue_remove = callable('event_venue_remove', EventVenueRemoveRequestSchema, (ctx, data) => eventVenueRemove(ctx, data));
+export const event_vote = callable('event_vote', EventVoteRequestSchema, (ctx, data) => eventVote(ctx, data));
+export const event_advance = callable('event_advance', EventAdvanceRequestSchema, (ctx, data) => eventAdvance(ctx, data));
+export const event_time_options_set = callable('event_time_options_set', EventTimeOptionsSetRequestSchema, (ctx, data) => eventTimeOptionsSet(ctx, data));
+export const event_update = callable('event_update', EventUpdateRequestSchema, (ctx, data) => eventUpdate(ctx, data));
+export const event_invite_add = callable('event_invite_add', EventInviteAddRequestSchema, (ctx, data) => eventInviteAdd(ctx, data));
+export const event_cancel = callable('event_cancel', EventCancelRequestSchema, (ctx, data) => eventCancel(ctx, data));
+export const privacy_settings_set = callable('privacy_settings_set', PrivacySettingsSetRequestSchema, privacySettingsSet);
+export const movement_report = callable('movement_report', MovementReportRequestSchema, (ctx, data) => movementReport(ctx, data));
+
 // --- arka plan ---
+
+/**
+ * Faz 7 etkinlik süpürücüsü (dakikada bir): oylama süresi dolan etkinlikleri kapatır, günü geçenleri bitirir,
+ * hatırlatmaları (1 gün önce, buluşma günü 08:00) gönderir. Ayrıntı: handlers/events.ts.
+ */
+export const event_sweeper = onSchedule(
+  { schedule: 'every 1 minutes', timeZone: 'Etc/UTC', retryCount: 0, timeoutSeconds: 55, maxInstances: 1 },
+  async () => {
+    const r = await sweepEvents();
+    if (r.ticked.length || r.reminders_sent.length || r.reminders_stale.length || r.reminders_dropped.length) {
+      logger.info('etkinlik süpürücü', {
+        ticked: r.ticked.length,
+        reminders_sent: r.reminders_sent.length,
+        reminders_stale: r.reminders_stale.length,
+        reminders_dropped: r.reminders_dropped.length,
+      });
+    }
+  },
+);
 
 /**
  * Dakikalık bakım [Varsayım 1 dk]: süre dolumu yedeği, bekleyen ACL işaretleri; her 5. dakikada tam ACL denetimi

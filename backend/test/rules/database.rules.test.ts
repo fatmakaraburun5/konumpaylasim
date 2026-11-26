@@ -9,6 +9,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { rtdb } from '../../functions/src/admin';
 import {
   type LiveTarget,
+  allowBattery,
   anonDb,
   cleanupRulesEnv,
   clientDb,
@@ -37,6 +38,7 @@ async function seedPair(opts: { expiresInMs?: number | null; status?: 'active' |
       : { sender_id: sender, receiver_id: receiver, status: 'active', share_mode, version: 1 };
   if (expires_at !== null && opts.status !== 'ended') acl.expires_at = expires_at;
   await rtdb().ref(`share_acl/${id}`).set(acl);
+  await allowBattery(sender);
   return { id, sender_id: sender, receiver_id: receiver, share_mode, expires_at };
 }
 
@@ -245,6 +247,19 @@ describe('gönderen yazması', () => {
       await assertFails(sender.ref(livePathOf(p)).set({ ...v, ...patch, server_ts: SERVER_TIMESTAMP }));
     }
     await assertSucceeds(sender.ref(livePathOf(p)).set({ ...v, battery_pct: 100, is_charging: true, heading: 0, speed_mps: 0 }));
+  });
+
+  it('Faz 7: pil paylaşımı kapalıysa battery_pct / is_charging yazılamaz, pilsiz paket geçer', async () => {
+    const p = await seedPair();
+    await allowBattery(p.sender_id, false);
+    const sender = await clientDb(p.sender_id);
+    const { battery_pct: _b, is_charging: _c, ...noBattery } = deliveredFor(p);
+    await assertFails(sender.ref(livePathOf(p)).set({ ...noBattery, battery_pct: 50 }));
+    await assertFails(sender.ref(livePathOf(p)).set({ ...noBattery, is_charging: false }));
+    await assertSucceeds(sender.ref(livePathOf(p)).set(noBattery));
+    // Ayna istemciye kapalı: gönderen kendi aynasını açamaz.
+    await assertFails(sender.ref(`privacy/${p.sender_id}`).set({ battery_share: true }));
+    await assertSucceeds(sender.ref(`privacy/${p.sender_id}`).once('value'));
   });
 
   it('kısmi yazma: eski server_ts ile alt alan, zorunlu alan silme ve bilinmeyen alt alan reddedilir', async () => {

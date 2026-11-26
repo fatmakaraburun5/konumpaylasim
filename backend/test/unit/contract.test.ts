@@ -452,12 +452,13 @@ describe('Faz 4: push yükleri ve RTDB düğümleri', () => {
   });
 
   it('SOS: Android yüksek öncelik + sos kanalı + kilit ekranında görünür; iOS kritik yalnızca bayrakla', () => {
+    // Faz 7: özel alarm sesli yeni kanal `sos_alarm` (Android kanal sesi kurulduktan sonra değişmez).
     const normal = buildSosPush(sos, false);
-    expect(normal.android).toMatchObject({ priority: 'high', notification: { channelId: 'sos', visibility: 'public', sound: 'default' } });
+    expect(normal.android).toMatchObject({ priority: 'high', notification: { channelId: 'sos_alarm', visibility: 'public', sound: 'sos_alarm' } });
     expect(normal.apns?.headers?.['apns-priority']).toBe('10');
-    expect(normal.apns?.payload?.aps).toMatchObject({ 'interruption-level': 'time-sensitive', sound: 'default' });
+    expect(normal.apns?.payload?.aps).toMatchObject({ 'interruption-level': 'time-sensitive', sound: 'sos_alarm.wav' });
     const critical = buildSosPush(sos, true);
-    expect(critical.apns?.payload?.aps).toMatchObject({ 'interruption-level': 'critical', sound: { critical: true, name: 'default', volume: 1 } });
+    expect(critical.apns?.payload?.aps).toMatchObject({ 'interruption-level': 'critical', sound: { critical: true, name: 'sos_alarm.wav', volume: 1 } });
     expect(SOS_CRITICAL_ALERTS).toBe(false); // varsayılan kapalı (Apple onayı)
   });
 
@@ -472,7 +473,7 @@ describe('Faz 4: push yükleri ve RTDB düğümleri', () => {
 });
 
 describe('Faz 5: bildirimler koordinat taşımaz', () => {
-  it('zone_event / meetup / meetup_response: data türleri core PUSH_TYPES_F5, Faz 4 ping kanalı, yalnızca ad', async () => {
+  it('zone_event / meetup / meetup_response: data türleri core PUSH_TYPES_F5, yalnızca ad; Faz 7: bölge olayı movement kanalında', async () => {
     const { PUSH_TYPES_F5 } = await import('@konum/core');
     const { buildMeetupPush, buildMeetupResponsePush, buildZoneEventPush } = await import('../../functions/src/push');
     const place = { name: 'Moda Kahve', location: { lat: 40.98765, lng: 29.02345 } };
@@ -483,8 +484,10 @@ describe('Faz 5: bildirimler koordinat taşımaz', () => {
     ];
     expect(msgs.map((m) => m.data.type)).toEqual([...PUSH_TYPES_F5]);
     expect(msgs[0]?.notification).toEqual({ title: 'Erim', body: 'Ev konumuna vardı' });
+    expect(buildZoneEventPush('Erim', 'u1', 'Ev', 'arrive', 'home').notification).toEqual({ title: 'Erim eve girdi', body: 'Ev' });
+    expect(msgs[0]?.android?.notification?.channelId).toBe('movement');
     for (const m of msgs) {
-      expect(m.android?.notification?.channelId).toBe(NOTIFICATION_CHANNELS_F4.ping);
+      if (m.data.type !== 'zone_event') expect(m.android?.notification?.channelId).toBe(NOTIFICATION_CHANNELS_F4.ping);
       expect(JSON.stringify(m)).not.toMatch(/40\.98|29\.02|"lat"|"lng"/);
       for (const v of Object.values(m.data)) expect(typeof v).toBe('string');
     }

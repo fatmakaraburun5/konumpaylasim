@@ -176,8 +176,8 @@ describe('SOS', () => {
     const push = fcm.sent[0]?.msg as PushMessage;
     expect(push.data).toEqual({ type: 'sos', sos_id: s.sos_id, sender_id: A.uid });
     expect(push.notification?.title).toBe('ACİL: Ayşe tehlikede');
-    expect(push.android).toMatchObject({ priority: 'high', notification: { channelId: 'sos', visibility: 'public' } });
-    expect(push.apns?.payload?.aps).toMatchObject({ 'interruption-level': 'time-sensitive' });
+    expect(push.android).toMatchObject({ priority: 'high', notification: { channelId: 'sos_alarm', visibility: 'public', sound: 'sos_alarm' } });
+    expect(push.apns?.payload?.aps).toMatchObject({ 'interruption-level': 'time-sensitive', sound: 'sos_alarm.wav' });
 
     // Aktifken tekrar gönderim: yeni belge açılmaz, aynı sos_id tazelenir ve yeniden push edilir.
     const again = await sosSend(ctxOf(A, t0 + 2_000), sendIn({ op_id: opId(), location: { ...here(t0 + 2_000), lat: 41.01 }, address: 'Eminönü' }), fcm);

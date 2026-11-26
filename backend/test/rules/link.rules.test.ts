@@ -15,7 +15,7 @@ import {
 } from '@konum/core';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { rtdb } from '../../functions/src/admin';
-import { SAMPLE_DEVICE, anonDb, cleanupRulesEnv, clientDb, clientFirestore, loadDatabaseRules, rulesEnv, sampleAt } from '../helpers/emulator';
+import { SAMPLE_DEVICE, allowBattery, anonDb, cleanupRulesEnv, clientDb, clientFirestore, loadDatabaseRules, rulesEnv, sampleAt } from '../helpers/emulator';
 
 const uid = (p: string) => `${p}${randomUUID().slice(0, 8)}`;
 
@@ -39,6 +39,7 @@ async function seedLink(opts: { expiresInMs?: number | null; status?: 'active' |
       : { status: 'active', sender_id: sender, link_id: uid('L'), share_mode, version: 1 };
   if (expires_at !== null && opts.status !== 'ended') acl.expires_at = expires_at;
   await rtdb().ref(`link_acl/${hash}`).set(acl);
+  await allowBattery(sender);
   return { token, hash, sender, share_mode, expires_at };
 }
 

@@ -39,6 +39,13 @@ import {
   LOCATION_REQUEST_NOTIFICATION,
   locationRequestAnsweredText,
   locationRequestPushText,
+  NOTIFICATION_CHANNELS_F7,
+  SOS_ALARM_SOUND,
+  MOVEMENT_LIMITS,
+  type MovementKind,
+  type ZoneKind,
+  movementPushText,
+  zoneHeadsUpText,
 } from '@konum/core';
 import type { DocumentReference, Timestamp } from 'firebase-admin/firestore';
 import type { MulticastMessage } from 'firebase-admin/messaging';
@@ -269,10 +276,11 @@ export function buildPingPush(
 
 /**
  * Acil durum: her alıcıya en yüksek öncelik. Metin core `sosPushText` (adres + doğruluk + pil; HAM KOORDİNAT YOK).
- *  - Android: `priority: high` (Doze'da da iletilir), kanal `sos` (istemci IMPORTANCE_MAX + bypassDnd ile kurar),
- *    kilit ekranında herkese açık (`visibility: public`), ses + titreşim.
- *  - iOS: `apns-priority: 10`; `SOS_CRITICAL_ALERTS` açıksa `interruption-level: critical` + kritik ses (sessiz modu ve
- *    Odak'ı aşar; Apple yetkisi gerekir), kapalıysa `time-sensitive` (Odak'ı aşar, sessiz modu aşmaz).
+ *  - Android: `priority: high` (Doze'da da iletilir), Faz 7 kanalı `sos_alarm` (istemci IMPORTANCE_MAX + bypassDnd +
+ *    özel alarm sesi `res/raw/sos_alarm` ile kurar; eski `sos` kanalı silinir), kilit ekranında herkese açık
+ *    (`visibility: public`), özel ses + titreşim, kaydırılamaz (`sticky`).
+ *  - iOS: `apns-priority: 10`; `SOS_CRITICAL_ALERTS` açıksa `interruption-level: critical` + kritik özel ses (sessiz modu
+ *    ve Odak'ı aşar; Apple yetkisi gerekir), kapalıysa `time-sensitive` + aynı özel ses (Odak'ı aşar, sessiz modu aşmaz).
  *  - Aynı SOS'un tekrar gönderimi (yeni konum) öncekinin yerine geçer (`tag` / `apns-collapse-id` = sos_id).
  */
 export function buildSosPush(a: Pick<SosAlert, 'sos_id' | 'sender_id' | 'sender_name' | 'address' | 'location' | 'battery_pct'>, critical: boolean = SOS_CRITICAL_ALERTS): PushMessage {
@@ -284,11 +292,11 @@ export function buildSosPush(a: Pick<SosAlert, 'sos_id' | 'sender_id' | 'sender_
       priority: 'high',
       ttl: SOS_LIMITS.activeMaxMs,
       notification: {
-        channelId: NOTIFICATION_CHANNELS_F4.sos,
+        channelId: NOTIFICATION_CHANNELS_F7.sosAlarm,
         tag,
         priority: 'max',
         visibility: 'public',
-        sound: 'default',
+        sound: SOS_ALARM_SOUND.android,
         defaultVibrateTimings: true,
         sticky: true,
       },
@@ -297,8 +305,8 @@ export function buildSosPush(a: Pick<SosAlert, 'sos_id' | 'sender_id' | 'sender_
       headers: { 'apns-priority': '10', 'apns-push-type': 'alert', 'apns-collapse-id': collapseId(tag) },
       payload: {
         aps: critical
-          ? { category: NOTIFICATION_CHANNELS_F4.sos, 'interruption-level': 'critical', sound: { critical: true, name: 'default', volume: 1 } }
-          : { category: NOTIFICATION_CHANNELS_F4.sos, 'interruption-level': 'time-sensitive', sound: 'default' },
+          ? { category: NOTIFICATION_CHANNELS_F4.sos, 'interruption-level': 'critical', sound: { critical: true, name: SOS_ALARM_SOUND.ios, volume: 1 } }
+          : { category: NOTIFICATION_CHANNELS_F4.sos, 'interruption-level': 'time-sensitive', sound: SOS_ALARM_SOUND.ios },
       },
     },
   };
@@ -342,26 +350,56 @@ export function buildSosAckPush(ackerName: string, sosId: string, by: UserId): P
 // ---------------------------------------------------------------------------
 
 /**
- * Kural alıcısına: "Erim · Ev konumuna vardı". Yalnızca bölge ADI; merkez / yarıçap / koordinat yok.
- * Android Faz 4 `ping` kanalı (HIGH), iOS `active`. Aynı göndericinin yeni bölge olayı eskisinin yerine geçer.
+ * Kural alıcısına, arka planda heads-up: "Ayşe eve girdi" (core `zoneHeadsUpText`; bölge türü bilinmiyorsa Faz 5
+ * metni). Yalnızca bölge ADI; merkez / yarıçap / koordinat yok.
+ * Faz 7: Android `movement` kanalı (IMPORTANCE_HIGH → uygulama dışındayken üstten banner), iOS `time-sensitive`
+ * (Odak açıkken de görünür; Apple'ın "zaman duyarlı" tanımına uyar: varış / ayrılış o an önemlidir).
+ * Aynı göndericinin yeni bölge olayı eskisinin yerine geçer.
  * [Varsayım] TTL 30 dk: geç gelen "vardı" bildirimi yanıltıcı olur (core `ZONE_LIMITS.maxEventAgeMs` ile aynı).
  */
 export const ZONE_PUSH_TTL_MS = 30 * 60 * 1000;
 
-export function buildZoneEventPush(senderName: string, from: UserId, zoneName: string, transition: ZoneTrigger): PushMessage {
+export function buildZoneEventPush(senderName: string, from: UserId, zoneName: string, transition: ZoneTrigger, kind: ZoneKind | null = null): PushMessage {
   const tag = `zone_${from}`;
   return {
-    notification: zoneEventPushText(senderName || 'Bir arkadaşın', zoneName, transition),
+    notification: kind ? zoneHeadsUpText(senderName, zoneName, kind, transition) : zoneEventPushText(senderName || 'Bir arkadaşın', zoneName, transition),
     data: { type: 'zone_event', from, zone_name: zoneName, transition },
     android: {
       priority: 'high',
       ttl: ZONE_PUSH_TTL_MS,
       collapseKey: tag,
-      notification: { channelId: NOTIFICATION_CHANNELS_F4.ping, tag, sound: 'default' },
+      notification: { channelId: NOTIFICATION_CHANNELS_F7.movement, tag, sound: 'default', visibility: 'private' },
     },
     apns: {
       headers: { 'apns-priority': '10', 'apns-push-type': 'alert', 'apns-collapse-id': collapseId(tag) },
-      payload: { aps: { category: NOTIFICATION_CHANNELS_F4.ping, sound: 'default', 'interruption-level': 'active' } },
+      payload: { aps: { category: NOTIFICATION_CHANNELS_F7.movement, sound: 'default', 'interruption-level': 'time-sensitive', 'thread-id': `movement_${from}` } },
+    },
+  };
+}
+
+/**
+ * Faz 7: canlı paylaşım alıcısına heads-up "Mehmet yola çıktı" (core `movementPushText`). Koordinat yok; alıcı
+ * zaten canlı konumu görüyor. Aynı göndericinin bölge / hareket bildirimleri tek satırda birbirinin yerine geçer.
+ */
+export function buildMovementPush(senderName: string, from: UserId, kind: MovementKind, now: number = Date.now()): PushMessage {
+  const tag = `zone_${from}`;
+  return {
+    notification: movementPushText(senderName, kind),
+    data: { type: 'movement', from, kind },
+    android: {
+      priority: 'high',
+      ttl: MOVEMENT_LIMITS.pushTtlMs,
+      collapseKey: tag,
+      notification: { channelId: NOTIFICATION_CHANNELS_F7.movement, tag, sound: 'default', visibility: 'private' },
+    },
+    apns: {
+      headers: {
+        'apns-priority': '10',
+        'apns-push-type': 'alert',
+        'apns-collapse-id': collapseId(tag),
+        'apns-expiration': String(Math.floor((now + MOVEMENT_LIMITS.pushTtlMs) / 1000)),
+      },
+      payload: { aps: { category: NOTIFICATION_CHANNELS_F7.movement, sound: 'default', 'interruption-level': 'time-sensitive', 'thread-id': `movement_${from}` } },
     },
   };
 }
@@ -504,6 +542,34 @@ export function buildPermissionGrantedPush(granterName: string, by: UserId, scop
     data: { type: 'permission_granted', by, scopes: list.join(',') },
     android: { notification: { channelId: 'friend_requests', tag } },
     apns: { headers: { 'apns-collapse-id': collapseId(tag) }, payload: { aps: { category: 'PERMISSION_GRANTED' } } },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Faz 7: etkinlik bildirimleri (koordinat YOK; mekan adı gövdede olabilir)
+// ---------------------------------------------------------------------------
+
+export type EventPushData = Extract<PushData, { type: 'event_invite' | 'event_stage' | 'event_rsvp' | 'event_reminder' | 'event_cancelled' }>;
+
+/**
+ * Etkinlik bildirimi. Davet, aşama, yanıt ve iptal `events` kanalında (IMPORTANCE_HIGH; iOS `active`); hatırlatmalar
+ * `event_reminders` kanalında (iOS `time-sensitive`: buluşma günü Odak açıkken de görünsün). Aynı etkinliğin aynı türden
+ * yeni bildirimi eskisinin yerine geçer (yanıtlar kişi başına). TTL: hatırlatma 2 sa, diğerleri 1 gün. [Varsayım]
+ */
+export function buildEventPush(text: { title: string; body: string }, data: EventPushData): PushMessage {
+  const reminder = data.type === 'event_reminder';
+  const tag = collapseId(
+    data.type === 'event_rsvp' ? `ev_${data.event_id}_rsvp_${data.by}` : reminder ? `ev_${data.event_id}_rem` : `ev_${data.event_id}_${data.type}`,
+  );
+  const channelId = reminder ? NOTIFICATION_CHANNELS_F7.eventReminders : NOTIFICATION_CHANNELS_F7.events;
+  return {
+    notification: text,
+    data,
+    android: { priority: 'high', ttl: reminder ? 2 * 60 * 60 * 1000 : 24 * 60 * 60 * 1000, collapseKey: tag, notification: { channelId, tag, sound: 'default' } },
+    apns: {
+      headers: { 'apns-priority': '10', 'apns-push-type': 'alert', 'apns-collapse-id': tag },
+      payload: { aps: { category: channelId, sound: 'default', 'interruption-level': reminder ? 'time-sensitive' : 'active', 'thread-id': `event_${data.event_id}` } },
+    },
   };
 }
 

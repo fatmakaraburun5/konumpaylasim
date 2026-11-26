@@ -23,7 +23,7 @@ import {
 } from '@konum/core';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { rtdb } from '../../functions/src/admin';
-import { SAMPLE_DEVICE, anonDb, cleanupRulesEnv, clientDb, deliveredFor, livePathOf, loadDatabaseRules, sampleAt } from '../helpers/emulator';
+import { SAMPLE_DEVICE, allowBattery, anonDb, cleanupRulesEnv, clientDb, deliveredFor, livePathOf, loadDatabaseRules, sampleAt } from '../helpers/emulator';
 
 const uid = (p: string) => `${p}${randomUUID().slice(0, 8)}`;
 
@@ -52,6 +52,7 @@ async function seedPair(opts: { expiresInMs?: number | null; startedAgoMs?: numb
     if (opts.withStartedAt ?? true) acl.started_at = started_at;
   }
   await rtdb().ref(`share_acl/${id}`).set(acl);
+  await allowBattery(sender_id);
   return { id, sender_id, receiver_id, share_mode, expires_at, started_at };
 }
 
@@ -219,6 +220,7 @@ describe('canlı düğüm: kuyruk noktası started_at alt sınırı', () => {
     await rtdb()
       .ref(`link_acl/${hash}`)
       .set({ status: 'active', sender_id, link_id: 'L1', share_mode: 'indefinite', version: 1, started_at });
+    await allowBattery(sender_id);
     const target = { token_hash: hash, share_mode: 'indefinite' as const, expires_at: null, sender_name: 'Ayşe' };
     const write = (ts: number) => ({
       ...(buildLinkLiveWrite(sampleAt(ts), SAMPLE_DEVICE, target, { q: 1, hb: 300_000 }) as Record<string, unknown>),

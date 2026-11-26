@@ -361,6 +361,9 @@ export const CONSENT_EXEMPT_CALLABLES: readonly CallableName[] = [
   CALLABLES.placeNoteDelete,
   CALLABLES.zoneDelete,
   CALLABLES.meetupCancel,
+  CALLABLES.eventCancel,
+  CALLABLES.eventRsvp,
+  CALLABLES.privacySettingsSet,
   CALLABLES.consentAccept,
   CALLABLES.consentWithdraw,
 ];
@@ -376,6 +379,9 @@ export function consentExemptCall(name: string, data?: unknown): boolean {
   if (name === CALLABLES.invisibleSet) return d.invisible === true;
   // Konum isteğini reddetmek kendi verini korur; onaylamak (paylaşım başlatır) onay ister.
   if (name === CALLABLES.locationRequestRespond) return d.accept === false;
+  // Faz 7: davetten çekilmek ("Katılamayacağım") ve paylaşımı KISAN gizlilik ayarı onaysız da yapılabilir.
+  if (name === CALLABLES.eventRsvp) return d.status === 'not_going';
+  if (name === CALLABLES.privacySettingsSet) return d.battery_share !== true && d.movement_alerts !== true;
   return true;
 }
 

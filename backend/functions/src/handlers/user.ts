@@ -53,6 +53,7 @@ import { deletePingsOf } from './ping';
 import { closeSosForDeletedAccount, pruneSosForGraphReset, removeFromEmergencyContacts } from './sos';
 import { deleteMeetupsOf } from './meetup';
 import { deleteZonesOf } from './zones';
+import { deleteEventsOf } from './events';
 import { removeFromFavorites } from './favorites';
 import { deleteWidgetTokensOf } from './widget';
 import { readRateLimit, runOp, writeRateLimit } from '../ops';
@@ -618,6 +619,11 @@ export async function accountDelete(ctx: CallCtx, _data: z.output<typeof Account
     deleteAllAvatarsOf(uid),
     // Faz 8: onay kayıtları (users/{uid}/consents/*; profil silinince alt koleksiyon kendiliğinden gitmez).
     db().recursiveDelete(refs.consents(uid)),
+    // Faz 7: sahibi olduğu etkinlikler silinir, davetli olduklarından çıkarılır; bildirim kutusu, gizlilik aynası ve
+    // hareket soğuması silinir.
+    deleteEventsOf(uid),
+    rtdb().ref(`privacy/${uid}`).remove(),
+    refs.movementCooldown(uid).delete(),
   ]);
 
   // 5. ACL düğümleri (mezar taşları dahil): uid çifti RTDB'de kalmaz.
@@ -657,7 +663,7 @@ export async function accountDelete(ctx: CallCtx, _data: z.output<typeof Account
     if (phoneSnap?.exists && (phoneSnap.data() as IndexDoc).user_id === uid) tx.delete(phoneSnap.ref);
     tx.delete(refs.user(uid));
     tx.delete(refs.userPrivate(uid));
-    for (const key of ['friend_request', 'location_request', 'invite_regenerate', 'link_create', 'battery_low', 'ping', 'sos_send', 'zone_event', 'meetup_share', 'meetup_respond', 'widget_token', 'permission_request']) tx.delete(refs.rateLimit(uid, key));
+    for (const key of ['friend_request', 'location_request', 'invite_regenerate', 'link_create', 'battery_low', 'ping', 'sos_send', 'zone_event', 'meetup_share', 'meetup_respond', 'widget_token', 'permission_request', 'event_create', 'event_action', 'privacy_set', 'movement_report']) tx.delete(refs.rateLimit(uid, key));
   });
 
   try {

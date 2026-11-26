@@ -49,6 +49,11 @@
  *    `permission_declines/{granter}_{grantee}` belgesinde tutulur (yalnızca granter okur, `purge_at` TTL).
  *  - `users/{uid}.invisible` / `users/{uid}.consent` (core `InvisibleState` / `ProfileConsent`; sahibi okur)
  *  - `users/{uid}/consents/{version}` onay kaydı (core `ConsentRecord`; yalnızca sahibi okur)
+ *
+ * Faz 7 (yalnızca callable / sunucu yazar):
+ *  - `events/{event_id}` (core `EventDoc` + `open`, `next_action_at`, `purge_at`; üyeler okur)
+ *  - `event_reminders/{event_id}_{kind}` (istemciye kapalı), `users/{uid}/notices/{id}` (sahibi okur, 30 gün TTL)
+ *  - `users/{uid}.privacy` (core `PrivacySettings`) + RTDB `privacy/{uid}` aynası; `movement_cooldowns/{uid}`
  */
 import {
   type EpochMs,
@@ -446,6 +451,11 @@ export const COL = {
   permissionGrants: PATHS.permissionGrants,
   permissionDeclines: PATHS.permissionDeclines,
   consents: 'consents',
+  // Faz 7
+  events: PATHS.events,
+  eventReminders: PATHS.eventReminders,
+  notices: 'notices',
+  movementCooldowns: 'movement_cooldowns',
 } as const;
 
 /** Faz 4 RTDB yolları. */
@@ -509,6 +519,12 @@ export const refs = {
   permissionDecline: (granter: UserId, grantee: UserId) => db().collection(COL.permissionDeclines).doc(grantId(granter, grantee)),
   consents: (uid: UserId) => db().collection(PATHS.consents(uid)),
   consent: (uid: UserId, version: string) => db().doc(PATHS.consent(uid, version)),
+  // Faz 7
+  event: (id: string) => db().doc(PATHS.event(id)),
+  newEvent: () => db().collection(COL.events).doc(),
+  eventReminder: (id: string) => db().doc(PATHS.eventReminder(id)),
+  notices: (uid: UserId) => db().collection(PATHS.notices(uid)),
+  movementCooldown: (uid: UserId) => db().doc(PATHS.movementCooldown(uid)),
 } as const;
 
 /**

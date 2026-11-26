@@ -17,6 +17,7 @@ import {
   shareId,
   toFanoutUpdate,
 } from '@konum/core';
+import { rtdb } from '../../functions/src/admin';
 import { DB_HOST, FUNCTIONS_URL, HOST, PROJECT_ID, RTDB_NS, RTDB_URL } from './env';
 
 const root = new URL('../../', import.meta.url);
@@ -152,13 +153,21 @@ export async function signInWithPhone(phone: string): Promise<{ uid: string; idT
 export async function newUser(
   displayName = 'Test',
   gender: 'female' | 'male' = 'female',
-  opts: { consent?: boolean } = {},
+  opts: { consent?: boolean; batteryShare?: boolean } = {},
 ): Promise<TestUser> {
   const phone = randomPhone();
   const auth = await signInWithPhone(phone);
   const boot = await call<{ user: { invite_code: string } }>('user_bootstrap', { display_name: displayName, gender }, auth);
   if (opts.consent !== false) await acceptConsent(auth);
+  // Faz 7: pil paylaşımı varsayılan KAPALI; eski fazların testleri canlı pakette pil yazdığı için fikstür açık başlar
+  // (`privacy_settings_set` callable'ı: Firestore + RTDB aynası). Varsayılanı sınayan testler `{ batteryShare: false }`.
+  if (opts.consent !== false && opts.batteryShare !== false) await call('privacy_settings_set', { op_id: opId(), battery_share: true }, auth);
   return { ...auth, phone, invite_code: boot.user.invite_code, display_name: displayName };
+}
+
+/** Faz 7: kural testlerinde rastgele uid'li gönderenin pil paylaşımı aynası (yalnızca sunucu yazar). */
+export async function allowBattery(senderId: string, on = true): Promise<void> {
+  await rtdb().ref(`privacy/${senderId}`).set({ battery_share: on, updated_at: Date.now() });
 }
 
 /** Faz 8: güncel sürümü core özetiyle onaylar (metin sonuna kadar kaydırılmış). */

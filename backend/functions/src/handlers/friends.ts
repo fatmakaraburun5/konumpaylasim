@@ -56,6 +56,7 @@ import {
 import { fail } from '../errors';
 import { assertConsent, needsProfile, readCaller, readPairCascade, readPairF4Cleanup, writePairCascade, writePairF4Cleanup } from '../graph';
 import { readPairZoneCleanup, writePairZoneCleanup } from './zones';
+import { removePairFromEvents } from './events';
 import { readRateLimit, runOp, writeRateLimit } from '../ops';
 import { buildFriendRequestPush, sendPushToUser } from '../push';
 import type {
@@ -365,7 +366,8 @@ export async function friendshipRemove(
       links.filter((l) => l.link.requester_id === ctx.uid),
     );
     const ended = writePairCascade(tx, cascade, 'friendship_removed', ctx.now);
-    return { response, shareEffects: ended };
+    // Faz 7: biri sahibi, diğeri davetlisi olan etkinliklerden davetli çıkarılır (commit sonrası, en iyi çaba).
+    return { response, shareEffects: ended, after: async () => void (await removePairFromEvents(ctx.uid, other, ctx.now)) };
   });
 }
 
@@ -409,7 +411,12 @@ export async function userBlock(ctx: CallCtx, data: z.output<typeof UserBlockSch
     // Karşı tarafın okuyabildiği paylaşım belgesine 'blocked' yazılmaz (bkz. graph.ts).
     const ended: AclSource[] = writePairCascade(tx, cascade, 'friendship_removed', ctx.now);
     // Hedef hiç olmasa da aynı yanıt.
-    return { response: { status: 'blocked', server_now: ctx.now } satisfies UserBlockResponse, shareEffects: ended };
+    return {
+      response: { status: 'blocked', server_now: ctx.now } satisfies UserBlockResponse,
+      shareEffects: ended,
+      // Faz 7: ortak etkinliklerden (biri sahip, diğeri davetli) davetli çıkarılır.
+      after: async () => void (await removePairFromEvents(ctx.uid, other, ctx.now)),
+    };
   });
 }
 

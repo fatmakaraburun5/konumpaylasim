@@ -241,6 +241,62 @@
           "arrayConfig": "CONTAINS"
         }
       ]
+    },
+    {
+      "collectionGroup": "events",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "member_ids",
+          "arrayConfig": "CONTAINS"
+        },
+        {
+          "fieldPath": "updated_at",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "events",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "open",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "next_action_at",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "events",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "owner_id",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "open",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "event_reminders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "sent",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "due_at",
+          "order": "ASCENDING"
+        }
+      ]
     }
   ],
   "fieldOverrides": [
@@ -381,6 +437,30 @@
     },
     {
       "collectionGroup": "widget_tokens",
+      "fieldPath": "purge_at",
+      "ttl": true,
+      "indexes": []
+    },
+    {
+      "collectionGroup": "events",
+      "fieldPath": "purge_at",
+      "ttl": true,
+      "indexes": []
+    },
+    {
+      "collectionGroup": "event_reminders",
+      "fieldPath": "purge_at",
+      "ttl": true,
+      "indexes": []
+    },
+    {
+      "collectionGroup": "notices",
+      "fieldPath": "purge_at",
+      "ttl": true,
+      "indexes": []
+    },
+    {
+      "collectionGroup": "movement_cooldowns",
       "fieldPath": "purge_at",
       "ttl": true,
       "indexes": []

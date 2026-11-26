@@ -18,6 +18,7 @@
  *
  * Canlı konum Realtime Database'dedir, bkz. `packet.ts`, `link.ts` ve `contracts.ts`.
  */
+import type { PrivacySettings } from './privacy';
 import type { EpochMs } from './time';
 import type { ShareMode } from './duration';
 import type { Gender } from './profile';
@@ -52,6 +53,9 @@ export interface UserProfile {
   invisible?: InvisibleState | null;
   /** Onaylanan sözleşme sürümü; yoksa / eski sürümse onay kapısı açılır (`consentRequired`). */
   consent?: ProfileConsent | null;
+  // --- Faz 7 (isteğe bağlı) ---
+  /** Pil paylaşımı / "yola çıktı" tercihi; yalnızca `privacy_settings_set` yazar. Okurken `parsePrivacy`. */
+  privacy?: Partial<PrivacySettings> | null;
 }
 
 /**

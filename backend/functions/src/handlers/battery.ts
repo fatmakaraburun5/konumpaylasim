@@ -14,6 +14,7 @@
  * Doğrulama: çağıran, `session_id` oturumunun GÖNDERENİ olmalı ve oturumda süresi dolmamış en az bir aktif paylaşım
  * bulunmalı (yoksa `share_not_active`). `op_id` tekrarı saklanan yanıtı döndürür ve bildirimi yeniden göndermez.
  * Bildirim koordinat İÇERMEZ (bkz. push.ts `buildBatteryLowPush`). Bağlantı (QR) izleyicilerine push yoktur.
+ * Faz 7: gönderen pil paylaşımını açmadıysa (`users/{uid}.privacy.battery_share`, varsayılan kapalı) `suppressed`.
  */
 import {
   CALLABLES,
@@ -23,7 +24,9 @@ import {
   type LowBatteryState,
   LOW_BATTERY_REARM_PCT,
   type EpochMs,
+  batterySharingAllowed,
   isInvisible,
+  parsePrivacy,
   livePath,
   lowBatteryTrigger,
 } from '@konum/core';
@@ -89,6 +92,11 @@ export async function batteryLowNotify(
     if (isInvisible(userSnap?.data() as UserDoc | undefined)) throw fail('share_not_active');
     const doc = stateSnap?.data() as BatteryAlertDoc | undefined;
     const name = (userSnap?.data() as UserDoc | undefined)?.display_name ?? '';
+    // Faz 7: pil paylaşımı kapalıysa (varsayılan) alıcıya düşük pil bildirimi GİTMEZ; tetikleyici durumu değişmez.
+    if (!batterySharingAllowed(parsePrivacy((userSnap?.data() as UserDoc | undefined)?.privacy))) {
+      writeRateLimit(tx, rate, HOUR);
+      return { response: { status: 'suppressed', armed: doc?.armed ?? true, receivers: 0, server_now: now } };
+    }
 
     let prev: LowBatteryState | null = doc
       ? { armed: doc.armed, firedAt: doc.fired_at, fired: doc.fired ?? 0, lastPct: doc.last_pct }

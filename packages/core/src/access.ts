@@ -474,8 +474,8 @@ export const ACCESS_SCOPE_TEXT: Record<AccessScope, AccessScopeText> = {
   },
   meetup_invite: {
     short: 'buluşma daveti',
-    given: { title: 'Beni buluşmaya davet edebilir', description: 'Sana buluşma noktası önerisi gönderebilir.' },
-    received: { title: 'Onu buluşmaya davet edebilirsin', description: 'Ona buluşma noktası önerisi gönderebilirsin.' },
+    given: { title: 'Beni buluşmaya davet edebilir', description: 'Sana buluşma noktası önerisi ve etkinlik daveti gönderebilir.' },
+    received: { title: 'Onu buluşmaya davet edebilirsin', description: 'Ona buluşma noktası önerisi ve etkinlik daveti gönderebilirsin.' },
   },
   sos_alert: {
     short: 'SOS uyarısı',

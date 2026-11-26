@@ -73,6 +73,19 @@ export const CALLABLES = {
   invisibleSet: 'invisible_set',
   consentAccept: 'consent_accept',
   consentWithdraw: 'consent_withdraw',
+  // Faz 7 (bkz. `events.ts`, `privacy.ts`, `movement.ts`)
+  eventCreate: 'event_create',
+  eventRsvp: 'event_rsvp',
+  eventVenuePropose: 'event_venue_propose',
+  eventVenueRemove: 'event_venue_remove',
+  eventVote: 'event_vote',
+  eventAdvance: 'event_advance',
+  eventTimeOptionsSet: 'event_time_options_set',
+  eventUpdate: 'event_update',
+  eventInviteAdd: 'event_invite_add',
+  eventCancel: 'event_cancel',
+  privacySettingsSet: 'privacy_settings_set',
+  movementReport: 'movement_report',
 } as const;
 
 export type CallableName = (typeof CALLABLES)[keyof typeof CALLABLES];
@@ -148,6 +161,20 @@ export const PATHS = {
   /** Firestore: onay kayıtları `users/{uid}/consents/{version}` (yalnızca sahibi okur, yalnızca callable yazar). */
   consents: (uid: UserId) => `users/${uid}/consents`,
   consent: (uid: UserId, version: string) => `users/${uid}/consents/${version}`,
+  // --- Faz 7 ---
+  /** Firestore: etkinlikler (üyeler = `member_ids` okur, YALNIZCA callable yazar). */
+  events: 'events',
+  event: (id: string) => `events/${id}`,
+  /** Firestore: etkinlik hatırlatıcıları `event_reminders/{event_id}_{kind}` (istemciye kapalı). */
+  eventReminders: 'event_reminders',
+  eventReminder: (id: string) => `event_reminders/${id}`,
+  /** Firestore: uygulama içi bildirim kutusu (yalnızca sahibi okur, yalnızca sunucu yazar, 30 gün TTL). */
+  notices: (uid: UserId) => `users/${uid}/notices`,
+  notice: (uid: UserId, id: string) => `users/${uid}/notices/${id}`,
+  /** RTDB: gizlilik aynası `privacy/{uid}` (yalnızca sunucu yazar; kurallar `battery_pct` yazımını buna bağlar). */
+  privacyMirror: (uid: UserId) => `privacy/${uid}`,
+  /** Firestore: "yola çıktı" soğuması (yalnızca sunucu). */
+  movementCooldown: (uid: UserId) => `movement_cooldowns/${uid}`,
 } as const;
 
 const opId = z.uuid();
@@ -511,6 +538,19 @@ export const ERROR_CODES = {
   consent_required: { retryable: false, message: 'Devam etmek için güncel Güvenlik Sözleşmesi ve KVKK metnini onaylaman gerekiyor.' },
   /** resource-exhausted: aynı çift için izin isteği soğuması (`PERMISSION_REQUEST_PAIR_COOLDOWN_MS`). */
   permission_cooldown: { retryable: false, message: 'Bu kişiden kısa süre önce izin istedin. Biraz sonra tekrar dene.' },
+  // Faz 7 (core `EVENT_ERROR_CODES`)
+  event_not_found: { retryable: false, message: 'Etkinlik bulunamadı ya da artık bu etkinlikte değilsin' },
+  event_not_owner: { retryable: false, message: 'Bunu yalnızca etkinliği oluşturan yapabilir' },
+  event_stage_mismatch: { retryable: false, message: 'Etkinlik başka bir aşamaya geçti, ekran yenilendi' },
+  event_not_eligible: { retryable: false, message: 'Oy vermek ya da mekan önermek için önce "Katılacağım" demelisin' },
+  event_options_invalid: { retryable: false, message: 'Seçenekler geçersiz' },
+  event_vote_tie: { retryable: false, message: 'Oylar eşit: kazananı seçmelisin' },
+  event_no_attendees: { retryable: false, message: 'Henüz "Katılacağım" diyen yok' },
+  event_date_invalid: { retryable: false, message: 'Tarih bugünden sonraki 180 gün içinde olmalı' },
+  event_note_too_long: { retryable: false, message: 'Not en çok 300 karakter olabilir' },
+  event_invitee_limit: { retryable: false, message: 'Bir etkinliğe en çok 20 kişi davet edilebilir' },
+  event_started: { retryable: false, message: 'Buluşma başladı, yanıt artık değiştirilemez' },
+  event_limit_reached: { retryable: false, message: 'Aynı anda en çok 10 etkin etkinliğin olabilir' },
 } as const;
 export type ErrorCode = keyof typeof ERROR_CODES;
 
@@ -589,7 +629,19 @@ export type PushData =
    */
   | { type: 'permission_request'; from: string; scopes: string }
   /** İsteyene, görünür: "Can konumunu görmene izin verdi" (`permissionGrantedText`). Retde push YOKTUR. */
-  | { type: 'permission_granted'; by: string; scopes: string };
+  | { type: 'permission_granted'; by: string; scopes: string }
+  // Faz 7 (koordinat YOK; mekan adı gövdede olabilir, konumu `events`'ten okunur)
+  /** Davetliye, görünür + uygulama içi kutu: "Ayşe seni “Kahvaltı” etkinliğine davet etti · 29 Kasım Cuma". */
+  | { type: 'event_invite'; event_id: string; from: string }
+  /** Üyelere: aşama değişti (`notice` = core `EventStageNotice`). */
+  | { type: 'event_stage'; event_id: string; notice: string }
+  /** Sahibe: davetli yanıt verdi. `round` = initial | final, `status` = going | not_going. */
+  | { type: 'event_rsvp'; event_id: string; by: string; round: string; status: string }
+  /** Katılanlara: `kind` = day_before | morning. */
+  | { type: 'event_reminder'; event_id: string; kind: string }
+  | { type: 'event_cancelled'; event_id: string }
+  /** Canlı paylaşım alıcılarına, heads-up: "Mehmet yola çıktı". Koordinat YOK. */
+  | { type: 'movement'; from: string; kind: string };
 
 /** Faz 3 FCM veri türleri (istemci işleyicileri ve sözleşme testi için). */
 export const PUSH_TYPES_F3 = ['battery_low', 'resume_tracking', 'tracking_stalled'] as const satisfies readonly PushData['type'][];
@@ -616,3 +668,28 @@ export const PUSH_TYPES_F8 = ['permission_request', 'permission_granted'] as con
 
 /** "Konum İste" FCM veri türleri. */
 export const PUSH_TYPES_LOCATION_REQUEST = ['location_request', 'location_request_answered'] as const satisfies readonly PushData['type'][];
+
+/** Faz 7 FCM veri türleri. */
+export const PUSH_TYPES_F7 = ['event_invite', 'event_stage', 'event_rsvp', 'event_reminder', 'event_cancelled', 'movement'] as const satisfies readonly PushData['type'][];
+
+/**
+ * Faz 7 bildirim kanalları (Android kanal kimliği; iOS kategori kimliği aynı adlı). Android'de kanal ayarları
+ * (önem, ses, DND aşma) KURULDUKTAN SONRA DEĞİŞTİRİLEMEZ; özel alarm sesi için yeni kanal `sos_alarm` açılır ve eski
+ * `sos` kanalı silinir (`LEGACY_NOTIFICATION_CHANNELS`).
+ *  - `sosAlarm`: IMPORTANCE_MAX, `bypassDnd`, kilit ekranında herkese açık, özel ses `sos_alarm` (res/raw), uzun titreşim.
+ *    iOS: `SOS_CRITICAL_ALERTS` açıksa `critical` + kritik ses `sos_alarm.caf`, kapalıysa `time-sensitive` + aynı ses.
+ *  - `movement`: IMPORTANCE_HIGH (heads-up banner), bölge varış/ayrılış ve "yola çıktı". iOS `time-sensitive`.
+ *  - `events`: IMPORTANCE_HIGH, davet / aşama / yanıt / iptal. iOS `active`.
+ *  - `eventReminders`: IMPORTANCE_HIGH, 1 gün önce ve günün 08:00'i. iOS `time-sensitive`.
+ */
+export const NOTIFICATION_CHANNELS_F7 = { sosAlarm: 'sos_alarm', movement: 'movement', events: 'events', eventReminders: 'event_reminders' } as const;
+
+/** Faz 7'de yerine yenisi açılan, istemcinin silmesi gereken Android kanalları. */
+export const LEGACY_NOTIFICATION_CHANNELS = ['sos'] as const;
+
+/**
+ * SOS alarm sesi. Kaynak `apps/mobile/assets/sounds/sos_alarm.wav` (≤ 30 sn; iOS kritik ses ≤ 30 sn, Android kanal
+ * sesi res/raw). expo-notifications eklentisi dosyayı iOS paketine (`sos_alarm.wav`) ve Android `res/raw/sos_alarm`
+ * olarak kopyalar. APNs `sound.name` ve Android kanal `sound` alanları bu adları kullanır.
+ */
+export const SOS_ALARM_SOUND = { file: 'sos_alarm.wav', ios: 'sos_alarm.wav', android: 'sos_alarm' } as const;

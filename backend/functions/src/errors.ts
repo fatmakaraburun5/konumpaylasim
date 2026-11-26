@@ -45,6 +45,19 @@ const HTTPS_CODE: Record<ErrorCode, FunctionsErrorCode> = {
   invisible_mode: 'failed-precondition',
   consent_required: 'failed-precondition',
   permission_cooldown: 'resource-exhausted',
+  // Faz 7
+  event_not_found: 'not-found',
+  event_not_owner: 'permission-denied',
+  event_stage_mismatch: 'failed-precondition',
+  event_not_eligible: 'failed-precondition',
+  event_options_invalid: 'invalid-argument',
+  event_vote_tie: 'failed-precondition',
+  event_no_attendees: 'failed-precondition',
+  event_date_invalid: 'invalid-argument',
+  event_note_too_long: 'invalid-argument',
+  event_invitee_limit: 'resource-exhausted',
+  event_started: 'failed-precondition',
+  event_limit_reached: 'resource-exhausted',
 };
 
 export interface ErrorDetails {

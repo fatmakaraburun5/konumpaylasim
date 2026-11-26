@@ -39,3 +39,9 @@ export * from './invisible';
 export * from './consent';
 // Konum İste: süre seçerek onaylanan konum isteği
 export * from './locationRequest';
+// Faz 7: etkinlik oylaması, bildirim/izin mimarisi, Gizlilik Merkezi, harita teması
+export * from './events';
+export * from './privacy';
+export * from './movement';
+export * from './appearance';
+export * from './permissionCenter';

@@ -144,8 +144,10 @@ describe('zone_event_report', () => {
     expect(r1).toEqual({ notified: 3, start_share: [], suppressed: null, server_now: now });
     expect(new Set(fcm.sent.map((s) => s.uid))).toEqual(new Set([B.uid, C.uid, D.uid]));
     expect(fcm.sent[0]?.msg.data).toEqual({ type: 'zone_event', from: A.uid, zone_name: 'Ev', transition: 'arrive' });
-    expect(fcm.sent[0]?.msg.notification).toEqual({ title: 'Ayşe', body: 'Ev konumuna vardı' });
-    expect(fcm.sent[0]?.msg.android?.notification?.channelId).toBe('ping');
+    // Faz 7: bölge türüne göre doğal metin ("Ayşe eve girdi") ve heads-up `movement` kanalı.
+    expect(fcm.sent[0]?.msg.notification).toEqual({ title: 'Ayşe eve girdi', body: 'Ev' });
+    expect(fcm.sent[0]?.msg.android?.notification?.channelId).toBe('movement');
+    expect(fcm.sent[0]?.msg.apns?.payload?.aps).toMatchObject({ 'interruption-level': 'time-sensitive' });
     expect(JSON.stringify(fcm.sent)).not.toMatch(/41\.01|29\.05|"lat"/);
 
     // Aynı op_id tekrarı: aynı yanıt, ikinci push yok.

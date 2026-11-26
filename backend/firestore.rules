@@ -18,6 +18,9 @@ rules_version = '2';
 //    permission_declines (ret anları) YALNIZCA reddeden granter'a açıktır (isteyen okuyamaz; yazma kapalı).
 //    users/{uid}/consents/{version} onay kayıtları ve
 //    users/{uid}.invisible / .consent yalnızca sahibine görünür, yalnızca callable yazar.
+//  - Faz 7: events/{id} yalnızca üyelere (member_ids) açık, yalnızca event_* callable'ları yazar. event_reminders ve
+//    movement_cooldowns istemciye tamamen kapalı. users/{uid}/notices (uygulama içi bildirim kutusu) yalnızca sahibine;
+//    users/{uid}.privacy (pil paylaşımı / hareket bildirimi tercihi) yalnızca privacy_settings_set yazar.
 service cloud.firestore {
   match /databases/{database}/documents {
 
@@ -57,6 +60,13 @@ service cloud.firestore {
       // Faz 8: Güvenlik Sözleşmesi / KVKK onay kayıtları (sürüm, metin özeti, onay / geri çekme anı). Yalnızca sahibi
       // okur; yalnızca consent_accept / consent_withdraw yazar (istemci kendi onayını uyduramaz).
       match /consents/{version} {
+        allow read: if isSelf(uid);
+        allow write: if false;
+      }
+
+      // Faz 7: uygulama içi bildirim kutusu (etkinlik daveti, aşama, yanıt, hatırlatma, iptal; koordinat yok; 30 gün
+      // TTL). Yalnızca sahibi okur; yalnızca sunucu yazar.
+      match /notices/{noticeId} {
         allow read: if isSelf(uid);
         allow write: if false;
       }
@@ -160,6 +170,14 @@ service cloud.firestore {
     // reddettiği kapsamları gizler. İsteyen (grantee_id) OKUYAMAZ: reddedildiğini öğrenmez. Yazma yalnızca callable.
     match /permission_declines/{grantId} {
       allow read: if signedIn() && resource.data.granter_id == request.auth.uid;
+      allow write: if false;
+    }
+
+    // Faz 7: etkinlikler. Yalnızca üyeler (sahip + davetliler) okur (sorgu: member_ids array-contains ben);
+    // yalnızca event_* callable'ları yazar. [Varsayım] Üyeler birbirinin adını, yanıtını ve "Katılamayacağım" notunu
+    // görür (etkinlik grup içindir); koordinat yalnızca mekan seçeneklerinde (herkese açık mekan konumu).
+    match /events/{eventId} {
+      allow read: if signedIn() && request.auth.uid in resource.data.member_ids;
       allow write: if false;
     }
 
