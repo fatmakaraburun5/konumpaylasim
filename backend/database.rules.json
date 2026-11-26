@@ -75,6 +75,21 @@
           "note_exp": {
             ".validate": "newData.isNumber() && newData.val() % 1 === 0 && newData.val() > 0 && newData.parent().child('note').isString()"
           },
+          "photo_id": {
+            ".validate": "newData.isString() && newData.val().matches(/^[A-Za-z0-9_-]{20}$/) && newData.parent().child('photo_exp').isNumber()"
+          },
+          "photo_exp": {
+            ".validate": "newData.isNumber() && newData.val() % 1 === 0 && newData.val() > 0 && newData.val() <= now + 3660000 && newData.parent().child('photo_id').isString()"
+          },
+          "dest_name": {
+            ".validate": "newData.isString() && newData.val().length >= 1 && newData.val().length <= 30 && newData.parent().child('dest_state').isString()"
+          },
+          "dest_state": {
+            ".validate": "newData.isString() && newData.val().matches(/^(en_route|near|arrived)$/) && newData.parent().child('dest_name').isString()"
+          },
+          "dest_eta": {
+            ".validate": "newData.isNumber() && newData.val() % 1 === 0 && newData.val() >= 0 && newData.val() <= 120 && newData.parent().child('dest_state').val() === 'near'"
+          },
           "$other": {
             ".validate": false
           }

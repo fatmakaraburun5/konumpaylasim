@@ -18,7 +18,8 @@ import {
   type DemoMotionMode,
 } from '../web/device';
 import { onDemoNetworkChange, setDemoOnline, startDemoTunnel } from '../web/network';
-import { grantAllDemoPerms, onDemoPermsChange, resetDemoPermsToFirstRun } from '../web/permissions';
+import { grantAllDemoPerms, onDemoPermsChange, resetDemoContactsPerm, resetDemoPermsToFirstRun } from '../web/permissions';
+import { renderProofJpeg } from '../web/proofScene';
 import { onDemoScreenChange, setDemoScreenLocked } from '../web/screen';
 import {
   onDemoNotification,
@@ -45,6 +46,7 @@ export {
   DEMO_STORAGE_KEY,
   type DemoBatteryNotice,
   type DemoPushMessage,
+  type DemoSmsLogEntry,
   type DemoSnapshot,
   type DemoWidgetSource,
 } from './server';
@@ -247,6 +249,41 @@ export const demoControls = {
   /** Onayımı tamamen siler (ilk açılış kapısı). */
   resetConsent(): void {
     demoServer().resetConsent();
+  },
+
+  // --- Faz 9 ---------------------------------------------------------------------------------------
+  /** "Ayşe anlık fotoğraf paylaşsın": o an çizilen kafe karesi (tuval yoksa gömülü JPEG) + açıklama, 1 saat. */
+  aysePhotoProof(): ReturnType<DemoServer['botProof']> {
+    const img = renderProofJpeg('cafe', Date.now(), 960, 720, 0.7);
+    return demoServer().botProof(PEOPLE.ayse.uid, 'Mekana geçtim, masamız burası', img);
+  },
+  /** Etkin fotoğrafların süresini `ms` (varsayılan 1 saat) ileri sarar. Dönen: biten fotoğraf sayısı. */
+  fastForwardProofs(ms: number = HOUR): number {
+    return demoServer().fastForwardProofs(ms);
+  },
+  /** "Ayşe hedefine yaklaşsın / varsın" (near → arrived). Ayşe paylaşmıyorsa null. */
+  ayseApproach(): ReturnType<DemoServer['botApproach']> {
+    return demoServer().botApproach(PEOPLE.ayse.uid);
+  },
+  /** "Ayşe Güvenli Dönüş başlatsın ve yanıt vermesin" (acil kişisi benim; demo kısaltmalı süreler). */
+  ayseSafeReturnNoReply(): ReturnType<DemoServer['botSafeReturnStart']> {
+    return demoServer().botSafeReturnStart(PEOPLE.ayse.uid);
+  },
+  /** Benim Güvenli Dönüş zamanlayıcım: süreyi bitir (`due`) ya da alarmı tetikle (`alarm`). Etkin yoksa null. */
+  expireMySafeReturn(stage: 'due' | 'alarm'): string | null {
+    return demoServer().expireMySafeReturn(stage);
+  },
+  /** İnterneti `ms` boyunca keser (tünel simülasyonu; SOS'un SMS yedeği için). */
+  cutInternet(ms: number = 3 * MINUTE): void {
+    startDemoTunnel(Math.max(5_000, ms));
+  },
+  /** Kesilen interneti hemen geri getirir (bekleyen SOS yeniden denemesi sunucuya ulaşır). */
+  restoreInternet(): void {
+    setDemoOnline(true);
+  },
+  /** Rehber iznini "sorulmadı"ya döndürür. */
+  resetContactsPermission(): void {
+    resetDemoContactsPerm();
   },
 
   /** Demoyu baştan başlatır: sunucu + uygulamanın kalıcı anahtarları silinir, sayfa yeniden yüklenir. */

@@ -584,3 +584,62 @@ describe('Faz 8: izin bildirimleri, onay muafiyetleri ve TTL', () => {
     expect(idx.fieldOverrides.some((f) => f.ttl && f.collectionGroup === 'permission_declines' && f.fieldPath === 'purge_at')).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Faz 9: anlık fotoğraf, yaklaşma, Güvenli Dönüş
+// ---------------------------------------------------------------------------
+
+describe('Faz 9: push yükleri, paket alanları, TTL ve Storage yaşam döngüsü', () => {
+  it('approach / safe_return_* bildirimleri koordinat taşımaz; veri türleri core PUSH_TYPES_F9; değerler metin', async () => {
+    const { PUSH_TYPES_F9, NOTIFICATION_CHANNELS_F9, NOTIFICATION_CATEGORIES_F9 } = await import('@konum/core');
+    const { buildApproachPush, buildSafeReturnDuePush, buildSafeReturnEndedPush, buildSafeReturnStartedPush } = await import('../../functions/src/push');
+    const sr = { safe_return_id: 'R1', owner_id: 'uA', destination: { name: 'Ev' }, duration_min: 30, due_at: 2_000_000, grace_until: 2_120_000 };
+    const msgs = [
+      buildApproachPush('Ayşe', 'uA', 'Ev', 1, 180, 1_000_000),
+      buildSafeReturnStartedPush('Ayşe', sr),
+      buildSafeReturnEndedPush('Ayşe', sr, 'arrived'),
+      buildSafeReturnDuePush(sr, 'Bora', 2_000_000),
+    ];
+    expect(msgs.map((m) => m.data.type)).toEqual([...PUSH_TYPES_F9]);
+    for (const m of msgs) {
+      expect(JSON.stringify(m)).not.toMatch(/"lat"|"lng"|"accuracy"|phone/);
+      for (const v of Object.values(m.data)) expect(typeof v).toBe('string');
+    }
+    expect(msgs[0]?.android?.notification?.channelId).toBe('movement');
+    expect(msgs[1]?.android?.notification?.channelId).toBe(NOTIFICATION_CHANNELS_F9.safeReturn);
+    expect(msgs[3]?.apns?.payload?.aps).toMatchObject({ category: NOTIFICATION_CATEGORIES_F9.safeReturn });
+    // Güvenli Dönüş alarmı Faz 4 SOS türüyle, `origin` ile.
+    const alarm = buildSosPush({ sos_id: 'S1', sender_id: 'uA', sender_name: 'Ayşe', address: null, location: { lat: 41, lng: 29, accuracy: 8, timestamp: 1 }, battery_pct: 23, origin: 'safe_return' }, false);
+    expect(alarm.data).toEqual({ type: 'sos', sos_id: 'S1', sender_id: 'uA', origin: 'safe_return' });
+    expect(alarm.android?.notification?.channelId).toBe('sos_alarm');
+  });
+
+  it('canlı paket Faz 9 alanları kuralda; dest_name sınırı core ile aynı; link_live almaz', async () => {
+    const { DELIVERED_OPTIONAL_F9_FIELDS, PACKET_F9_LIMITS } = await import('@konum/core');
+    for (const f of DELIVERED_OPTIONAL_F9_FIELDS) expect(Object.keys(liveNode)).toContain(f);
+    expect(String((liveNode.dest_name as Record<string, string>)['.validate'])).toContain(`<= ${PACKET_F9_LIMITS.destNameMaxChars}`);
+    expect(String((liveNode.photo_exp as Record<string, string>)['.validate'])).toContain(`now + ${PACKET_F9_LIMITS.photoExpMaxAheadMs}`);
+    const linkNode = JSON.stringify(rules.rules.link_live);
+    for (const f of DELIVERED_OPTIONAL_F9_FIELDS) expect(linkNode).not.toContain(`"${f}"`);
+  });
+
+  it('yeni koleksiyonların TTL politikası var; Storage yaşam döngüsü proofs/ önekini 1 günde siler', () => {
+    const idx = JSON.parse(readFileSync(new URL('../../firestore.indexes.json', import.meta.url), 'utf8')) as {
+      fieldOverrides: { collectionGroup: string; fieldPath: string; ttl: boolean }[];
+    };
+    const ttl = new Set(idx.fieldOverrides.filter((f) => f.ttl).map((f) => `${f.collectionGroup}.${f.fieldPath}`));
+    for (const k of ['photo_proofs.purge_at', 'approach_marks.purge_at', 'safe_returns.purge_at']) expect(ttl).toContain(k);
+    const lc = JSON.parse(readFileSync(new URL('../../storage.lifecycle.json', import.meta.url), 'utf8'));
+    expect(lc.lifecycle.rule).toContainEqual({ action: { type: 'Delete' }, condition: { age: 1, matchesPrefix: ['proofs/'] } });
+    const storage = readFileSync(new URL('../../storage.rules', import.meta.url), 'utf8');
+    expect(storage).toContain('match /proofs/{allPaths=**}');
+  });
+
+  it('onay muafiyetleri: fotoğrafı kaldırmak, Güvenli Dönüş check-in / iptal; başlatma ve uzatma onay ister', async () => {
+    const { consentExemptCall } = await import('@konum/core');
+    for (const n of [CALLABLES.proofDelete, CALLABLES.safeReturnCheckIn, CALLABLES.safeReturnCancel]) expect(consentExemptCall(n)).toBe(true);
+    for (const n of [CALLABLES.proofCreate, CALLABLES.proofGet, CALLABLES.approachReport, CALLABLES.safeReturnStart, CALLABLES.safeReturnUpdate, CALLABLES.safeReturnExtend]) {
+      expect(consentExemptCall(n)).toBe(false);
+    }
+  });
+});

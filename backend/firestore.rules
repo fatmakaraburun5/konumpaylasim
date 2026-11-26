@@ -187,6 +187,23 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    // Faz 9: Güvenli Dönüş zamanlayıcıları. YALNIZCA sahibi okur (sorgu: owner_id == ben): kayıt son doğrulanmış
+    // konumu taşır; acil kişiler koordinatı yalnızca alarm anında sos_alerts kaydıyla görür. Yalnızca safe_return_*
+    // callable'ları ve sunucu zamanlayıcısı yazar.
+    match /safe_returns/{safeReturnId} {
+      allow read: if signedIn() && resource.data.owner_id == request.auth.uid;
+      allow write: if false;
+    }
+
+    // Faz 9: anlık fotoğraf kayıtları ve "neredeyse vardım" tek sefer kayıtları: istemciye TAMAMEN kapalı
+    // (fotoğrafı proof_get callable'ı erişim denetimiyle verir).
+    match /photo_proofs/{proofId} {
+      allow read, write: if false;
+    }
+    match /approach_marks/{markId} {
+      allow read, write: if false;
+    }
+
     // Açıkça: geri kalan her şey kapalı.
     match /{document=**} {
       allow read, write: if false;

@@ -46,6 +46,14 @@ import {
   type ZoneKind,
   movementPushText,
   zoneHeadsUpText,
+  APPROACH_LIMITS,
+  NOTIFICATION_CATEGORIES_F9,
+  NOTIFICATION_CHANNELS_F9,
+  SAFE_RETURN_LIMITS,
+  approachPushText,
+  safeReturnDuePushText,
+  safeReturnEndedPushText,
+  safeReturnStartedPushText,
 } from '@konum/core';
 import type { DocumentReference, Timestamp } from 'firebase-admin/firestore';
 import type { MulticastMessage } from 'firebase-admin/messaging';
@@ -283,11 +291,17 @@ export function buildPingPush(
  *    ve Odak'ı aşar; Apple yetkisi gerekir), kapalıysa `time-sensitive` + aynı özel ses (Odak'ı aşar, sessiz modu aşmaz).
  *  - Aynı SOS'un tekrar gönderimi (yeni konum) öncekinin yerine geçer (`tag` / `apns-collapse-id` = sos_id).
  */
-export function buildSosPush(a: Pick<SosAlert, 'sos_id' | 'sender_id' | 'sender_name' | 'address' | 'location' | 'battery_pct'>, critical: boolean = SOS_CRITICAL_ALERTS): PushMessage {
+export function buildSosPush(
+  a: Pick<SosAlert, 'sos_id' | 'sender_id' | 'sender_name' | 'address' | 'location' | 'battery_pct'> & Partial<Pick<SosAlert, 'origin' | 'safe_return'>>,
+  critical: boolean = SOS_CRITICAL_ALERTS,
+): PushMessage {
   const tag = `sos_${a.sos_id}`;
+  // Faz 9: Güvenli Dönüş alarmı kendi başlığıyla ve `origin` ile (eski istemci yok sayar); elle SOS'ta alan yok.
+  const data: PushData = { type: 'sos', sos_id: a.sos_id, sender_id: a.sender_id };
+  if (a.origin === 'safe_return') data.origin = 'safe_return';
   return {
     notification: sosPushText({ ...a, sender_name: a.sender_name || 'Bir arkadaşın' }),
-    data: { type: 'sos', sos_id: a.sos_id, sender_id: a.sender_id },
+    data,
     android: {
       priority: 'high',
       ttl: SOS_LIMITS.activeMaxMs,
@@ -576,6 +590,111 @@ export function buildEventPush(text: { title: string; body: string }, data: Even
     apns: {
       headers: { 'apns-priority': '10', 'apns-push-type': 'alert', 'apns-collapse-id': tag },
       payload: { aps: { category: channelId, sound: 'default', 'interruption-level': reminder ? 'time-sensitive' : 'active', 'thread-id': `event_${data.event_id}` } },
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Faz 9: "Neredeyse vardım" ve Güvenli Dönüş bildirimleri (koordinat YOK)
+// ---------------------------------------------------------------------------
+
+/**
+ * Oturumun etkin paylaşım alıcılarına heads-up "Ayşe: Neredeyse vardım (1 dk)" · "Ev · yaklaşık 180 m kaldı" (core
+ * `approachPushText`). Faz 7 `movement` kanalı (Android IMPORTANCE_HIGH, iOS `time-sensitive`); aynı göndericinin
+ * bölge / hareket / yaklaşma bildirimleri tek satırda birbirinin yerine geçer. TTL 5 dk: geç "neredeyse vardım" yanıltır.
+ */
+export function buildApproachPush(
+  senderName: string,
+  from: UserId,
+  destName: string,
+  etaMin: number,
+  distanceM: number | null,
+  now: number = Date.now(),
+): PushMessage {
+  const tag = `zone_${from}`;
+  const eta = Math.max(1, Math.round(etaMin));
+  return {
+    notification: approachPushText(senderName, destName, eta, distanceM),
+    data: { type: 'approach', from, dest_name: destName, eta_min: String(eta) },
+    android: {
+      priority: 'high',
+      ttl: APPROACH_LIMITS.pushTtlMs,
+      collapseKey: tag,
+      notification: { channelId: NOTIFICATION_CHANNELS_F7.movement, tag, sound: 'default', visibility: 'private' },
+    },
+    apns: {
+      headers: {
+        'apns-priority': '10',
+        'apns-push-type': 'alert',
+        'apns-collapse-id': collapseId(tag),
+        'apns-expiration': String(Math.floor((now + APPROACH_LIMITS.pushTtlMs) / 1000)),
+      },
+      payload: { aps: { category: NOTIFICATION_CHANNELS_F7.movement, sound: 'default', 'interruption-level': 'time-sensitive', 'thread-id': `movement_${from}` } },
+    },
+  };
+}
+
+/** Güvenli Dönüş başlangıç / bitiş bildirimleri acil kişide aynı satırı paylaşır (bitiş başlangıcın yerine geçer). */
+const safeReturnTag = (id: string): string => collapseId(`sr_${id}`);
+
+/** Acil kişilere, görünür (`active`): "Ayşe Güvenli Dönüş başlattı". Koordinat yok. Kanal `safe_return`. */
+export function buildSafeReturnStartedPush(ownerName: string, d: { safe_return_id: string; owner_id: UserId; destination: { name: string }; duration_min: number; due_at: number }): PushMessage {
+  const tag = safeReturnTag(d.safe_return_id);
+  return {
+    notification: safeReturnStartedPushText(ownerName || 'Arkadaşın', d.destination.name, d.duration_min),
+    data: { type: 'safe_return_started', safe_return_id: d.safe_return_id, from: d.owner_id, due_at: String(d.due_at) },
+    android: { priority: 'high', collapseKey: tag, notification: { channelId: NOTIFICATION_CHANNELS_F9.safeReturn, tag, sound: 'default' } },
+    apns: {
+      headers: { 'apns-priority': '10', 'apns-push-type': 'alert', 'apns-collapse-id': tag },
+      payload: { aps: { sound: 'default', 'interruption-level': 'active', 'thread-id': `safe_return_${d.owner_id}` } },
+    },
+  };
+}
+
+/** Acil kişilere: "Ayşe güvenle vardı" / "güvende" / "iptal etti" (başlangıç bildiriminin yerine geçer). */
+export function buildSafeReturnEndedPush(
+  ownerName: string,
+  d: { safe_return_id: string; owner_id: UserId; destination: { name: string } },
+  reason: 'arrived' | 'checked_in' | 'cancelled',
+): PushMessage {
+  const tag = safeReturnTag(d.safe_return_id);
+  return {
+    notification: safeReturnEndedPushText(ownerName || 'Arkadaşın', d.destination.name, reason),
+    data: { type: 'safe_return_ended', safe_return_id: d.safe_return_id, from: d.owner_id, reason },
+    android: { priority: 'high', collapseKey: tag, notification: { channelId: NOTIFICATION_CHANNELS_F9.safeReturn, tag, sound: 'default' } },
+    apns: {
+      headers: { 'apns-priority': '10', 'apns-push-type': 'alert', 'apns-collapse-id': tag },
+      payload: { aps: { sound: 'default', 'interruption-level': 'active', 'thread-id': `safe_return_${d.owner_id}` } },
+    },
+  };
+}
+
+/**
+ * Sahibin KENDİ cihazlarına "Güvende misin?" (son uyarı başladı; yerel zamanlayıcı ölmüş olabilir). Kategori
+ * `SAFE_RETURN` (iOS): "Güvendeyim" (kilit açmayı ister) ve "+15 dk" eylemleri. Android `safe_return` kanalı (HIGH,
+ * varsayılan ses: sahip tehlikedeyse yüksek alarm sesi onu ele vermesin [Varsayım]); uzak bildirime eylem eklenemediği
+ * için dokununca uygulama son uyarı ekranını açar (eylemli yerel bildirimi cihaz kendisi planlar). TTL = son uyarı süresi.
+ */
+export function buildSafeReturnDuePush(d: { safe_return_id: string; grace_until: number }, names: string, now: number = Date.now()): PushMessage {
+  const tag = safeReturnTag(`${d.safe_return_id}_due`);
+  const ttl = Math.max(0, Math.min(SAFE_RETURN_LIMITS.graceMs, d.grace_until - now));
+  return {
+    notification: safeReturnDuePushText(names),
+    data: { type: 'safe_return_due', safe_return_id: d.safe_return_id, grace_until: String(d.grace_until) },
+    android: {
+      priority: 'high',
+      ttl,
+      collapseKey: tag,
+      notification: { channelId: NOTIFICATION_CHANNELS_F9.safeReturn, tag, sound: 'default' },
+    },
+    apns: {
+      headers: {
+        'apns-priority': '10',
+        'apns-push-type': 'alert',
+        'apns-collapse-id': tag,
+        'apns-expiration': String(Math.floor(d.grace_until / 1000)),
+      },
+      payload: { aps: { category: NOTIFICATION_CATEGORIES_F9.safeReturn, sound: 'default', 'interruption-level': 'time-sensitive' } },
     },
   };
 }

@@ -26,6 +26,7 @@ import { useLocationStore } from '../../state/locationStore';
 import { useTheme } from '../../ui';
 import { PingMarker, PlaceNoteMarker, SosMarker } from './F4Markers.web';
 import { FriendMarker } from './FriendMarker.web';
+import type { FriendBadge } from './friendBadges';
 import { MapProjectionContext, PreviewMap, type PreviewMapHandle } from './PreviewMap.web';
 
 export interface MapCanvasHandle {
@@ -50,6 +51,8 @@ export interface MapCanvasProps {
   // --- Faz 4 ---
   /** shareId → arkadaşın görünür durum notu (core `visibleStatusNote`). */
   friendNotes?: Record<string, string>;
+  /** Faz 9: shareId → 📷 rozeti ve hedef durumu satırı (`friendBadges`). */
+  friendBadges?: Record<string, FriendBadge>;
   /** Yeni ping gönderen (pin nabız vurgusu, `pingStore.highlight`). */
   pingHighlightFrom?: UserId | null;
   /** Aktif SOS gönderenler: arkadaş pini kırmızı ve nabızlı. */
@@ -85,6 +88,7 @@ export function MapCanvas({
   route,
   onLongPress,
   friendNotes,
+  friendBadges,
   pingHighlightFrom = null,
   sosSenders,
   placeNotes = [],
@@ -146,6 +150,9 @@ export function MapCanvas({
           selected={f.shareId === selectedShareId}
           onPress={() => onFriendPress(f)}
           note={friendNotes?.[f.shareId] ?? null}
+          photo={!!friendBadges?.[f.shareId]?.photo}
+          dest={friendBadges?.[f.shareId]?.dest?.text ?? null}
+          destNear={friendBadges?.[f.shareId]?.dest?.state === 'near'}
           pulse={sosSenders?.has(f.senderId) ? 'sos' : pingHighlightFrom === f.senderId ? 'ping' : null}
         />
       ))}

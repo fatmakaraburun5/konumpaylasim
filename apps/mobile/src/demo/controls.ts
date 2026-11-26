@@ -16,5 +16,6 @@ export {
   type DemoBatteryNotice,
   type DemoEvent,
   type DemoNotification,
+  type DemoSmsLogEntry,
   type DemoSnapshot,
 } from './server';

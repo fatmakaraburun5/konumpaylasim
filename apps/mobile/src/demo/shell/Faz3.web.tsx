@@ -42,6 +42,8 @@ import {
 import { isF4PushType } from '../../services/notifications/f4Push';
 import { isF5PushType } from '../../services/notifications/f5Push';
 import { isF7PushType } from '../../services/notifications/f7Push';
+import { isF8PushType } from '../../services/notifications/f8Push';
+import { isF9PushType } from '../../services/notifications/f9Push';
 import { safeStorage } from '../server/storage';
 import { demoBatteryPct, demoEngineState, demoMotionMode, type DemoEngineState, type DemoMotionMode } from '../web/device';
 import { demoOnline, demoTunnelLeftMs } from '../web/network';
@@ -572,6 +574,7 @@ export function PermissionsSection({ renderRow }: { renderRow: (r: ControlRow) =
     ['Bildirim', PERM_TEXT[p.notifications], p.notifications === 'granted'],
     ['Hareket', PERM_TEXT[p.motion], p.motion === 'granted'],
     ['Tam konum', p.precise ? 'açık' : 'kapalı', p.precise],
+    ['Rehber', PERM_TEXT[p.contacts], p.contacts === 'granted'],
   ];
   const rows: ControlRow[] = [
     {
@@ -649,7 +652,11 @@ const isF6Push = (n: DemoNotification) => n.data?.type === 'quick_share_started'
 const isLocationRequestPush = (n: DemoNotification) => n.data?.type === 'location_request' || n.data?.type === 'location_request_answered';
 /** Faz 7: etkinlik daveti / aşama / yanıt / hatırlatma / iptal ve "yola çıktı" (heads-up). */
 const isF7Push = (n: DemoNotification) => isF7PushType(n.data?.type);
-const isRoutedPush = (n: DemoNotification) => isF4Push(n) || isF5Push(n) || isF6Push(n) || isF7Push(n) || isLocationRequestPush(n);
+/** Faz 8: izin isteği / verildi; Faz 9: fotoğraf, yaklaşma, Güvenli Dönüş. */
+const isF8Push = (n: DemoNotification) => isF8PushType(n.data?.type);
+const isF9Push = (n: DemoNotification) => isF9PushType(n.data?.type);
+const isRoutedPush = (n: DemoNotification) =>
+  isF4Push(n) || isF5Push(n) || isF6Push(n) || isF7Push(n) || isF8Push(n) || isF9Push(n) || isLocationRequestPush(n);
 const isBatteryPush = (n: DemoNotification) => n.data?.type === 'battery_low' || isRoutedPush(n);
 
 /** Bildirime dokunma: Faz 4/5 push'u uygulamadaki gerçek yanıt yoluna girer (SOS kartı / ping vurgusu / buluşma kartı). */

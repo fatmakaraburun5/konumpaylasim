@@ -24,13 +24,16 @@
  *  - Kapatınca: YALNIZCA `restore_receiver_ids` içindeki, anlık görüntüde olan, süresi dolmamış, hâlâ arkadaş +
  *    `location_view` izni olan alıcılarla eski bitiş saatine kadar (`custom_until`, süresizse `indefinite`) yeniden
  *    başlar. Seçim yoksa hiçbir şey başlamaz; anlık görüntü silinir.
+ *  - Faz 9: açınca etkin anlık fotoğraf `invisible` ile biter (nesne hemen silinir). Süren Güvenli Dönüş DURMAZ
+ *    (güvenlik özelliği; kayıt yalnızca sahibine açık, alarm SOS kuralıyla görünmezliği kapatır).
  *
  * Onay (`users/{uid}/consents/{version}` + `users/{uid}.consent`, core `consent.ts`):
  *  - `consent_accept`: istemcinin sürümü ve metin özeti güncel olanla aynı olmalı (gösterilen = onaylanan); değilse
  *    `consent_required` (`extra.current_version`). Aynı sürüm zaten onaylıysa kayıt değişmez (ilk onay anı korunur);
  *    geri çekilmiş sürüm yeniden onaylanırsa önceki onay ve geri çekme anı `history`ye taşınır (üzerine yazılmaz).
  *  - `consent_withdraw`: tüm giden paylaşımlar ve bağlantılar biter, aktif SOS kapanır, yer notları silinir, önerdiği
- *    buluşmalar iptal olur; kayda `withdrawn_at` yazılır, `users.consent = null`.
+ *    buluşmalar iptal olur; kayda `withdrawn_at` yazılır, `users.consent = null`. Faz 9: etkin anlık fotoğraf
+ *    `consent_withdrawn` ile biter (nesne silinir), etkin Güvenli Dönüş `cancelled` olur (kişilere "iptal etti").
  */
 import {
   CALLABLES,
@@ -92,6 +95,7 @@ import {
   type LinkShareDoc,
   type MeetupDoc,
   type PermissionDeclineDoc,
+  type PhotoProofDoc,
   type PlaceNoteDoc,
   type ShareDoc,
   type UserDoc,
@@ -110,6 +114,8 @@ import { type PushSender, buildPermissionGrantedPush, buildPermissionRequestPush
 import { assertUid, resolveForZone, unique } from '../util';
 import { type StartCandidate, readStartCandidates, writeShareStarts } from './shares';
 import { readActiveSosOf, pushSosResolved, writeSosResolved } from './sos';
+import { deleteProofObjects, readActiveProofsOf, writeEndProofs } from './proofs';
+import { pushSafeReturnCancelled, readActiveSafeReturnsOf, writeCancelSafeReturns } from './safeReturn';
 import { readZoneRecipientStrip, writePairZoneCleanup } from './zones';
 
 export interface AccessDeps {
@@ -406,6 +412,7 @@ export async function invisibleSet(ctx: CallCtx, data: z.output<typeof Invisible
 
     if (data.invisible) {
       const out = await readOutgoingActive(tx, ctx.uid);
+      const proofs = await readActiveProofsOf(tx, ctx.uid);
       // Zaten görünmezse eski anlık görüntü korunur (yalnızca yeni kişiler eklenir).
       const fresh = planInvisibleOn(out.shares, now);
       const kept = prev?.snapshot ?? [];
@@ -413,10 +420,15 @@ export async function invisibleSet(ctx: CallCtx, data: z.output<typeof Invisible
       // --- yazmalar ---
       const ended = endOutgoing(tx, out, now);
       endedLinks = ended.links;
+      const endedProofs: PhotoProofDoc[] = writeEndProofs(tx, proofs, 'invisible', now);
       const state: InvisibleState = { on: true, since: prev?.since ?? now, snapshot, links_ended: (prev?.links_ended ?? 0) + ended.links.length };
       tx.update(refs.user(ctx.uid), { invisible: state });
       const r: InvisibleSetResponse = { invisible: true, restored_receiver_ids: [], skipped_receiver_ids: [], server_now: now };
-      return { response: r, shareEffects: ended.shares };
+      return {
+        response: r,
+        shareEffects: ended.shares,
+        after: endedProofs.length ? async () => void (await deleteProofObjects(endedProofs)) : undefined,
+      };
     }
 
     // --- görünür ol: yalnızca seçilenler, anlık görüntüdeki eski bitişe kadar ---
@@ -526,6 +538,7 @@ export async function consentWithdraw(ctx: CallCtx, data: z.output<typeof Consen
       tx.get(db().collection(COL.placeNotes).where('owner_id', '==', ctx.uid)),
       tx.get(db().collection(COL.meetups).where('from', '==', ctx.uid)),
     ]);
+    const [proofs, safeReturns] = await Promise.all([readActiveProofsOf(tx, ctx.uid), readActiveSafeReturnsOf(tx, ctx.uid)]);
     // --- yazmalar ---
     const ended = endOutgoing(tx, out, now);
     endedLinks = ended.links;
@@ -535,17 +548,24 @@ export async function consentWithdraw(ctx: CallCtx, data: z.output<typeof Consen
       const m = d.data() as MeetupDoc;
       if (m.from === ctx.uid && isMeetupActive(m, now)) tx.update(d.ref, { status: 'cancelled', updated_at: now });
     }
+    const endedProofs = writeEndProofs(tx, proofs, 'consent_withdrawn', now);
+    const cancelled = writeCancelSafeReturns(tx, safeReturns, now);
     if (recRef && recSnap?.exists) tx.update(recRef, { withdrawn_at: now });
     tx.update(refs.user(ctx.uid), { consent: null });
     const r: ConsentWithdrawResponse = { consent: null, shares_ended: ended.shares.length, links_ended: ended.links.length, server_now: now };
     return {
       response: r,
       shareEffects: ended.shares,
-      after: resolved.length
-        ? async () => {
-            await Promise.all(resolved.map((a) => pushSosResolved(a, send, 'consent_withdraw')));
-          }
-        : undefined,
+      after:
+        resolved.length || endedProofs.length || cancelled.length
+          ? async () => {
+              await Promise.all([
+                ...resolved.map((a) => pushSosResolved(a, send, 'consent_withdraw')),
+                ...cancelled.map((d) => pushSafeReturnCancelled(d, send, 'consent_withdraw')),
+                deleteProofObjects(endedProofs),
+              ]);
+            }
+          : undefined,
     };
   });
   await applyEndedLinks(CALLABLES.consentWithdraw, endedLinks);

@@ -1,5 +1,5 @@
 /**
- * Konum Cloud Functions giriş noktası (Faz 1 + Faz 2 + Faz 3 + Faz 4 + Faz 5 + Faz 6 + Faz 7 + Faz 8). Dışa aktarılan adlar core `CALLABLES` ile birebir aynıdır
+ * Konum Cloud Functions giriş noktası (Faz 1 + Faz 2 + Faz 3 + Faz 4 + Faz 5 + Faz 6 + Faz 7 + Faz 8 + Faz 9). Dışa aktarılan adlar core `CALLABLES` ile birebir aynıdır
  * (istemci `httpsCallable(functions, 'share_start')` çağırır, bölge europe-west1).
  *
  * Burada YALNIZCA fonksiyon tanımları dışa aktarılır; saf mantık `handlers/*` içindedir.
@@ -58,6 +58,15 @@ import {
   EventUpdateRequestSchema,
   MovementReportRequestSchema,
   PrivacySettingsSetRequestSchema,
+  // Faz 9
+  ApproachReportRequestSchema,
+  ProofCreateRequestSchema,
+  ProofDeleteRequestSchema,
+  ProofGetRequestSchema,
+  SafeReturnCheckInRequestSchema,
+  SafeReturnIdRequestSchema,
+  SafeReturnStartRequestSchema,
+  SafeReturnUpdateRequestSchema,
 } from '@konum/core';
 import { setGlobalOptions } from 'firebase-functions';
 import { onDocumentWritten } from 'firebase-functions/firestore';
@@ -110,6 +119,16 @@ import {
   sweepEvents,
 } from './handlers/events';
 import { movementReport, privacySettingsSet } from './handlers/privacy';
+import { approachReport } from './handlers/approach';
+import { handleProofExpiryTask, proofCreate, proofDelete, proofGet } from './handlers/proofs';
+import {
+  handleSafeReturnTask,
+  safeReturnCancel,
+  safeReturnCheckIn,
+  safeReturnExtend,
+  safeReturnStart,
+  safeReturnUpdate,
+} from './handlers/safeReturn';
 import {
   AccountDeleteSchema,
   BatteryLowNotifySchema,
@@ -220,6 +239,18 @@ export const event_cancel = callable('event_cancel', EventCancelRequestSchema, (
 export const privacy_settings_set = callable('privacy_settings_set', PrivacySettingsSetRequestSchema, privacySettingsSet);
 export const movement_report = callable('movement_report', MovementReportRequestSchema, (ctx, data) => movementReport(ctx, data));
 
+// --- Faz 9: anlık fotoğraf ispatı, 200 m yaklaşma, Güvenli Dönüş ---
+// Onay ön kapısı: proof_delete, safe_return_check_in ve safe_return_cancel onaysız da çalışır (core `consentExemptCall`).
+export const proof_create = callable('proof_create', ProofCreateRequestSchema, proofCreate);
+export const proof_get = callable('proof_get', ProofGetRequestSchema, proofGet);
+export const proof_delete = callable('proof_delete', ProofDeleteRequestSchema, proofDelete);
+export const approach_report = callable('approach_report', ApproachReportRequestSchema, (ctx, data) => approachReport(ctx, data));
+export const safe_return_start = callable('safe_return_start', SafeReturnStartRequestSchema, (ctx, data) => safeReturnStart(ctx, data));
+export const safe_return_update = callable('safe_return_update', SafeReturnUpdateRequestSchema, safeReturnUpdate);
+export const safe_return_check_in = callable('safe_return_check_in', SafeReturnCheckInRequestSchema, (ctx, data) => safeReturnCheckIn(ctx, data));
+export const safe_return_extend = callable('safe_return_extend', SafeReturnIdRequestSchema, safeReturnExtend);
+export const safe_return_cancel = callable('safe_return_cancel', SafeReturnIdRequestSchema, (ctx, data) => safeReturnCancel(ctx, data));
+
 // --- arka plan ---
 
 /**
@@ -253,7 +284,8 @@ export const share_expiry_sweeper = onSchedule(
     const links = r.ended_link_ids.length + r.reconciled_link_ids.length + r.purged_link_tombstones;
     const f4 = r.purged_pings + r.purged_place_notes + r.timed_out_sos_ids.length;
     const f5 = r.purged_meetups + r.purged_meetup_cache;
-    if (r.ended_share_ids.length || r.expired_request_ids.length || r.reconciled_share_ids.length || r.purged_tombstones || links || f4 || f5) {
+    const f9 = r.expired_proofs + r.safe_return_due_ids.length + r.safe_return_alarm_ids.length;
+    if (r.ended_share_ids.length || r.expired_request_ids.length || r.reconciled_share_ids.length || r.purged_tombstones || links || f4 || f5 || f9) {
       logger.info('bakım taraması', {
         shares: r.ended_share_ids.length,
         requests: r.expired_request_ids.length,
@@ -267,6 +299,9 @@ export const share_expiry_sweeper = onSchedule(
         sos_timeouts: r.timed_out_sos_ids.length,
         meetups: r.purged_meetups,
         meetup_cache: r.purged_meetup_cache,
+        proofs: r.expired_proofs,
+        safe_return_due: r.safe_return_due_ids.length,
+        safe_return_alarms: r.safe_return_alarm_ids.length,
       });
     }
   },
@@ -275,6 +310,7 @@ export const share_expiry_sweeper = onSchedule(
 /**
  * Süre dolumu görevi: `share_start` / `share_extend` / kabul, her süreli sürüm için `expires_at` anına kuyruğa alır.
  * Faz 2: `link_share_create` / `link_share_extend` de aynı kuyruğa `{link_id, version}` verisiyle alır.
+ * Faz 9: `proof_create` `{proof_id}` (1 sa sonra fotoğrafı siler), Güvenli Dönüş `{safe_return_id, at}` (due / alarm).
  * Yalnızca Cloud Tasks çağırabilir (callable değil). Dışa aktarılan ad config `EXPIRY_TASK_FUNCTION` ile aynı
  * olmalı (tasks.ts kuyruğa bu adla alır; contract testi karşılaştırır) ve alt çizgi içermemeli: kuyruk kimliği =
  * fonksiyon kimliği, Cloud Tasks yalnızca [A-Za-z0-9-] kabul eder. [Varsayım] eşzamanlılık/oran sınırları.
@@ -286,8 +322,20 @@ export const shareexpirytask = onTaskDispatched<ExpiryTaskPayload>(
     timeoutSeconds: 60,
   },
   async (req) => {
-    const d = req.data as Partial<{ share_id: unknown; link_id: unknown; version: unknown }> | undefined;
-    if (!d || typeof d.version !== 'number') return;
+    const d = req.data as Partial<{ share_id: unknown; link_id: unknown; version: unknown; proof_id: unknown; safe_return_id: unknown; at: unknown }> | undefined;
+    if (!d) return;
+    // Faz 9: anlık fotoğrafın 1 saatlik silinmesi ve Güvenli Dönüş sunucu zamanlayıcısı (aynı kuyruk).
+    if (typeof d.proof_id === 'string') {
+      const outcome = await handleProofExpiryTask({ proof_id: d.proof_id });
+      logger.debug('anlık fotoğraf süre dolumu görevi', { proof_id: d.proof_id, outcome });
+      return;
+    }
+    if (typeof d.safe_return_id === 'string' && typeof d.at === 'number') {
+      const outcome = await handleSafeReturnTask({ safe_return_id: d.safe_return_id, at: d.at });
+      logger.debug('Güvenli Dönüş görevi', { safe_return_id: d.safe_return_id, outcome });
+      return;
+    }
+    if (typeof d.version !== 'number') return;
     if (typeof d.link_id === 'string') {
       const outcome = await handleLinkExpiryTask({ link_id: d.link_id, version: d.version });
       logger.debug('bağlantı süre dolumu görevi', { link_id: d.link_id, outcome });

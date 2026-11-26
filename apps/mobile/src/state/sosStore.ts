@@ -16,18 +16,35 @@
  *     koordinatör her `updateMinIntervalMs`'de `updateTick()` ile konumu tazeler.
  * Alıcı: `sos_alerts` (recipient_ids array-contains ben) → `applyReceived`; yeni aktif SOS (benim "Gördüm" demediğim)
  * `focusedSosId`'yi en yeniye ayarlar → tam ekran acil durum kartı.
+ *
+ * Faz 9 (çevrimdışı SOS SMS yedeği, docs/PHASE9.md §4.4): gönderim başlarken RTDB `.info/connected` en çok
+ * `SOS_CONNECT_WAIT_MS` beklenir (`online`). Bağlantı yoksa, `sos_send` ağ hatasıyla düşerse ya da
+ * `SMS_FALLBACK_LIMITS.onlineTimeoutMs` içinde yanıt gelmezse core `offlineSosDecision` → `offline` ('offer_sms' →
+ * "SMS ile gönder (N kişi)"). O an `send()` `unavailable` + `SMS_FALLBACK_TEXT.offlineBody` ile ERKEN döner, ama
+ * gönderim AYNI op_id ile arka planda (bağlantı gelince) `OFFLINE_RETRY_WINDOW_MS` boyunca denenmeye devam eder
+ * (`phase` 'sending' kalır; yeniden `send()` denemeyi hemen uyandırır, `cancelPending()` bırakır). SMS gövdesi
+ * `smsBody()` (core `sosSmsBody`: bu denemenin konumu ya da `konum.bg.lastFix.v1`, pil, profil adı, aktif Güvenli
+ * Dönüş hedefi), `sendSms()` cihazın SMS uygulamasını hazır dolu açar.
  */
 import {
   batteryPct,
   ERROR_CODES,
   isSosActive,
   isSosVisible,
+  offlineSosDecision,
   selectPublishTargets,
+  SMS_FALLBACK_LIMITS,
+  SMS_FALLBACK_TEXT,
   SOS_LIMITS,
+  sosSmsBody,
   uuidV4,
+  VERIFIED_ACCURACY_M,
   type DeviceStatus,
   type EpochMs,
+  type OfflineSosDecision,
   type RawLocationSample,
+  type SmsFallbackSettings,
+  type SosSendOutcome,
   type SosAlert,
   type SosLocation,
   type SosRoute,
@@ -38,15 +55,31 @@ import { createStore, type StoreApi } from 'zustand/vanilla';
 import { getServerOffsetMs, now as serverClockNow } from '../lib/clock';
 import { toKonumError } from '../lib/errors';
 import { sosApi, type SosApi } from '../services/firebase/callables';
+import { isConnected, waitForConnection } from '../services/firebase/liveRepo';
 import { locationEngine } from '../services/location/ExpoLocationEngine';
 import { readDeviceStatus } from '../services/location/deviceStatus';
+import { getLastFix } from '../services/location/lastFix';
 import { geocodeRepo } from '../services/maps/geocodeRepo';
+import { composeSms, type SmsComposeResult } from '../services/sms/smsComposer';
 import { authStore } from './authStore';
 import { invisibleStore } from './invisibleStore';
 import { locationStore } from './locationStore';
 import { permissionsStore } from './permissionsStore';
+import type { PersistedLastFix } from './persist';
 import type { Result } from './pingStore';
 import { sharingStore } from './sharingStore';
+import { smsFallbackStore } from './smsFallbackStore';
+
+/** Faz 9: SOS denemesinin girdileri (SMS gövdesi bunlardan kurulur). */
+export interface SosAttempt {
+  location: SosLocation | null;
+  battery_pct: number | null;
+  is_charging: boolean | null;
+  route: SosRoute | null;
+  at: EpochMs;
+}
+
+export type SosSmsResult = SmsComposeResult | 'unavailable' | 'not_configured';
 
 export interface SosState {
   /** `users/{ben}.emergency_contacts` (profil dinleyicisi). */
@@ -65,9 +98,30 @@ export interface SosState {
   /** SOS'la başlatılan canlı paylaşımın konum izni olmadığı için başlamadığı acil kişiler (SOS'u yine görürler). */
   liveShareSkipped: UserId[];
   send(opts?: { route?: SosRoute | null }): Promise<Result<{ sos_id: string }>>;
-  resolve(): Promise<boolean>;
+  /**
+   * "Güvendeyim". `sosId` verilirse (Güvenli Dönüş alarmı: SOS'u sunucu açtı, dinleyici henüz getirmemiş olabilir)
+   * o SOS sunucuda kapatılır; verilmezse bilinen etkin giden SOS. Hiçbir SOS bilinmiyorsa true (kapatılacak yok).
+   */
+  resolve(sosId?: string | null): Promise<boolean>;
   /** Alıcısı olduğum, `isSosVisible` olanlar. */
   incoming: Record<string, SosAlert>;
+  // --- Faz 9: çevrimdışı SOS ---
+  /** Son hatanın kodu (`error` ile birlikte; ör. 'unavailable', 'no_emergency_contacts'). */
+  errorCode: string | null;
+  /** Bu gönderimde RTDB bağlantısı (null = bilinmiyor / gönderim yok). */
+  online: boolean | null;
+  /** 'online' dışındaysa arayüz SMS yedeğini (ya da nasıl açılacağını) gösterir. */
+  offline: OfflineSosDecision;
+  /** Son gönderim denemesinin konum / pil bilgisi (SMS gövdesi için). */
+  lastAttempt: SosAttempt | null;
+  /** Hazır SOS SMS gövdesi (core `sosSmsBody`). `safeReturnDest` verilmezse aktif Güvenli Dönüş hedefi kullanılır. */
+  smsBody(opts?: { safeReturnDest?: string | null }): Promise<string>;
+  /** SMS uygulamasını hazır dolu açar (SMS yedeği açık ve numara varsa). */
+  sendSms(opts?: { safeReturnDest?: string | null }): Promise<SosSmsResult>;
+  /** Şu anki çevrimdışı kararı (gönderim yokken de: ör. Güvenli Dönüş son uyarısı). */
+  offlineDecisionNow(): OfflineSosDecision;
+  /** Arka planda süren (çevrimdışı) SOS denemesini bırakır. */
+  cancelPending(): void;
   /** Push'a dokununca / yeni aktif SOS gelince set edilir → tam ekran kart. */
   focusedSosId: string | null;
   focus(sosId: string | null): void;
@@ -106,6 +160,20 @@ export interface SosStoreDeps {
   /** `unavailable` sonrası yeniden deneme aralıkları (aynı op_id). */
   retryDelaysMs: readonly number[];
   newOpId: () => string;
+  // --- Faz 9 ---
+  /** RTDB `.info/connected` (null = bilinmiyor). */
+  isOnline: () => boolean | null;
+  /** Bağlantıyı en çok `ms` bekler (null = bilinmiyor). */
+  waitOnline: (ms: number) => Promise<boolean | null>;
+  smsSettings: () => Pick<SmsFallbackSettings, 'enabled' | 'numbers'>;
+  smsAvailable: () => boolean | null;
+  lastFix: () => Promise<PersistedLastFix | null>;
+  senderName: () => string;
+  /** Aktif Güvenli Dönüş hedefinin adı (yoksa null). */
+  safeReturnDest: () => string | null;
+  composeSms: (numbers: readonly string[], body: string) => Promise<SmsComposeResult>;
+  /** Hızlı yeniden denemeler bitince arka planda (bağlantı gelince) bu kadar süre daha denenir. */
+  offlineRetryWindowMs: number;
 }
 
 /** Bu kadar taze ve doğru son konum varsa yeni ölçüm beklenmez (acil anda hız). [Varsayım] */
@@ -116,6 +184,14 @@ const PREPARED_TTL_MS = 30_000;
 /** Callable yanıtıyla gelen SOS, dinleyici yetişene kadar tutulur. */
 const OUTGOING_HOLD_MS = 2 * 60_000;
 const RETRY_DELAYS_MS = [3_000, 3_000, 3_000, 3_000, 3_000] as const;
+/** Faz 9: gönderim başında RTDB bağlantısı bu kadar beklenir (PHASE9 §4.4). */
+export const SOS_CONNECT_WAIT_MS = 3_000;
+/** [Varsayım] Çevrimdışı SOS arka planda en çok bu kadar süre (bağlantı gelince) yeniden denenir. */
+export const OFFLINE_RETRY_WINDOW_MS = 15 * 60_000;
+/** Arka plan denemeleri arasında bağlantı en çok bu kadar beklenir. */
+const OFFLINE_WAIT_STEP_MS = 30_000;
+/** Arka plan denemesi sayısı üst sınırı (sonsuz döngüye karşı). */
+const OFFLINE_MAX_ATTEMPTS = 60;
 
 const NO_LOCATION_MESSAGE = 'Konumun alınamadı. Konum iznini ve GPS’i kontrol et.';
 
@@ -171,6 +247,32 @@ const defaultAutoShare = async (contacts: readonly UserId[]): Promise<{ needsGra
   return { needsGrant: r?.needsGrantReceiverIds ?? [] };
 };
 
+const safeIsOnline = (): boolean | null => {
+  try {
+    return isConnected();
+  } catch {
+    return null;
+  }
+};
+const safeWaitOnline = async (ms: number): Promise<boolean | null> => {
+  try {
+    return await waitForConnection(ms);
+  } catch {
+    return null;
+  }
+};
+
+/** Döngüsel içe aktarmayı önlemek için geç yüklenir (safeReturnStore → sosStore). */
+const defaultSafeReturnDest = (): string | null => {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const m = require('./safeReturnStore') as typeof import('./safeReturnStore');
+    return m.selectSafeReturnDestName(m.safeReturnStore.getState());
+  } catch {
+    return null;
+  }
+};
+
 const noContacts = () => ({ code: 'no_emergency_contacts' as const, message: ERROR_CODES.no_emergency_contacts.message });
 
 export function createSosStore(overrides: Partial<SosStoreDeps> = {}): StoreApi<SosState> {
@@ -188,10 +290,29 @@ export function createSosStore(overrides: Partial<SosStoreDeps> = {}): StoreApi<
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
     retryDelaysMs: RETRY_DELAYS_MS,
     newOpId: uuidV4,
+    isOnline: safeIsOnline,
+    waitOnline: safeWaitOnline,
+    smsSettings: () => smsFallbackStore.getState().settings,
+    smsAvailable: () => smsFallbackStore.getState().available,
+    lastFix: () => getLastFix(authStore.getState().uid),
+    senderName: () => authStore.getState().profile?.display_name ?? '',
+    safeReturnDest: defaultSafeReturnDest,
+    composeSms,
+    offlineRetryWindowMs: OFFLINE_RETRY_WINDOW_MS,
     ...overrides,
   };
 
   let sending: Promise<Result<{ sos_id: string }>> | null = null;
+  /** Faz 9: süren gönderimin çevrimdışı durumu. */
+  let attempt: {
+    startedAt: number;
+    outcome: SosSendOutcome;
+    /** Çevrimdışı kararıyla erken dönüş (bir kez çözülür). */
+    early: Promise<Result<{ sos_id: string }>>;
+    resolveEarly: (r: Result<{ sos_id: string }>) => void;
+    wake: (() => void) | null;
+    aborted: boolean;
+  } | null = null;
   let prepared: { at: EpochMs; fix: Promise<SosLocation | null> } | null = null;
   /** Callable yanıtıyla gelen giden SOS'un anı (dinleyici gecikmesine karşı tutma). */
   let outgoingConfirmedAt = 0;
@@ -237,6 +358,10 @@ export function createSosStore(overrides: Partial<SosStoreDeps> = {}): StoreApi<
     phase: 'idle',
     liveShareSkipped: [],
     error: null,
+    errorCode: null,
+    online: null,
+    offline: 'online',
+    lastAttempt: null,
     incoming: {},
     focusedSosId: null,
 
@@ -261,31 +386,81 @@ export function createSosStore(overrides: Partial<SosStoreDeps> = {}): StoreApi<
     },
 
     send: (opts) => {
+      if (sending && attempt) {
+        // Çevrimdışı arka plan denemesi sürüyor: hemen uyandır, kararı döndür.
+        attempt.wake?.();
+        return Promise.race([sending, attempt.early]);
+      }
       if (sending) return sending;
       const contacts = get().emergencyContacts;
       // Liste yüklendiyse ve boşsa ağa çıkmadan; yüklenmediyse sunucu doğrular (yoksa no_emergency_contacts döner).
       if (contacts.length === 0 && get().contactsLoaded) return Promise.resolve({ ok: false, error: noContacts() });
-      set({ phase: 'sending', error: null });
+      set({ phase: 'sending', error: null, errorCode: null, online: null, offline: 'online', lastAttempt: null });
+      let resolveEarly: (r: Result<{ sos_id: string }>) => void = () => undefined;
+      const early = new Promise<Result<{ sos_id: string }>>((r) => {
+        resolveEarly = r;
+      });
+      const at = { startedAt: Date.now(), outcome: 'pending' as SosSendOutcome, early, resolveEarly, wake: null as (() => void) | null, aborted: false };
+      attempt = at;
+      const offlineError = { code: 'unavailable' as const, message: SMS_FALLBACK_TEXT.offlineBody };
+      /** Çevrimdışı kararını yeniden hesaplar; `final` ve 'online' dışındaysa send() erken döner. */
+      const decide = (final: boolean) => {
+        if (attempt !== at) return;
+        const decision = offlineSosDecision({
+          online: get().online,
+          outcome: at.outcome,
+          waitedMs: Date.now() - at.startedAt,
+          settings: deps.smsSettings(),
+          smsAvailable: deps.smsAvailable(),
+        });
+        if (decision !== get().offline) set({ offline: decision });
+        if (decision !== 'online' && final) {
+          if (get().phase === 'sending') set({ error: offlineError.message, errorCode: offlineError.code });
+          at.resolveEarly({ ok: false, error: offlineError });
+        }
+      };
+      void deps
+        .waitOnline(SOS_CONNECT_WAIT_MS)
+        .then((ok) => {
+          if (attempt !== at || ok === null) return;
+          set({ online: ok });
+          decide(true);
+        })
+        .catch(() => undefined);
+      /** "10 sn'de yanıt gelmezse": ilk istek çıkınca kurulur. */
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const finish = () => {
+        clearTimeout(timer);
+        if (attempt === at) attempt = null;
+      };
       const run = (async (): Promise<Result<{ sos_id: string }>> => {
-        const fail = (error: { message: string }) => {
+        const fail = (error: { code?: string; message: string }) => {
+          if (at.aborted && attempt !== at) return; // reset() sonrası: yeni duruma yazma
           const cur = get().outgoing;
-          set({ phase: cur && isSosActive(cur) ? 'active' : 'idle', error: error.message });
+          set({ phase: cur && isSosActive(cur) ? 'active' : 'idle', error: error.message, errorCode: error.code ?? null });
         };
         const location = await acquireLocation();
+        const [battery, address] = await Promise.all([
+          batteryInfo(),
+          location ? deps.address(location, SOS_LIMITS.addressTimeoutMs).catch(() => null) : Promise.resolve(null),
+        ]);
+        if (attempt === at) set({ lastAttempt: { location, ...battery, route: opts?.route ?? null, at: deps.now() } });
         if (!location) {
           const error = { code: 'invalid_argument' as const, message: NO_LOCATION_MESSAGE };
           fail(error);
           return { ok: false, error };
         }
-        const [battery, address] = await Promise.all([batteryInfo(), deps.address(location, SOS_LIMITS.addressTimeoutMs).catch(() => null)]);
         const opId = deps.newOpId();
         const req = { op_id: opId, location, ...battery, route: opts?.route ?? null, address: address ? address.slice(0, 200) : null };
-        for (let attempt = 0; ; attempt++) {
+        let background = 0;
+        timer = setTimeout(() => decide(true), SMS_FALLBACK_LIMITS.onlineTimeoutMs);
+        for (let attemptNo = 0; ; attemptNo++) {
           try {
             const res = await deps.api.sosSend(req);
             outgoingConfirmedAt = Date.now();
             lastUpdateAt = Date.now();
-            set({ outgoing: res.sos, phase: 'active', error: null, liveShareSkipped: [] });
+            at.outcome = 'sent';
+            set({ outgoing: res.sos, phase: 'active', error: null, errorCode: null, liveShareSkipped: [], online: true, offline: 'online' });
             const recipients = res.sos.recipient_ids.length ? res.sos.recipient_ids : contacts;
             // Sunucu görünmezliği kapattı: yerel niyet önce silinir (yoksa paylaşım yerelde invisible_mode ile düşer).
             void deps
@@ -299,45 +474,119 @@ export function createSosStore(overrides: Partial<SosStoreDeps> = {}): StoreApi<
             return { ok: true, sos_id: res.sos.sos_id };
           } catch (e) {
             const err = toKonumError(e);
-            const delay = deps.retryDelaysMs[attempt];
-            if (err.code === 'unavailable' && delay !== undefined) {
-              await deps.sleep(delay);
-              continue;
+            if (err.code === 'unavailable') {
+              at.outcome = 'failed_network';
+              const delay = deps.retryDelaysMs[attemptNo];
+              decide(delay === undefined);
+              if (delay !== undefined) {
+                await deps.sleep(delay);
+                continue;
+              }
+              // Hızlı denemeler bitti: bağlantı gelince (ya da yeniden send() ile) arka planda denemeye devam.
+              if (!at.aborted && background < OFFLINE_MAX_ATTEMPTS && Date.now() - at.startedAt < deps.offlineRetryWindowMs) {
+                background++;
+                const woke = new Promise<void>((r) => {
+                  at.wake = r;
+                });
+                const r = await Promise.race([deps.waitOnline(OFFLINE_WAIT_STEP_MS).then(() => 'waited' as const), woke.then(() => 'woke' as const)]);
+                // Bağlantı var ama callable yine düşüyorsa sıkı döngü olmasın (yeniden send() hemen dener).
+                if (r === 'waited' && !at.aborted) await Promise.race([deps.sleep(RETRY_DELAYS_MS[0]), woke]);
+                at.wake = null;
+                if (at.aborted) {
+                  fail(offlineError);
+                  return { ok: false, error: offlineError };
+                }
+                continue;
+              }
             }
             // Sunucu kişileri doğruladı ve hiçbiri geçerli değil: yerel listeyi de boşalt (seçim ekranı açılsın).
             if (err.code === 'no_emergency_contacts') set({ emergencyContacts: [], contactsLoaded: true });
-            const error = err.toSharingError();
+            at.outcome = err.code === 'unavailable' ? 'failed_network' : 'failed_other';
+            const error = err.code === 'unavailable' && get().offline !== 'online' ? offlineError : err.toSharingError();
             fail(error);
             return { ok: false, error };
           }
         }
       })().finally(() => {
+        finish();
         sending = null;
       });
       sending = run;
-      return run;
+      return Promise.race([run, early]);
     },
 
-    resolve: async () => {
+    smsBody: async (opts) => {
+      const t = deps.now();
+      const a = get().lastAttempt;
+      const own = a?.location && a.location.accuracy <= VERIFIED_ACCURACY_M ? a.location : null;
+      const cached = own ? null : await deps.lastFix().catch(() => null);
+      const fix = own ?? (cached ? { lat: cached.lat, lng: cached.lng, accuracy: cached.accuracy, timestamp: cached.timestamp } : a?.location ?? null);
+      let battery = a?.battery_pct ?? cached?.battery_pct ?? null;
+      if (battery === null) battery = (await batteryInfo()).battery_pct;
+      const dest = opts && 'safeReturnDest' in opts ? (opts.safeReturnDest ?? null) : deps.safeReturnDest();
+      return sosSmsBody({ senderName: deps.senderName(), fix, battery_pct: battery, now: t, safeReturnDest: dest });
+    },
+
+    sendSms: async (opts) => {
+      const settings = deps.smsSettings();
+      if (!settings.enabled || settings.numbers.length === 0) return 'not_configured';
+      if (deps.smsAvailable() === false) return 'unavailable';
+      const body = await get().smsBody(opts);
+      try {
+        return await deps.composeSms(
+          settings.numbers.map((n) => n.e164),
+          body,
+        );
+      } catch {
+        // SmsUnavailableError ya da yerel modül hatası: mesaj uygulaması açılamadı.
+        return 'unavailable';
+      }
+    },
+
+    offlineDecisionNow: () => {
+      const s = get();
+      if (attempt && s.phase === 'sending') return s.offline;
+      return offlineSosDecision({
+        online: deps.isOnline(),
+        outcome: 'pending',
+        waitedMs: 0,
+        settings: deps.smsSettings(),
+        smsAvailable: deps.smsAvailable(),
+      });
+    },
+
+    cancelPending: () => {
+      if (!attempt) return;
+      attempt.aborted = true;
+      attempt.wake?.();
+    },
+
+    resolve: async (sosId) => {
       const cur = get().outgoing;
-      if (!cur || !isSosActive(cur)) {
+      // Yerelde bilinmeyen (ya da başka) SOS kimliği verildi: sunucuda o kapatılır, "başarılı" ancak yanıtla.
+      const known = cur && (!sosId || cur.sos_id === sosId) ? cur : null;
+      if (!sosId && (!known || !isSosActive(known))) {
         set({ phase: 'idle' });
         return true;
       }
+      if (known && !isSosActive(known)) return true;
       if (get().phase === 'resolving') return false;
+      const prevPhase = get().phase;
+      const target = known?.sos_id ?? (sosId as string);
       set({ phase: 'resolving', error: null });
       try {
-        const res = await deps.api.sosResolve({ op_id: deps.newOpId(), sos_id: cur.sos_id });
+        const res = await deps.api.sosResolve({ op_id: deps.newOpId(), sos_id: target });
         outgoingConfirmedAt = Date.now();
         set({ outgoing: res.sos, phase: isSosActive(res.sos) ? 'active' : 'idle' });
         return true;
       } catch (e) {
         const err = toKonumError(e);
         if (err.code === 'sos_not_active') {
-          set({ outgoing: { ...cur, status: 'resolved', resolve_reason: cur.resolve_reason ?? 'safe', resolved_at: cur.resolved_at ?? deps.now() }, phase: 'idle' });
+          if (known) set({ outgoing: { ...known, status: 'resolved', resolve_reason: known.resolve_reason ?? 'safe', resolved_at: known.resolved_at ?? deps.now() }, phase: 'idle' });
+          else set({ phase: prevPhase === 'resolving' ? 'idle' : prevPhase });
           return true;
         }
-        set({ phase: 'active', error: err.message });
+        set({ phase: known || (cur && isSosActive(cur)) ? 'active' : prevPhase === 'resolving' ? 'idle' : prevPhase, error: err.message, errorCode: err.code });
         return false;
       }
     },
@@ -441,12 +690,17 @@ export function createSosStore(overrides: Partial<SosStoreDeps> = {}): StoreApi<
     },
 
     reset: () => {
+      if (attempt) {
+        attempt.aborted = true;
+        attempt.wake?.();
+      }
+      attempt = null;
       sending = null;
       prepared = null;
       outgoingConfirmedAt = 0;
       lastUpdateAt = 0;
       seenIncoming.clear();
-      set({ emergencyContacts: [], contactsLoaded: false, contactsSaving: false, outgoing: null, phase: 'idle', error: null, liveShareSkipped: [], incoming: {}, focusedSosId: null });
+      set({ emergencyContacts: [], contactsLoaded: false, contactsSaving: false, outgoing: null, phase: 'idle', error: null, errorCode: null, online: null, offline: 'online', lastAttempt: null, liveShareSkipped: [], incoming: {}, focusedSosId: null });
     },
   }));
 }

@@ -379,3 +379,38 @@ describe('Faz 8: permission_grants / permission_declines / users/{uid}/consents'
     await assertFails(fa.doc(`users/${A}`).update({ invisible: null }));
   });
 });
+
+// ---------------------------------------------------------------------------
+// Faz 9: Güvenli Dönüş yalnızca sahibine; anlık fotoğraf ve yaklaşma kayıtları istemciye tamamen kapalı
+// ---------------------------------------------------------------------------
+
+describe('Faz 9: safe_returns / photo_proofs / approach_marks', () => {
+  const srId = `sr${randomUUID().slice(0, 8)}`;
+  const proofId = 'p'.repeat(20);
+  beforeAll(async () => {
+    await db().doc(`safe_returns/${srId}`).set({ safe_return_id: srId, owner_id: A, contact_ids: [B], status: 'active', last_fix: { lat: 41, lng: 29, accuracy: 5, timestamp: now } });
+    await db().doc(`photo_proofs/${proofId}`).set({ proof_id: proofId, owner_id: A, state: 'active', expires_at: now + 3_600_000 });
+    await db().doc(`approach_marks/${A}_s1_0123456789abcdef`).set({ uid: A, session_id: 's1', dest_key: '0123456789abcdef', created_at: now });
+  });
+
+  it('Güvenli Dönüş: yalnızca sahibi okur (sorgu dahil); acil kişi bile okuyamaz; kimse yazamaz', async () => {
+    const [fa, fb] = await Promise.all([clientFirestore(A), clientFirestore(B)]);
+    await assertSucceeds(fa.doc(`safe_returns/${srId}`).get());
+    const own = await assertSucceeds(fa.collection('safe_returns').where('owner_id', '==', A).get());
+    expect(own.docs.map((d) => d.id)).toContain(srId);
+    await assertFails(fb.doc(`safe_returns/${srId}`).get());
+    await assertFails(fb.collection('safe_returns').where('contact_ids', 'array-contains', B).get());
+    await assertFails(fa.doc(`safe_returns/${srId}`).update({ status: 'cancelled' }));
+    await assertFails(fa.doc('safe_returns/yeni').set({ owner_id: A, status: 'active' }));
+  });
+
+  it('anlık fotoğraf ve yaklaşma kayıtları: sahibi dahil kimse okuyamaz / yazamaz', async () => {
+    const [fa, fb] = await Promise.all([clientFirestore(A), clientFirestore(B)]);
+    await assertFails(fa.doc(`photo_proofs/${proofId}`).get());
+    await assertFails(fb.doc(`photo_proofs/${proofId}`).get());
+    await assertFails(fa.collection('photo_proofs').where('owner_id', '==', A).get());
+    await assertFails(fa.doc(`photo_proofs/${proofId}`).update({ expires_at: now + 99_000_000 }));
+    await assertFails(fa.doc(`approach_marks/${A}_s1_0123456789abcdef`).get());
+    await assertFails(fa.doc(`approach_marks/${A}_s1_0123456789abcdef`).delete());
+  });
+});

@@ -19,6 +19,8 @@
  *
  * Faz 8: `permission_request` / `permission_granted` (görünür, koordinatsız) önde yerel bildirimle gösterilir;
  * dokununca (önde, arka planda ya da soğuk açılışta) Arkadaşlar ekranı açılır (f8Services). Retde push yoktur.
+ * Faz 9: yaklaşma ve Güvenli Dönüş başladı / bitti önde yerel bildirimle (f9Push); "Güvende misin?" önde sistem
+ * bildirimi olmadan (f9Services → safeReturnStore). Dokununca harita / Güvenli Dönüş ekranı (f9Services).
  */
 import { QUICK_SHARE_NOTIFICATION, lowBatteryPushText, type PushData, type UserId } from '@konum/core';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -42,6 +44,7 @@ import { f5ForegroundContent, isF5PushType, routeF5Open, routeF5Received } from 
 import { f6ForegroundContent, isF6PushType, routeF6Received } from './f6Push';
 import { f7ForegroundContent, isF7PushType, routeF7Open, routeF7Received } from './f7Push';
 import { f8ForegroundContent, isF8PushType, routeF8Open, routeF8Received } from './f8Push';
+import { f9ForegroundContent, isF9PushType, routeF9Open, routeF9Received } from './f9Push';
 import { isLocationRequestPushType, locationRequestLocalContent } from './locationRequestPush';
 import { friendsStore, selectFriends } from '../../state/friendsStore';
 import { handleWidgetBackgroundPush } from '../widgets/widgetBackground';
@@ -87,7 +90,7 @@ export async function registerPushToken(uid: UserId): Promise<() => void> {
   // Faz 5: bölge olayı → göndereni vurgula, buluşma önerisi / yanıtı → buluşma kartı.
   // Faz 7: etkinlik bildirimi → etkinlik ekranı, "yola çıktı" → göndereni vurgula.
   // Faz 8: izin isteği / izin verildi → Arkadaşlar.
-  const openRoute = (data: Record<string, unknown> | undefined) => routeF4Open(data) || routeF5Open(data) || routeF7Open(data) || routeF8Open(data);
+  const openRoute = (data: Record<string, unknown> | undefined) => routeF4Open(data) || routeF5Open(data) || routeF7Open(data) || routeF8Open(data) || routeF9Open(data);
   const unOpened = onNotificationOpenedApp(messaging, (m) => void openRoute((m as unknown as PushLike).data));
   void getInitialNotification(messaging)
     .then((m) => (m ? openRoute((m as unknown as PushLike).data) : false))
@@ -221,6 +224,19 @@ async function handleForegroundMessage(msg: RemoteMessage): Promise<void> {
       await Notifications.scheduleNotificationAsync({
         content: { title: f8.title, body: f8.body, data: f8.data, sound: f8.sound ? 'default' : false, interruptionLevel: f8.interruptionLevel },
         trigger: Platform.OS === 'android' ? { channelId: f8.channelId } : null,
+      });
+    }
+    return;
+  }
+  // Faz 9: yaklaşma (`movement` kanalı) ve Güvenli Dönüş başladı / bitti yerel bildirimle; sahibin "Güvende misin?"
+  // push'u önde gösterilmez (uygulama içi son uyarı + planlanmış yerel bildirim), yalnızca durum tazelenir.
+  if (isF9PushType(m.data?.type)) {
+    routeF9Received(m.data);
+    const f9 = f9ForegroundContent(m, friendName);
+    if (f9) {
+      await Notifications.scheduleNotificationAsync({
+        content: { title: f9.title, body: f9.body, data: f9.data, sound: localSound(f9), interruptionLevel: f9.interruptionLevel },
+        trigger: Platform.OS === 'android' ? { channelId: f9.channelId } : null,
       });
     }
     return;

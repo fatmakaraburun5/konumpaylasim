@@ -9,6 +9,10 @@
  *     bildirimleri.
  *   Görünüm: Sistem / Açık / Koyu (harita stili dahil, anında).
  *   Diğer: Görünmez ol (Profil), kişi izinleri (Arkadaşlar), Güvenlik Sözleşmesi / KVKK, kurulum rehberi.
+ *
+ * Faz 9: Rehber satırı (sistem izni) ve "SMS ile acil durum yedeği" satırı (uygulama içi: eylem `in_app` → SMS yedeği
+ * sayfası; özet `useSmsSummary`). Kamera satırı: anlık fotoğraf yalnızca kamerayla çekilir, galeriden seçilemez.
+ * Diğer'de Güvenli Dönüş.
  */
 import {
   parsePrivacy,
@@ -28,6 +32,7 @@ import { openSystemSettings, requestPermission } from '../../services/permission
 import { useAuthStore } from '../../state/authStore';
 import { onboardingStore } from '../../state/onboardingStore';
 import { effectivePrivacy, privacyStore, usePrivacyStore } from '../../state/privacyStore';
+import { useSmsSummary } from '../../state/smsFallbackStore';
 import { Button, cardShadow, IconButton, MIN_TOUCH, setThemePref, Text, useTheme, useThemePref } from '../../ui';
 import { usePermissionSnapshot } from './usePermissionSnapshot';
 
@@ -43,12 +48,17 @@ export function PrivacyCenterScreen() {
   const themePref = useThemePref();
   const [working, setWorking] = useState<string | null>(null);
 
-  const rows = useMemo(() => (snapshot ? permissionCenterRows(snapshot) : []), [snapshot]);
+  const sms = useSmsSummary();
+  const rows = useMemo(() => (snapshot ? permissionCenterRows(snapshot, sms) : []), [snapshot, sms]);
   const summary = permissionCenterSummary(rows);
   const card = [cardShadow, { backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.md, gap: spacing.sm }];
   const toneColor = (t: CenterRow['tone']) => (t === 'ok' ? colors.live : t === 'warn' ? colors.warning : colors.danger);
 
   const onRow = async (r: CenterRow) => {
+    if (r.action === 'in_app') {
+      router.push('/sms-fallback');
+      return;
+    }
     setWorking(r.id);
     try {
       if (r.action === 'settings') await openSystemSettings();
@@ -175,6 +185,7 @@ export function PrivacyCenterScreen() {
           <Text variant="heading">Diğer</Text>
           <Button title="Görünmez ol / görünürlük" variant="secondary" onPress={() => router.push('/profile')} />
           <Button title="Kişi izinleri (kim neyi görebilir)" variant="secondary" onPress={() => router.push('/friends')} />
+          <Button title="Güvenli Dönüş" variant="secondary" onPress={() => router.push('/safe-return')} testID="privacy-safe-return" />
           <Button title="Güvenlik Sözleşmesi ve KVKK" variant="secondary" onPress={() => router.push('/consent')} />
           <Button
             title="Kurulum rehberini yeniden göster"

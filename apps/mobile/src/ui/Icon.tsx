@@ -36,7 +36,11 @@ export type IconName =
   | 'themeAuto'
   | 'shield'
   | 'bell'
-  | 'mapPin';
+  | 'mapPin'
+  // Faz 9
+  | 'message'
+  | 'flag'
+  | 'flip';
 
 export interface IconProps {
   name: IconName;
@@ -180,6 +184,26 @@ export function Icon({ name, size = 22, color, strokeWidth = 2 }: IconProps) {
         <>
           <Path d="M12 21s-6.5-6.2-6.5-11a6.5 6.5 0 0113 0c0 4.8-6.5 11-6.5 11z" {...common} />
           <Circle cx={12} cy={10} r={2.3} {...common} />
+        </>
+      )}
+      {name === 'message' && (
+        <>
+          <Path d="M4 5h16a1 1 0 011 1v10a1 1 0 01-1 1H9l-4.5 3.5V17H4a1 1 0 01-1-1V6a1 1 0 011-1z" {...common} />
+          <Path d="M7.5 10h9M7.5 13h5.5" {...common} />
+        </>
+      )}
+      {name === 'flag' && (
+        <>
+          <Path d="M5 21V4" {...common} />
+          <Path d="M5 4h12l-2.5 4L17 12H5" {...common} />
+        </>
+      )}
+      {name === 'flip' && (
+        <>
+          <Path d="M4 9a8 8 0 0114.5-3.5L20 7" {...common} />
+          <Path d="M20 3v4h-4" {...common} />
+          <Path d="M20 15a8 8 0 01-14.5 3.5L4 17" {...common} />
+          <Path d="M4 21v-4h4" {...common} />
         </>
       )}
       {name === 'battery' && (

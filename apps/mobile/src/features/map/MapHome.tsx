@@ -30,6 +30,12 @@
  *   └─ Faz 8:
  *       görünmezken üst çubuğun altında InvisibleBanner (44 pt, "Görünür ol") · avatarda göz-kapalı rozeti ·
  *       paylaş düğmesi / QR / "Yeni paylaşım" → "Görünmez moddasın" uyarısı + "Görünür ol"
+ *   └─ Faz 9:
+ *       arkadaş pininde 📷 rozeti ve hedef satırı ("Neredeyse vardı · Ev · ~1 dk"); kişi kartında hedef durumu ve
+ *       anlık fotoğraf (küçük resim + kalan süre → görüntüleyici) · nokta kartında "🏁 Hedefim yap"
+ *       paylaşım sürerken kitapçık üstünde ShareExtrasBar ("📷 Anlık fotoğraf", "🏁 Hedef seç" → DestinationPicker,
+ *       gece Güvenli Dönüş önerisi) · üst şeritte SafeReturnBand (geri sayım, "Güvendeyim", "+15 dk") ve
+ *       "Neredeyse vardım" bilgisi · sağ altta Güvenli Dönüş girişi (🛡)
  *
  * Seçim: arkadaş pinine / şeride dokun → o arkadaş; haritaya uzun bas → nokta. Arkadaşın paylaşımı biterse
  * seçim kalkar. Rota ve adres yalnızca EtaCard görünürken istenir (useEta → routesRepo/geocodeRepo).
@@ -38,6 +44,7 @@ import {
   formatAgo,
   FRESHNESS_TEXT,
   isSosActive,
+  SAFE_RETURN_TEXT,
   visibleStatusNote,
   type ExtensionMinutes,
   type LatLng,
@@ -100,6 +107,17 @@ import { ShareButton } from './ShareButton';
 import { ShareDeck, type ShareDeckActions } from './ShareDeck';
 import { TopBar } from './TopBar';
 import { useAddress, useRouteEta, type EtaTarget } from './useEta';
+// Faz 9
+import { ApproachToast } from '../approach/ApproachToast';
+import { pointDestName } from '../approach/destModel';
+import { DestinationPicker, type DestinationPickerHandle } from '../approach/DestinationPicker';
+import { SafeReturnBanner, useSafeReturnBannerVisible } from '../safeReturn/SafeReturnBanner';
+import { isSafeReturnLive } from '../safeReturn/safeReturnModel';
+import { SAFE_RETURN_ROUTE } from '../../services/f9Services';
+import { destinationStore } from '../../state/destinationStore';
+import { useSafeReturnPhase } from '../safeReturn/useSafeReturnPhase';
+import { friendBadges as buildFriendBadges } from './friendBadges';
+import { ShareExtrasBar } from './ShareExtrasBar';
 
 const RUNNING = new Set(['starting', 'active', 'expiring_soon', 'extending', 'stopping']);
 const LINK_RUNNING = new Set<LinkSession['phase']>(['active', 'expiring_soon', 'extending', 'stopping']);
@@ -136,6 +154,7 @@ export function MapHome() {
   const qrSheet = useRef<LinkQrSheetHandle>(null);
   const noteSheet = useRef<NoteSheetHandle>(null);
   const meetupSheet = useRef<MeetupSheetHandle>(null);
+  const destPicker = useRef<DestinationPickerHandle>(null);
   const navigation = useNavigation();
   const { height: windowH } = useWindowDimensions();
   const [bottomH, setBottomH] = useState(0);
@@ -185,6 +204,10 @@ export function MapHome() {
     }
     return out;
   }, [incoming, incomingNow]);
+  // Faz 9: 📷 rozeti ve hedef durumu (paketten).
+  const friendBadges = useMemo(() => buildFriendBadges(incoming, incomingNow), [incoming, incomingNow]);
+  const safeReturnBanner = useSafeReturnBannerVisible();
+  const safeReturnLive = isSafeReturnLive(useSafeReturnPhase());
   const pingPinList = useMemo(() => pingPins(pingInbox, liveSenders, incomingNow), [pingInbox, liveSenders, incomingNow]);
   const sosPinList = useMemo(() => sosPins(incomingSos, liveSenders), [incomingSos, liveSenders]);
   const selectedNote = selection?.kind === 'note' ? placeNotes.find((n) => n.note_id === selection.noteId) : undefined;
@@ -213,6 +236,8 @@ export function MapHome() {
   const selectedSuggestion = meetupOpen && meetupResult && meetupSel !== null ? meetupResult.suggestions[meetupSel] : undefined;
 
   const anyRunning = sessions.some((s) => RUNNING.has(s.phase));
+  /** Faz 9: arkadaşlarla süren paylaşım (fotoğraf ve hedef yalnızca bunlara gider; QR bağlantısına gitmez). */
+  const friendSharing = sessions.some((s) => RUNNING.has(s.phase) && s.phase !== 'stopping');
   const anyLinkRunning = links.some((l) => LINK_RUNNING.has(l.phase));
   const expiring = sessions.find((s) => s.phase === 'expiring_soon');
   // Arka plan izni yalnızca süren en uzun paylaşım gerektiriyorsa önerilir (core planlayıcı).
@@ -499,9 +524,14 @@ export function MapHome() {
 
   // Buluşma sayfası açıkken alt dolgu sayfanın ilk durağı (%52) kadar: pinler sayfanın üstünde kalsın.
   const padding = useMemo(
-    // Faz 8: görünmezken şerit (44 pt + boşluk) üstteki alanı uzatır.
-    () => ({ top: insets.top + 140 + (invisible ? 52 : 0), right: 0, bottom: meetupOpen ? Math.round(windowH * 0.52) + 8 : bottomH + 8, left: 0 }),
-    [insets.top, bottomH, meetupOpen, windowH, invisible],
+    // Faz 8: görünmezken şerit (44 pt + boşluk) üstteki alanı uzatır. Faz 9: Güvenli Dönüş bandı da (44 pt).
+    () => ({
+      top: insets.top + 140 + (invisible ? 52 : 0) + (safeReturnBanner ? 52 : 0),
+      right: 0,
+      bottom: meetupOpen ? Math.round(windowH * 0.52) + 8 : bottomH + 8,
+      left: 0,
+    }),
+    [insets.top, bottomH, meetupOpen, windowH, invisible, safeReturnBanner],
   );
   const onBottomLayout = (e: LayoutChangeEvent) => setBottomH(e.nativeEvent.layout.height);
 
@@ -518,6 +548,7 @@ export function MapHome() {
         route={routePoints}
         onLongPress={dropPin}
         friendNotes={friendNotes}
+        friendBadges={friendBadges}
         pingHighlightFrom={pingHighlightFrom}
         sosSenders={sosSenders}
         placeNotes={placeNotes}
@@ -550,6 +581,9 @@ export function MapHome() {
       />
       <View style={[styles.strip, { top: insets.top + 72, gap: spacing.xs }]} pointerEvents="box-none">
         {invisible ? <InvisibleBanner onVisible={openRestoreFlow} /> : null}
+        {/* Faz 9: Güvenli Dönüş geri sayımı ve "Neredeyse vardım" bilgisi. */}
+        <SafeReturnBanner />
+        <ApproachToast />
         <SosIncomingBanner alerts={incomingSos} now={incomingNow} />
         {/* Konum İste: "X konumunu paylaşmanı istiyor" → Reddet / Onayla (süre seçici). */}
         <View style={{ paddingHorizontal: spacing.md }} pointerEvents="box-none">
@@ -576,6 +610,9 @@ export function MapHome() {
             </View>
             {anyRunning && !target ? (
               <IconButton icon="qr" variant="floating" size={48} accessibilityLabel="QR ile paylaş" onPress={() => openShare('link')} />
+            ) : null}
+            {!safeReturnLive && !target ? (
+              <IconButton icon="shield" variant="floating" size={48} accessibilityLabel={SAFE_RETURN_TEXT.title} onPress={() => router.push(SAFE_RETURN_ROUTE)} />
             ) : null}
             <MapThemeButton />
             <RecenterButton onPress={recenter} disabled={!myPosition} />
@@ -609,6 +646,12 @@ export function MapHome() {
               onRequestLocation={locationGranted ? undefined : ensureMyLocation}
               locationBlocked={locationBlocked}
               note={selectedFriend ? (friendNotes[selectedFriend.shareId] ?? null) : null}
+              dest={selectedFriend ? (friendBadges[selectedFriend.shareId]?.dest ?? null) : null}
+              proof={
+                selectedFriend && friendBadges[selectedFriend.shareId]?.photo
+                  ? { ownerId: selectedFriend.senderId, ref: friendBadges[selectedFriend.shareId]!.photo! }
+                  : null
+              }
             >
               {selectedFriend ? (
                 <>
@@ -618,6 +661,17 @@ export function MapHome() {
               ) : selection?.kind === 'pin' ? (
                 <>
                   <Button title="📝 Buraya not bırak" variant="secondary" onPress={() => leaveNoteAt(selection.point)} />
+                  {friendSharing ? (
+                    <Button
+                      title="🏁 Hedefim yap"
+                      variant="secondary"
+                      onPress={() => {
+                        void destinationStore.getState().setDestination({ kind: 'point', name: pointDestName(address.text), center: selection.point });
+                        setSelection(null);
+                      }}
+                      testID="eta-card-set-destination"
+                    />
+                  ) : null}
                   <Button title="📍 Buradan buluşma noktası öner" variant="secondary" onPress={() => openMeetup([], selection.point)} />
                 </>
               ) : null}
@@ -627,6 +681,7 @@ export function MapHome() {
           ) : (
             <>
               <MeetupPills meetups={meetupList} myUid={myUid} onOpen={(m) => meetupStore.getState().focus(m.meetup_id)} />
+              {friendSharing ? <ShareExtrasBar onPickDestination={() => destPicker.current?.present()} onSafeReturn={() => router.push(SAFE_RETURN_ROUTE)} /> : null}
               <ShareDeck
                 sessions={sessions}
                 links={links}
@@ -645,6 +700,7 @@ export function MapHome() {
       <ShareSheet ref={sheet} onLinkCreated={showQr} />
       <LinkQrSheet ref={qrSheet} />
       <NoteSheet ref={noteSheet} onPlaceSaved={selectNote} onPlaceDeleted={() => setSelection(null)} />
+      <DestinationPicker ref={destPicker} />
       <MeetupSheet
         ref={meetupSheet}
         friendPositions={friendPositions}

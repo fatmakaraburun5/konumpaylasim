@@ -322,6 +322,23 @@ describe('Faz 4', () => {
     await assertFails(sender.ref(livePathOf(p)).set({ ...deliveredFor(p), note: 'ok', note_exp: 'yarın' }));
   });
 
+  it('Faz 9: photo_id + photo_exp birlikte (≤ 61 dk ileri); dest_name + dest_state birlikte; dest_eta yalnızca near', async () => {
+    const p = await seedPair();
+    const sender = await clientDb(p.sender_id);
+    const photo = { photo_id: 'AbCdEfGhIjKlMnOpQr_-', photo_exp: Date.now() + 3_600_000 };
+    await assertSucceeds(sender.ref(livePathOf(p)).set({ ...deliveredFor(p), ...photo, dest_name: 'Ev', dest_state: 'near', dest_eta: 1 }));
+    await assertSucceeds(sender.ref(livePathOf(p)).set({ ...deliveredFor(p), dest_name: 'Ev', dest_state: 'en_route' }));
+    await assertFails(sender.ref(livePathOf(p)).set({ ...deliveredFor(p), photo_id: photo.photo_id }));
+    await assertFails(sender.ref(livePathOf(p)).set({ ...deliveredFor(p), photo_exp: photo.photo_exp }));
+    await assertFails(sender.ref(livePathOf(p)).set({ ...deliveredFor(p), photo_id: 'kisa', photo_exp: photo.photo_exp }));
+    await assertFails(sender.ref(livePathOf(p)).set({ ...deliveredFor(p), ...photo, photo_exp: Date.now() + 2 * 3_600_000 }));
+    await assertFails(sender.ref(livePathOf(p)).set({ ...deliveredFor(p), dest_name: 'Ev' }));
+    await assertFails(sender.ref(livePathOf(p)).set({ ...deliveredFor(p), dest_name: 'x'.repeat(31), dest_state: 'near' }));
+    await assertFails(sender.ref(livePathOf(p)).set({ ...deliveredFor(p), dest_name: 'Ev', dest_state: 'yakın' }));
+    await assertFails(sender.ref(livePathOf(p)).set({ ...deliveredFor(p), dest_name: 'Ev', dest_state: 'arrived', dest_eta: 1 }));
+    await assertFails(sender.ref(livePathOf(p)).set({ ...deliveredFor(p), dest_name: 'Ev', dest_state: 'near', dest_eta: 121 }));
+  });
+
   it('ping_inbox: yalnızca alıcı okur ve siler; kimse yazamaz; ping_expiry kapalı', async () => {
     const to = uid('r');
     const path = `ping_inbox/${to}/p1`;

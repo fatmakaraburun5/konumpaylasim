@@ -1,6 +1,6 @@
 rules_version = '2';
 
-// Faz 6: Cloud Storage kuralları — yalnızca profil fotoğrafları (avatar).
+// Faz 6: Cloud Storage kuralları — yalnızca profil fotoğrafları (avatar). Faz 9: anlık fotoğraflar istemciye kapalı.
 //
 // Yol: avatars/{uid}/{version}.jpg (ana, 512 px, ≤ 400 KB) ve avatars/{uid}/{version}_160.jpg (küçük, 160 px,
 // ≤ 60 KB); version = yükleme anı epoch ms (13 hane). Sınırlar core AVATAR_LIMITS / AVATAR_FILE_RE ile aynı olmalı
@@ -30,6 +30,13 @@ service firebase.storage {
       allow list: if false;
       allow create, update: if isOwner(uid) && validAvatar(file);
       allow delete: if isOwner(uid);
+    }
+
+    // Faz 9: anlık fotoğraflar (proofs/{uid}/{proof_id}.jpg). İstemciye TAMAMEN kapalı — sahibi dahil: bayt yalnızca
+    // proof_get callable'ıyla, her istekte erişim yeniden denetlenerek gelir (indirme token'ı / herkese açık adres yok).
+    // Yalnızca Admin SDK yazar, okur ve 1 saat sonra siler (yedek: storage.lifecycle.json, proofs/ ≥ 1 gün).
+    match /proofs/{allPaths=**} {
+      allow read, write: if false;
     }
 
     // Geri kalan her şey kapalı.

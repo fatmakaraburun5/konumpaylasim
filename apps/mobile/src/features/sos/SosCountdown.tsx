@@ -2,13 +2,20 @@
  * Faz 4: SOS gönderim öncesi tam ekran geri sayım (core `sosCountdownLeft`, 5 → 1). Büyük "İptal" ve "Hemen gönder",
  * uyarının kime gideceği ve şu anki konum doğruluğu. Süre dolunca gönderim kendiliğinden başlar (sosFlowReduce
  * `tick`). Gönderim sürerken "Gönderiliyor…", başarısızsa hata + "Tekrar gönder".
+ *
+ * Faz 9: internet yoksa (sosStore `offline` 'online' dışında) büyük "SMS ile gönder (N kişi)" ya da SMS yedeğinin
+ * nasıl açılacağı + "112'yi ara" (OfflineSosPanel); SOS arka planda yeniden denenmeye devam eder.
  */
-import { formatAccuracyTr, SOS_LIMITS, SOS_MESSAGE, type SosFlowState } from '@konum/core';
+import { formatAccuracyTr, SOS_LIMITS, SOS_MESSAGE, type OfflineSosDecision, type SosFlowState } from '@konum/core';
 import { useEffect } from 'react';
-import { AccessibilityInfo, ActivityIndicator, Pressable, StyleSheet, View } from 'react-native';
+import { AccessibilityInfo, ActivityIndicator, ScrollView, StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { lightColors, Overlay, Text, useTheme } from '../../ui';
+import { OfflineSosPanel } from '../sms/OfflineSosPanel';
+import { BigButton } from './BigButton';
 import { SOS_FG } from './sosModel';
+
+export { BigButton } from './BigButton';
 
 export interface SosCountdownProps {
   flow: SosFlowState;
@@ -19,12 +26,18 @@ export interface SosCountdownProps {
   onCancel: () => void;
   onSendNow: () => void;
   onRetry: () => void;
+  /** Faz 9: çevrimdışı kararı (sosStore `offline`). */
+  offline?: OfflineSosDecision;
+  /** Faz 9: "SMS yedeğini aç" (ekran kapanır, SMS yedeği sayfası açılır). */
+  onOpenSmsSettings?: () => void;
 }
 
-export function SosCountdown({ flow, secondsLeft, recipients, accuracyM, onCancel, onSendNow, onRetry }: SosCountdownProps) {
+export function SosCountdown({ flow, secondsLeft, recipients, accuracyM, onCancel, onSendNow, onRetry, offline = 'online', onOpenSmsSettings }: SosCountdownProps) {
   const { radius, spacing } = useTheme();
   const insets = useSafeAreaInsets();
   const visible = flow.phase === 'countdown' || flow.phase === 'sending' || flow.phase === 'error';
+  // Gönderim sürerken yalnızca "SMS ile gönder" (kapatılamaz); hata ekranında tüm seçenekler.
+  const showOffline = offline !== 'online' && (flow.phase === 'error' || (flow.phase === 'sending' && offline === 'offer_sms'));
 
   useEffect(() => {
     if (flow.phase === 'countdown') {
@@ -36,7 +49,10 @@ export function SosCountdown({ flow, secondsLeft, recipients, accuracyM, onCance
 
   return (
     <Overlay visible={visible} onRequestClose={flow.phase === 'sending' ? undefined : onCancel} testID="sos-countdown">
-      <View style={[styles.root, { paddingTop: insets.top + spacing.xl, paddingBottom: insets.bottom + spacing.lg, paddingHorizontal: spacing.lg, gap: spacing.lg }]}>
+      <ScrollView
+        style={styles.root}
+        contentContainerStyle={{ flexGrow: 1, paddingTop: insets.top + spacing.xl, paddingBottom: insets.bottom + spacing.lg, paddingHorizontal: spacing.lg, gap: spacing.lg }}
+      >
         <View style={{ gap: spacing.xs }}>
           <Text variant="title" style={styles.fg} accessibilityRole="header">
             {flow.phase === 'error' ? 'Uyarı gönderilemedi' : flow.phase === 'sending' ? 'Uyarı gönderiliyor…' : 'Acil durum uyarısı'}
@@ -65,79 +81,46 @@ export function SosCountdown({ flow, secondsLeft, recipients, accuracyM, onCance
             </View>
           ) : flow.phase === 'error' ? (
             <Text variant="heading" style={[styles.fg, { textAlign: 'center' }]} accessibilityLiveRegion="assertive">
-              {flow.message}
+              {showOffline ? 'İnternet yok. SOS bağlantı gelince kendiliğinden gönderilecek.' : flow.message}
             </Text>
           ) : null}
         </View>
 
-        <View style={[styles.info, { borderRadius: radius.lg, padding: spacing.md, gap: spacing.xxs }]}>
-          <Text variant="label" style={styles.fgSoft}>
-            Kime
-          </Text>
-          <Text variant="heading" style={styles.fg} numberOfLines={2}>
-            {to}
-          </Text>
-          <Text variant="label" style={[styles.fgSoft, { marginTop: spacing.xs }]}>
-            Gidecek bilgiler
-          </Text>
-          <Text variant="body" style={styles.fg}>
-            {`Tam konum${accuracyM !== null ? ` (${formatAccuracyTr(accuracyM)})` : ''}, adres, harita bağlantısı, pil ve varsa rotan`}
-          </Text>
-        </View>
+        {showOffline ? (
+          <OfflineSosPanel
+            decision={offline}
+            onOpenSettings={() => {
+              onCancel();
+              onOpenSmsSettings?.();
+            }}
+          />
+        ) : (
+          <View style={[styles.info, { borderRadius: radius.lg, padding: spacing.md, gap: spacing.xxs }]}>
+            <Text variant="label" style={styles.fgSoft}>
+              Kime
+            </Text>
+            <Text variant="heading" style={styles.fg} numberOfLines={2}>
+              {to}
+            </Text>
+            <Text variant="label" style={[styles.fgSoft, { marginTop: spacing.xs }]}>
+              Gidecek bilgiler
+            </Text>
+            <Text variant="body" style={styles.fg}>
+              {`Tam konum${accuracyM !== null ? ` (${formatAccuracyTr(accuracyM)})` : ''}, adres, harita bağlantısı, pil ve varsa rotan`}
+            </Text>
+          </View>
+        )}
 
         <View style={{ gap: spacing.sm }}>
           {flow.phase === 'error' ? (
-            <BigButton title="Tekrar gönder" onPress={onRetry} solid />
+            <BigButton title="Tekrar gönder" onPress={onRetry} solid={!showOffline} />
           ) : (
             <BigButton title="Hemen gönder" onPress={onSendNow} solid disabled={flow.phase !== 'countdown'} />
           )}
           <BigButton title={flow.phase === 'error' ? 'Kapat' : 'İptal'} onPress={onCancel} disabled={flow.phase === 'sending'} />
         </View>
-      </View>
+      </ScrollView>
     </Overlay>
-  );
-}
-
-/** Büyük dokunma alanlı düğme (en az 64 pt). `solid`: beyaz zemin, kırmızı yazı. */
-export function BigButton({
-  title,
-  onPress,
-  solid = false,
-  disabled = false,
-  hint,
-  small = false,
-}: {
-  title: string;
-  onPress: () => void;
-  solid?: boolean;
-  disabled?: boolean;
-  hint?: string;
-  /** Yan yana iki düğme için daha küçük yazı. */
-  small?: boolean;
-}) {
-  const { radius } = useTheme();
-  return (
-    <Pressable
-      onPress={onPress}
-      disabled={disabled}
-      accessibilityRole="button"
-      accessibilityLabel={title}
-      accessibilityHint={hint}
-      accessibilityState={{ disabled }}
-      style={({ pressed }) => [
-        styles.big_btn,
-        {
-          borderRadius: radius.lg,
-          backgroundColor: solid ? (pressed ? lightColors.dangerSoft : SOS_FG) : pressed ? 'rgba(255,255,255,0.18)' : 'transparent',
-          borderColor: SOS_FG,
-          opacity: disabled ? 0.5 : 1,
-        },
-      ]}
-    >
-      <Text variant={small ? 'heading' : 'title'} style={{ color: solid ? lightColors.danger : SOS_FG }} numberOfLines={1}>
-        {title}
-      </Text>
-    </Pressable>
   );
 }
 
@@ -148,5 +131,4 @@ const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   big: { fontSize: 120, lineHeight: 132, fontWeight: '800', fontVariant: ['tabular-nums'] },
   info: { backgroundColor: 'rgba(0,0,0,0.18)' },
-  big_btn: { minHeight: 64, alignItems: 'center', justifyContent: 'center', borderWidth: 2 },
 });

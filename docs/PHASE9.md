@@ -126,8 +126,11 @@ Alıcı pin altında "Neredeyse vardı · Ev · ~1 dk", kişi kartında aynı sa
   (kilit açmayı ister) ve "+15 dk".
 - **Uzatma**: "+15 dk", toplam ≤ 3 sa.
 - **Konum**: başlarken `fix` zorunlu; sürerken en sık 60 sn'de bir `safe_return_update` (son doğrulanmış konum + pil).
-  "Yolculuk boyunca canlı konumumu da paylaş" (varsayılan açık) seçilirse seçilen kişilerle `due + grace` sonuna kadar
-  canlı paylaşım başlar; bu, arka plan konum hattını (Android FGS, iOS arka plan) da canlı tutar.
+  "Yolculuk boyunca canlı konumumu da paylaş" (varsayılan açık) seçilirse seçilen kişilerle `grace_until + 1 sa`
+  (alarm penceresi, Faz 4 SOS paylaşımı gibi) sonuna kadar canlı paylaşım başlar; bu, arka plan konum hattını
+  (Android FGS, iOS arka plan) da canlı tutar. "+15 dk" sonrası paylaşım uzatılır; alarmda kesilmez. Güvenli Dönüş'ün
+  açtığı oturum cihazda kaydedilir ve varış / "Güvendeyim" / iptal / alarm SOS'unun "Güvendeyim" ile kapatılmasında
+  durdurulur.
 - **Varış algılama**: hedef kayıtlı bölgeyse Faz 5 bölge izleyicisi (`onDecision arrive`), nokta ise `approachReduce`
   varış yarıçapı → otomatik `safe_return_check_in {reason:'arrived'}`.
 
@@ -139,7 +142,9 @@ transaction'ında yeniden okunur (`reduceSafeReturn` tick). Alarm: Faz 4 `sos_se
 `openOrRefreshSos` ile çalışır (`origin:'safe_return'`, `safe_return:{destination_name, duration_min, due_at}`,
 `message = safeReturnAlarmMessage`), alıcılar = seçilen kişiler ∩ `sos_alert` izni ∩ arkadaş. Telefon kapalı /
 çevrimdışı olsa da alarm son bildirilen konumla gider. Cihaz açıksa SOS'un 15 sn'lik tazelemesi devam eder ve
-"Güvendeyim" SOS'u kapatır.
+"Güvendeyim" SOS'u kapatır. Son uyarıdan hemen sonra (alarm açılmışken) Güvenli Dönüş ekranından ya da bildirim
+eyleminden gelen "Güvendeyim" `safe_return_not_active` alırsa istemci kaydı sunucudan okur ve alarmdaysa aynı dokunuşla
+`sos_resolve` çağırır; kapatamazsa / durumu okuyamazsa kullanıcıya bildirimle söyler (sessizce geçilmez).
 
 | Yol | Erişim |
 | --- | --- |
@@ -224,10 +229,28 @@ doğrular: `photo_id` (20 karakter base64url) ile `photo_exp` birlikte; `dest_na
 
 ## 7. Tarayıcı demosu
 
-"FAZ 9 SENARYOLARI" paneli: Ayşe anlık fotoğraf paylaşsın ("Mekana geçtim, masamız burası"), Mehmet hedefine
-yaklaşsın ("Neredeyse vardım (1 dk)" bildirimi), telefonum hedefe yürüsün, Güvenli Dönüş süresini hemen doldur, Ayşe'nin
-Güvenli Dönüş alarmı, interneti kes / bağla. Kamera: tarayıcı kamerası, yoksa demo kamera karesi (galeri yok). SMS:
-telefon çerçevesinde hazır dolu "Mesajlar" ekranı. Rehber: demo kişileri (Annem, Babam, Ablam).
+"FAZ 9 SENARYOLARI" paneli (`src/demo/shell/Faz9.web.tsx`; uygulandığı haliyle):
+
+- **Ayşe anlık fotoğraf paylaşsın:** kameradan kare + "Mekana geçtim, masamız burası" → pinde 📷 notu, kişi kartında
+  küçük resim + "60 dk kaldı", dokununca tam ekran. **Fotoğrafların süresini 1 saat ileri sar:** sunucu, sahte Storage
+  ve iki tarafın önbelleği silinir; açık görüntüleyici görseli kaldırıp "Fotoğrafın süresi doldu" der.
+- **Ayşe hedefine 200 m yaklaşsın / varsın:** bana "Ayşe Yılmaz: Neredeyse vardım (1 dk)" bildirimi + pin altında
+  "🏁 Neredeyse vardı · Kitap Kafe · ~1 dk"; ikinci basışta "vardı", bildirim tekrar gitmez.
+- **Ayşe Güvenli Dönüş başlatsın ve yanıt vermesin** (acil kişisi benim; demo kısaltması 20 sn + 20 sn son uyarı) →
+  "Ayşe Güvenli Dönüş başlattı", ardından tam ekran "GÜVENLİ DÖNÜŞ ALARMI" (son konum, doğruluk, pil).
+- **Güvenli Dönüş: süreyi bitir (son uyarı) / alarmı tetikle:** uygulamada (🛡 → Güvenli Dönüş) başlattığım
+  zamanlayıcı için. Hedef için önce Faz 5 panelinden "Ev bölgemi buraya kaydet (demo)".
+- **İnterneti kes + SOS (SMS yedeği)** ve **İnterneti geri getir:** SOS'a basılı tut → "SMS ile gönder (n kişi)" →
+  telefon çerçevesinde hazır dolu simüle iOS Mesajlar ekranı; internet dönünce SOS aynı `op_id` ile uygulama
+  üzerinden de gider. **SMS yedeğini demo numarasıyla aç:** onay + rehberden "Annem".
+- **Rehber / SMS izinlerini sıfırla:** ilk açılış yalnızca yeni Rehber ve SMS adımlarını gösterir.
+
+Kamera: tarayıcı kamerası İSTENMEZ; canvas vizörü ("Kafe masası" / "Trafik" sahneleri) 960×1280 JPEG üretir, dosya /
+galeri / sürükle-bırak girişi yoktur. Rehber: simüle iOS izin istemi + demo kişi seçici (Annem, Babam (iki numara),
+Ablam, Komşu Selin). Demo kendi telefonumu hedefe yürütmez; yaklaşma yalnızca Ayşe üzerinden simüle edilir.
+
+Duman testi: `cd apps/mobile && EXPO_OFFLINE=1 CI=1 npm run web:export && node e2e/faz9-smoke.cjs`
+(`SHOTS=<klasör>` verilirse ekran görüntüleri).
 
 ## 8. Testler ve cihazda doğrulanacaklar
 
@@ -236,7 +259,7 @@ telefon çerçevesinde hazır dolu "Mesajlar" ekranı. Rehber: demo kişileri (A
 | Çekirdek (`packages/core/test/faz9.test.ts`) | JPEG çözümleme / meta veri silme, tazelik, erişim, yaklaşma durum makinesi (kurulma, iki örnek, tek sefer, varış, doğruluk kapısı), Güvenli Dönüş geçişleri, SMS gövdesi ve kararı, ilk açılış v2, merkez satırları, paket alanları |
 | Backend (`backend/test/functions/faz9.test.ts`, kural testleri) | fotoğraf oluştur / gör / erişim kaybı / süre dolumu / silme zinciri, yaklaşma tek sefer, Güvenli Dönüş başlat / uzat / bitir / sunucu alarmı, Storage ve RTDB kuralları |
 | Mobil (`__tests__/faz9*.test.ts`, `demoFaz9.test.ts`) | depolar, hat kancaları, bildirim içerikleri, demo sunucusu |
-| Tarayıcı | Playwright duman testi (`apps/mobile/e2e/faz9-smoke.cjs`) |
+| Tarayıcı | Playwright duman testi (`apps/mobile/e2e/faz9-smoke.cjs`, 40 denetim) |
 
 Cihazda doğrulanacaklar:
 - [ ] `expo-camera` uygulama içi kamera (iOS / Android), galeri yolunun olmadığı; kamera izni reddi.

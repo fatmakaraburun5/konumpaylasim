@@ -91,6 +91,17 @@ const MOTION_USAGE =
  */
 const IOS_CRITICAL_ALERTS = env('IOS_CRITICAL_ALERTS') === '1';
 
+/**
+ * Faz 9: kamera (profil fotoğrafı + tek kullanımlık anlık fotoğraf; anlık fotoğraf YALNIZCA uygulama içi kamerayla,
+ * galeri yolu yok), rehber (yalnızca SMS acil numarası seçmek için; rehber sunucuya gitmez) ve SMS (expo-sms: iOS
+ * `MFMessageComposeViewController`, Android `ACTION_SENDTO` — izin GEREKMEZ, uygulama SMS göndermez / okumaz).
+ * expo-image-picker ile expo-camera aynı `NSCameraUsageDescription` anahtarını yazar: iki metin aynı tutulur.
+ */
+const CAMERA_USAGE =
+  'Profil fotoğrafı ve paylaşım sırasında anlık fotoğraf çekebilmen için kameraya erişiyoruz. Anlık fotoğraf yalnızca kamerayla o an çekilir, galeriden seçilemez ve 1 saat sonra silinir.';
+const CONTACTS_USAGE =
+  'İnternet yokken SOS mesajını SMS ile gönderebilmen için acil durum numaralarını rehberinden seçmene izin veriyoruz. Rehberin sunucuya yüklenmez ve taranmaz; yalnızca seçtiğin numaralar bu telefonda saklanır.';
+
 const LOCATION_WHEN_IN_USE =
   'Konumunu yalnızca sen paylaşım başlattığında, seçtiğin arkadaşlarına ve seçtiğin süre boyunca göstermek için kullanıyoruz.';
 const LOCATION_ALWAYS =
@@ -121,6 +132,8 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       // location: arka plan konum oturumu (mavi gösterge); remote-notification: `resume_tracking` sessiz push.
       UIBackgroundModes: ['location', 'remote-notification'],
       ITSAppUsesNonExemptEncryption: false,
+      // Faz 9: SMS yedeği (expo-sms kendisi gerektirmez; `Linking.canOpenURL('sms:')` yedek yolu için).
+      LSApplicationQueriesSchemes: ['sms'],
     },
   },
   android: {
@@ -138,6 +151,9 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       'android.permission.VIBRATE',
       // Faz 3: Activity Recognition Transition API (Android 10+ çalışma zamanı izni "Fiziksel etkinlik").
       ...(ACTIVITY_RECOGNITION ? ['android.permission.ACTIVITY_RECOGNITION'] : []),
+      // Faz 9: anlık fotoğraf (uygulama içi kamera) ve SMS acil numarasını rehberden seçme (yalnızca okuma).
+      'android.permission.CAMERA',
+      'android.permission.READ_CONTACTS',
       // NOT: REQUEST_IGNORE_BATTERY_OPTIMIZATIONS BİLEREK YOK (Play politikası: konum paylaşımı izinli istisna
       // kategorisinde değil [Varsayım]); haftalık/süresiz paylaşımda kullanıcı pil ayarlarına yönlendirilir.
     ],
@@ -146,6 +162,13 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       'android.permission.READ_EXTERNAL_STORAGE',
       'android.permission.WRITE_EXTERNAL_STORAGE',
       'android.permission.SYSTEM_ALERT_WINDOW',
+      // Faz 9: SMS'i kullanıcı kendi mesaj uygulamasından gönderir (ACTION_SENDTO, izinsiz); Play SMS politikası.
+      'android.permission.SEND_SMS',
+      'android.permission.READ_SMS',
+      'android.permission.RECEIVE_SMS',
+      // Faz 9: rehber yalnızca okunur (expo-contacts eklentisi WRITE_CONTACTS de ekler); kamera sessiz (mikrofon yok).
+      'android.permission.WRITE_CONTACTS',
+      'android.permission.RECORD_AUDIO',
     ],
     // Gizlilik: Android otomatik yedeği AsyncStorage'daki yayın hedeflerini buluta taşımasın.
     allowBackup: false,
@@ -227,10 +250,25 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       'expo-image-picker',
       {
         photosPermission: 'Profil fotoğrafını galerinden seçebilmen için fotoğraflarına erişiyoruz. Yalnızca seçtiğin fotoğraf yüklenir.',
-        cameraPermission: 'Profil fotoğrafı çekebilmen için kameraya erişiyoruz.',
+        cameraPermission: CAMERA_USAGE,
         microphonePermission: false,
       },
     ],
+    /**
+     * Faz 9: anlık fotoğraf ispatı için uygulama içi kamera (`CameraView`). Video / ses yok: mikrofon izni ve
+     * Android RECORD_AUDIO eklenmez; barkod tarayıcı kapalı.
+     */
+    [
+      'expo-camera',
+      {
+        cameraPermission: CAMERA_USAGE,
+        microphonePermission: false,
+        recordAudioAndroid: false,
+        barcodeScannerEnabled: false,
+      },
+    ],
+    /** Faz 9: rehber (iOS 18 "seçili kişiler" de yeterli). Yalnızca seçilen numara cihazda saklanır. */
+    ['expo-contacts', { contactsPermission: CONTACTS_USAGE }],
     /**
      * Faz 6: ana ekran / kilit ekranı widget'ları (modules/konum-widgets + targets/widgets). SIRA ÖNEMLİ:
      * konum-widgets eklentisi App Group'u (`group.${BUNDLE_ID}`) ios.entitlements'a zamanuyumlu yazar ve Android

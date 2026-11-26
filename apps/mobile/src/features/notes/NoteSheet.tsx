@@ -8,6 +8,9 @@
  *
  * Hazır çipler core `NOTE_PRESETS` (türüne göre), süreler core `noteDurationsFor(kind)`, metin en çok
  * `NOTE_LIMITS.maxChars` (60), emoji en çok `maxEmojiChars`.
+ *
+ * Faz 9: durum notunda "📷 Anlık fotoğraf ekle" (yalnızca kamera, 1 saat; açıklaması not metni, ör. "Mekana geçtim,
+ * masamız burası") — fotoğraf konum pinine ve kişi kartına eklenir (bkz. features/proof).
  */
 import { NOTE_LIMITS, NOTE_PRESETS, noteDurationsFor, sanitizeNoteText, type NotePosition, type PlaceNote, type UserId } from '@konum/core';
 import { BottomSheetBackdrop, BottomSheetModal, BottomSheetScrollView, BottomSheetTextInput, type BottomSheetBackdropProps } from '@gorhom/bottom-sheet';
@@ -22,6 +25,14 @@ import { Button, Chip, MIN_TOUCH, SheetHeader, Text, useTheme } from '../../ui';
 import { RecipientPicker } from '../share/RecipientPicker';
 import { pickerRowAccess } from '../access/accessModel';
 import { useCanFn } from '../access/useAccess';
+import { MyProofButton, ProofHint } from '../proof/MyProofButton';
+import { usePublishTargets } from '../../state/sharingStore';
+
+/** Faz 9: fotoğrafla sık kullanılan durum notları (core `NOTE_PRESETS`'e ek, yalnızca arayüz). */
+const F9_STATUS_PRESETS = [
+  { id: 'venue', emoji: '📍', text: 'Mekana geçtim, masamız burası' },
+  { id: 'traffic', emoji: '🚦', text: 'Trafik tamamen kilit' },
+] as const;
 
 export type NoteSheetRequest = { mode: 'status' } | { mode: 'place'; position: NotePosition; note?: PlaceNote | null };
 
@@ -57,6 +68,7 @@ export function NoteSheet({ onPlaceSaved, onPlaceDeleted, ref }: NoteSheetProps)
   // Faz 8: yer notunu yalnızca konum izni verdiğim kişiler görebilir.
   const can = useCanFn();
   const myStatus = useNotesStore((s) => s.myStatus);
+  const sharing = usePublishTargets().length > 0;
 
   const [req, setReq] = useState<NoteSheetRequest>({ mode: 'status' });
   const [emoji, setEmoji] = useState('');
@@ -98,7 +110,7 @@ export function NoteSheet({ onPlaceSaved, onPlaceDeleted, ref }: NoteSheetProps)
     [],
   );
 
-  const presets = NOTE_PRESETS.filter((p) => p.kind === kind);
+  const presets = [...NOTE_PRESETS.filter((p) => p.kind === kind), ...(kind === 'status' ? F9_STATUS_PRESETS : [])];
   const durations = noteDurationsFor(kind);
   const clean = sanitizeNoteText(text);
   const canSave = clean !== null && busy === null;
@@ -243,6 +255,19 @@ export function NoteSheet({ onPlaceSaved, onPlaceDeleted, ref }: NoteSheetProps)
             {`${text.length}/${NOTE_LIMITS.maxChars}`}
           </Text>
         </View>
+
+        {kind === 'status' ? (
+          <View style={{ paddingHorizontal: spacing.md, gap: spacing.xs }} testID="note-proof">
+            <Text variant="heading">Anlık fotoğraf</Text>
+            <MyProofButton caption={clean} />
+            <ProofHint />
+            {!sharing ? (
+              <Text variant="caption" color="textSecondary">
+                Şu an konumunu kimseyle paylaşmıyorsun; fotoğraf yalnızca paylaşım sürerken görünür.
+              </Text>
+            ) : null}
+          </View>
+        ) : null}
 
         <View style={{ gap: spacing.xs }}>
           <Text variant="heading" style={{ paddingHorizontal: spacing.md }}>

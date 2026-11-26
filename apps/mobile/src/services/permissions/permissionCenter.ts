@@ -6,6 +6,10 @@
  * reddedilmiş izin yalnızca Ayarlar'dan açılır. Android 11+ (API 30) arka plan konumu yalnızca Ayarlar'daki konum
  * sayfasından verilir; Android 13+ bildirim izni (POST_NOTIFICATIONS) çalışma zamanında sorulur.
  * Web demo bir iPhone'u taklit eder (platform `ios`).
+ *
+ * Faz 9: Rehber (`contactsPermissions`, iOS 18 `limited`) ve SMS kullanılabilirliği (`smsComposer`; izin YOK) da
+ * okunur. `requestPermission('contacts')` sistem istemini açar; `sms` uygulama içi açık onaydır (smsFallbackStore),
+ * burada istem yok.
  */
 import type { CenterRowId, OnboardingStep, PermissionSnapshot, PermState } from '@konum/core';
 import { Linking, Platform } from 'react-native';
@@ -14,6 +18,8 @@ import { permissionsStore } from '../../state/permissionsStore';
 import { activityPermission, askActivityPermission } from '../location/adaptive/activitySource';
 import { openBatteryOptimizationSettings } from '../location/batteryOptimization';
 import * as Notifications from '../notifications/expoNotifications';
+import { isSmsAvailable } from '../sms/smsComposer';
+import { readContactsPermission, requestContactsPermission } from './contactsPermissions';
 import { readMediaPermissions, requestCameraPermission, requestPhotosPermission } from './mediaPermissions';
 
 const core = (s: string): PermState => (s === 'granted' || s === 'denied' || s === 'restricted' ? s : 'undetermined');
@@ -45,7 +51,13 @@ async function iosNotificationDetails(): Promise<{ timeSensitive: boolean | null
 export async function readPermissionSnapshot(): Promise<PermissionSnapshot> {
   await permissionsStore.getState().refresh().catch(() => undefined);
   const p = permissionsStore.getState();
-  const [media, motion, ios] = await Promise.all([readMediaPermissions(), activityPermission().catch(() => 'restricted' as const), iosNotificationDetails()]);
+  const [media, motion, ios, contacts, smsAvailable] = await Promise.all([
+    readMediaPermissions(),
+    activityPermission().catch(() => 'restricted' as const),
+    iosNotificationDetails(),
+    readContactsPermission(),
+    isSmsAvailable().catch(() => null),
+  ]);
   return {
     ...platformInfo(),
     foreground: core(p.foreground),
@@ -63,6 +75,9 @@ export async function readPermissionSnapshot(): Promise<PermissionSnapshot> {
     photosCanAskAgain: media.photosCanAskAgain,
     motion: motion === 'restricted' ? null : motion,
     batteryOptimization: Platform.OS === 'android' ? (p.batteryOptimization === 'unknown' ? 'unknown' : p.batteryOptimization) : null,
+    contacts: contacts.contacts,
+    contactsCanAskAgain: contacts.contactsCanAskAgain,
+    smsAvailable,
   };
 }
 
@@ -94,6 +109,13 @@ export async function requestPermission(id: CenterRowId | OnboardingStep): Promi
     }
     case 'motion':
       return (await askActivityPermission()) === 'granted';
+    case 'contacts': {
+      const r = await requestContactsPermission();
+      return r === 'granted' || r === 'limited';
+    }
+    case 'sms':
+      // İzin yok: SMS yedeği uygulama içi açık onaydır (smsFallbackStore.enable).
+      return false;
     case 'battery_optimization':
       await openBatteryOptimizationSettings().catch(() => undefined);
       return false;

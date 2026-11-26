@@ -54,6 +54,12 @@
  *  - `events/{event_id}` (core `EventDoc` + `open`, `next_action_at`, `purge_at`; üyeler okur)
  *  - `event_reminders/{event_id}_{kind}` (istemciye kapalı), `users/{uid}/notices/{id}` (sahibi okur, 30 gün TTL)
  *  - `users/{uid}.privacy` (core `PrivacySettings`) + RTDB `privacy/{uid}` aynası; `movement_cooldowns/{uid}`
+ *
+ * Faz 9 (yalnızca callable / sunucu yazar):
+ *  - `photo_proofs/{proof_id}` anlık fotoğraf kaydı (istemciye TAMAMEN kapalı; bayt Storage `proofs/{uid}/{id}.jpg`,
+ *    o da istemciye kapalı; `proof_get` aracılık eder). TTL `purge_at`.
+ *  - `approach_marks/{uid}_{session}_{dest_key}` "Neredeyse vardım" tek sefer kaydı (yalnızca sunucu, 48 sa TTL).
+ *  - `safe_returns/{id}` Güvenli Dönüş zamanlayıcısı (YALNIZCA sahibi okur; son konum dahil). TTL `purge_at`.
  */
 import {
   type EpochMs,
@@ -73,6 +79,8 @@ import {
   type PublicProfile,
   type SosAlert,
   type UserId,
+  type PhotoProofDoc as CorePhotoProofDoc,
+  type SafeReturnDoc as CoreSafeReturnDoc,
   type UserProfile,
   PATHS,
   blockId,
@@ -316,6 +324,8 @@ export function toSosAlert(d: SosAlertDoc | SosAlert): SosAlert {
     resolved_at: d.resolved_at ?? null,
     acks: { ...(d.acks ?? {}) },
     update_count: d.update_count ?? 0,
+    // Faz 9: yalnızca Güvenli Dönüş alarmında yazılır (eski / elle SOS kaydında alan yok = `manual`).
+    ...(d.origin ? { origin: d.origin, safe_return: d.safe_return ? { ...d.safe_return } : null } : {}),
   };
 }
 
@@ -456,6 +466,10 @@ export const COL = {
   eventReminders: PATHS.eventReminders,
   notices: 'notices',
   movementCooldowns: 'movement_cooldowns',
+  // Faz 9
+  photoProofs: PATHS.photoProofs,
+  approachMarks: PATHS.approachMarks,
+  safeReturns: PATHS.safeReturns,
 } as const;
 
 /** Faz 4 RTDB yolları. */
@@ -525,7 +539,40 @@ export const refs = {
   eventReminder: (id: string) => db().doc(PATHS.eventReminder(id)),
   notices: (uid: UserId) => db().collection(PATHS.notices(uid)),
   movementCooldown: (uid: UserId) => db().doc(PATHS.movementCooldown(uid)),
+  // Faz 9
+  photoProof: (id: string) => db().doc(PATHS.photoProof(id)),
+  approachMark: (uid: UserId, sessionId: string, destKey: string) => db().doc(PATHS.approachMark(uid, sessionId, destKey)),
+  safeReturn: (id: string) => db().doc(PATHS.safeReturn(id)),
+  newSafeReturn: () => db().collection(COL.safeReturns).doc(),
 } as const;
+
+// ---------------------------------------------------------------------------
+// Faz 9: anlık fotoğraf, yaklaşma tek sefer kaydı, Güvenli Dönüş (hepsi yalnızca callable / sunucu yazar)
+// ---------------------------------------------------------------------------
+
+/**
+ * `photo_proofs/{proof_id}` (istemciye TAMAMEN kapalı): core `PhotoProofDoc` + Storage kovası + TTL. Bayt
+ * `storage_bucket` / `storage_path` nesnesindedir; yalnızca `proof_get` aracılığıyla okunur.
+ */
+export interface PhotoProofDoc extends CorePhotoProofDoc {
+  storage_bucket: string;
+  /** TTL = `expires_at + PROOF_LIMITS.purgeAfterMs` (koordinatsız özet en geç 1 gün sonra silinir). */
+  purge_at: Timestamp;
+}
+
+/** `approach_marks/{uid}_{session}_{dest_key}` (yalnızca sunucu): "Neredeyse vardım" tek sefer kaydı. Koordinat YOK. */
+export interface ApproachMarkDoc {
+  uid: UserId;
+  session_id: string;
+  dest_key: string;
+  created_at: EpochMs;
+  purge_at: Timestamp;
+}
+
+/** `safe_returns/{id}`: core `SafeReturnDoc` + TTL (yalnızca sahibi okur). */
+export interface SafeReturnDocStored extends CoreSafeReturnDoc {
+  purge_at: Timestamp;
+}
 
 /**
  * Faz 8 `permission_declines/{granter}_{grantee}` (yalnızca sunucu yazar, yalnızca granter okur): kapsam başına son

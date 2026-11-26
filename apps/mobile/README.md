@@ -1,4 +1,4 @@
-# Konum — mobil uygulama (Faz 1–6)
+# Konum — mobil uygulama (Faz 1–9)
 
 Arkadaşlarla süreli canlı konum paylaşımı. Expo SDK 58, React Native 0.88, TypeScript (strict),
 Firebase (Auth, Firestore, Realtime Database, Functions, App Check, Messaging), Google Haritalar.
@@ -525,3 +525,36 @@ Tasarım ve sözleşmeler: `docs/PHASE7.md`.
 | Pil / hareket | `src/services/location/pipeline.ts` (pil paylaşımı kapalıyken pil alanı yok, kuyruk yazmalarından ayıklanır; "yola çıktı" raporu), `src/state/persist.ts` (başsız gizlilik kopyası) |
 | Harita teması | `src/ui/theme.ts` (`MAP_STYLES`, `mapStyleFor`), `src/features/map/MapThemeButton.tsx` |
 | Testler | `__tests__/faz7Mobile.test.ts`, `__tests__/demoFaz7.test.ts` |
+
+## 12. Faz 9 — anlık fotoğraf, 200 m yaklaşma, Güvenli Dönüş, Rehber / SMS yedeği
+
+Tasarım ve sözleşmeler: `docs/PHASE9.md` (cihazda doğrulanacaklar: §8).
+
+| Parça | Dosyalar |
+| --- | --- |
+| Anlık fotoğraf | `src/features/proof/` (`CameraCapture` yalnızca `expo-camera`, galeri yok; `.web.tsx` canvas vizörü; `ProofCapture`, `ProofThumb`, `ProofViewer` (`cachePolicy="none"`, süre dolunca görsel kalkar), `MyProofButton`, `FriendProofRow`), `src/services/proof/` (kodlama + ham dosya silme, tek fotoğraflık önbellek, dosya deposu), `src/state/proofStore.ts` |
+| Yaklaşma | `src/features/approach/` (`DestinationPicker`, `ApproachToast`), `src/state/destinationStore.ts`, `src/services/location/f9Hooks.ts` + `pipeline.ts` (tek sefer, önce diske yazılır, 4 sn zaman aşımı, çevrimdışıysa 2 dk yeniden deneme), harita rozetleri `src/features/map/friendBadges.ts` |
+| Güvenli Dönüş | `app/(main)/safe-return.tsx` → `src/features/safeReturn/` (`SafeReturnScreen`, `SafeReturnBanner`, `FinalWarning` tam ekran son uyarı), `src/state/safeReturnStore.ts`, `src/services/firebase/safeReturnRepo.ts`, `src/services/notifications/safeReturnNotifications.ts` (Android `safe_return` kanalı, iOS `SAFE_RETURN` kategorisi: "Güvendeyim" / "+15 dk") + `safeReturnActions.ts` |
+| Rehber / SMS | `app/(main)/sms-fallback.tsx` → `src/features/sms/` (`SmsFallbackScreen` açık onay kutusu, `SmsNumbers`, `OfflineSosPanel`), `src/state/smsFallbackStore.ts` (numaralar yalnızca cihazda), `src/services/sms/smsComposer.ts` (expo-sms), `src/services/permissions/contactsPermissions.ts` (sistem kişi seçici), `src/services/location/lastFix.ts` |
+| SOS | `src/state/sosStore.ts` (3 sn bağlantı / 10 sn yanıt → `offlineSosDecision`, `smsBody()`, `sendSms()`, aynı `op_id` ile 15 dk yeniden deneme), `SosCountdown` / `SosLauncher` çevrimdışı paneli, `SosIncomingScreen` Güvenli Dönüş kaynağı |
+| İzinler / onay | `OnboardingFlow` Rehber + SMS adımları (v1'i bitirene yalnızca yeni adımlar), `PrivacyCenterScreen` Rehber + SMS satırları, KVKK `2026-11-26` |
+| Servisler | `src/services/f9Services.ts` (`sharingCoordinator` ile başlar / sıfırlanır), `src/services/notifications/f9Push.ts` |
+| Testler | `__tests__/faz9Mobile.test.ts`, `__tests__/faz9Ui.test.ts`, `__tests__/demoFaz9.test.ts`, tarayıcı: `e2e/faz9-smoke.cjs` |
+
+- **Yeni bağımlılıklar:** `expo-camera` (eklenti: mikrofon ve barkod tarayıcı kapalı), `expo-contacts`, `expo-sms`.
+  Android: `CAMERA`, `READ_CONTACTS`; `SEND_SMS` / `READ_SMS` / `RECEIVE_SMS` / `WRITE_CONTACTS` / `RECORD_AUDIO`
+  engellenir. iOS: `LSApplicationQueriesSchemes: ['sms']`, Türkçe kamera ve rehber izin metinleri.
+  Yerel eklentiler değiştiği için `npx expo prebuild --clean` + yeni geliştirme derlemesi gerekir.
+- **Tarayıcı önizlemesi:** panel **"FAZ 9 SENARYOLARI"** (ayrıntı `docs/PHASE9.md` §7). Duman testi:
+
+  ```bash
+  EXPO_OFFLINE=1 CI=1 npm run web:export
+  node e2e/faz9-smoke.cjs                    # SHOTS=/klasör → ekran görüntüleri (deviceScaleFactor 2)
+  ```
+
+- **Sınırlar** [Varsayım: cihazda doğrulanmalı]: arka planda Güvenli Dönüş güncellemesi ve otomatik varış yalnızca
+  canlı paylaşım varken çalışan arka plan takibine bağlı (yoksa sunucu alarmı son bildirilen konumu kullanır);
+  "+15 dk" kendiliğinden başlayan canlı paylaşımı yalnızca uygulama açılınca uzatır (arka planda uzatılırsa paylaşımın
+  1 saatlik alarm payı yeter); uygulama arka plandayken uzak `safe_return_due` push'u
+  ile yerel hatırlatma ikisi birden görünebilir.
+

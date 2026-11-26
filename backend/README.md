@@ -1,4 +1,4 @@
-# Konum backend (Faz 1 – Faz 8)
+# Konum backend (Faz 1 – Faz 9)
 
 Firebase üzerinde Konum backend'i: Firestore ve Realtime Database (RTDB) güvenlik kuralları, Cloud Functions (2nd gen, Node 22) ve emülatörde çalışan testler.
 
@@ -13,7 +13,9 @@ backend/
   firestore.rules          Firestore kuralları (varsayılan: kapalı)
   firestore.indexes.json   bileşik dizinler, token collection-group dizini, TTL alanları
   database.rules.json      share_acl kapalı (sunucu dizinleri: status, ended_at); live_locations yazma/okuma kuralları
-  storage.rules            Faz 6: avatars/{uid}/{sürüm}.jpg + _160.jpg (yalnızca sahibi yazar / siler; JPEG, boyut sınırı)
+  storage.rules            Faz 6: avatars/{uid}/{sürüm}.jpg + _160.jpg (yalnızca sahibi yazar / siler; JPEG, boyut sınırı);
+                           Faz 9: proofs/** istemciye tamamen kapalı
+  storage.lifecycle.json   Faz 9: proofs/ öneki ≥ 1 gün → sil (anlık fotoğrafın en son güvencesi; kovaya elle uygulanır)
   functions/
     build.mjs              esbuild paketleyici (core + zod gömülür)
     src/index.ts           tüm fonksiyonların dışa aktarımı (adlar = core CALLABLES)
@@ -375,6 +377,30 @@ sunucu yalnızca uygular. Kod: `handlers/access.ts`, `graph.ts` (`PairState.gran
 Functions. Mevcut kullanıcılar ilk açılışta onay ekranını görür. Faz 8 öncesi arkadaşlıklar için izin belgesi yazılmaz
 (`via:'migration'` göçü yok): etkin eski paylaşımlar bitişine kadar sürer ama uzatılamaz; yeniden başlatma
 "izin de verilecek" onayıyla olur.
+
+## Faz 9: anlık fotoğraf, 200 m yaklaşma, Güvenli Dönüş
+
+Tasarım: `docs/PHASE9.md`; sözleşme: core `proof.ts`, `approach.ts`, `safeReturn.ts`. İşleyiciler `handlers/proofs.ts`,
+`handlers/approach.ts`, `handlers/safeReturn.ts`; SOS gövdesi `handlers/sos.ts` `openOrRefreshSos` ile paylaşılır.
+
+| Callable | Not |
+| --- | --- |
+| `proof_create` | Yalnızca `source:'camera'`, taze çekim (≤ 2 dk), JPEG doğrulama + EXIF/GPS/COM silme. Bayt Storage `proofs/{uid}/{id}.jpg` (istemciye kapalı), kayıt `photo_proofs` (istemciye kapalı). 1 etkin fotoğraf (yenisi eskisini siler), günde 30, görünmezken `invisible_mode`. |
+| `proof_get` | Bayt yalnızca sahibine ya da sahibinden ŞU AN etkin paylaşım alana (sahibi görünmez değilken). Diğerleri `proof_not_found`, süresi dolan `proof_expired`. Saatte 240. |
+| `proof_delete` | Onaydan muaf; nesne hemen silinir. |
+| `approach_report` | Oturum + hedef başına tek push (`approach_marks`, 48 sa TTL), alıcılar etkin paylaşım alıcıları ∩ `movement_alerts`; `stale` / `invisible` / `already_sent` / `no_recipients`. |
+| `safe_return_*` | `start` (tek etkin, günde 12, kişiler ∩ arkadaş ∩ `sos_alert`), `update` (≥ 60 sn), `check_in` / `cancel` (onaydan muaf), `extend` (+15 dk, ≤ 3 sa). Geçişler core `reduceSafeReturn`. |
+
+Sunucu zamanlayıcıları `shareexpirytask` kuyruğunu paylaşır: `{proof_id}` (1 sa sonra sil) ve `{safe_return_id, at}`
+(`due_at` → sahibe "Güvende misin?", `grace_until` → SOS `origin:'safe_return'`). Dakikalık `share_expiry_sweeper`
+ikisinin de yedeğidir. Görünmez mod fotoğrafı bitirir, Güvenli Dönüş'ü durdurmaz; onayı geri çekmek ikisini de bitirir;
+hesap silme kayıtları ve `proofs/{uid}/` klasörünü siler.
+
+Dağıtımda ek adım: `gcloud storage buckets update gs://<kova> --lifecycle-file=backend/storage.lifecycle.json`
+(ya da `gsutil lifecycle set backend/storage.lifecycle.json gs://<kova>`). TTL politikaları: `photo_proofs.purge_at`,
+`approach_marks.purge_at`, `safe_returns.purge_at` (`firestore.indexes.json`). KVKK sürümü (`2026-11-26`) değiştiği için
+istemci ve backend birlikte yayımlanmalı. Senaryo testleri: `test/functions/faz9.test.ts` (+ kural testleri);
+cihazda doğrulanacaklar: `docs/PHASE9.md` §8.
 
 ## Varsayımlar ve açık noktalar
 

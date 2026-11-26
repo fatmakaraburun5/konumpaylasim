@@ -54,6 +54,9 @@ import { closeSosForDeletedAccount, pruneSosForGraphReset, removeFromEmergencyCo
 import { deleteMeetupsOf } from './meetup';
 import { deleteZonesOf } from './zones';
 import { deleteEventsOf } from './events';
+import { deleteApproachMarksOf } from './approach';
+import { deleteProofsOf } from './proofs';
+import { deleteSafeReturnsOf } from './safeReturn';
 import { removeFromFavorites } from './favorites';
 import { deleteWidgetTokensOf } from './widget';
 import { readRateLimit, runOp, writeRateLimit } from '../ops';
@@ -624,6 +627,11 @@ export async function accountDelete(ctx: CallCtx, _data: z.output<typeof Account
     deleteEventsOf(uid),
     rtdb().ref(`privacy/${uid}`).remove(),
     refs.movementCooldown(uid).delete(),
+    // Faz 9: anlık fotoğraf kayıtları + `proofs/{uid}/` klasörü, "neredeyse vardım" tek sefer kayıtları, Güvenli
+    // Dönüş kayıtları (son konum dahil). Başkalarının Güvenli Dönüş kişi listesindeki kimlik alarmda yeniden süzülür.
+    deleteProofsOf(uid),
+    deleteApproachMarksOf(uid),
+    deleteSafeReturnsOf(uid),
   ]);
 
   // 5. ACL düğümleri (mezar taşları dahil): uid çifti RTDB'de kalmaz.
@@ -663,7 +671,7 @@ export async function accountDelete(ctx: CallCtx, _data: z.output<typeof Account
     if (phoneSnap?.exists && (phoneSnap.data() as IndexDoc).user_id === uid) tx.delete(phoneSnap.ref);
     tx.delete(refs.user(uid));
     tx.delete(refs.userPrivate(uid));
-    for (const key of ['friend_request', 'location_request', 'invite_regenerate', 'link_create', 'battery_low', 'ping', 'sos_send', 'zone_event', 'meetup_share', 'meetup_respond', 'widget_token', 'permission_request', 'event_create', 'event_action', 'privacy_set', 'movement_report']) tx.delete(refs.rateLimit(uid, key));
+    for (const key of ['friend_request', 'location_request', 'invite_regenerate', 'link_create', 'battery_low', 'ping', 'sos_send', 'zone_event', 'meetup_share', 'meetup_respond', 'widget_token', 'permission_request', 'event_create', 'event_action', 'privacy_set', 'movement_report', 'proof_create', 'proof_get', 'approach_report', 'safe_return_start']) tx.delete(refs.rateLimit(uid, key));
   });
 
   try {

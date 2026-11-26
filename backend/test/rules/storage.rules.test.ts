@@ -58,3 +58,14 @@ describe('storage.rules: avatarlar', () => {
     await assertFails(s.ref(`other/${A}/${V}.jpg`).put(bytes(10), jpeg) as unknown as Promise<unknown>);
   });
 });
+
+describe('storage.rules: Faz 9 anlık fotoğraflar', () => {
+  it('proofs/ istemciye tamamen kapalı: sahibi bile yükleyemez, okuyamaz, silemez, listeleyemez', async () => {
+    const s = storageOf(A);
+    await assertFails(s.ref(`proofs/${A}/${'p'.repeat(20)}.jpg`).put(bytes(10), jpeg) as unknown as Promise<unknown>);
+    await assertFails(s.ref(`proofs/${A}/${'p'.repeat(20)}.jpg`).getMetadata());
+    await assertFails(s.ref(`proofs/${A}/${'p'.repeat(20)}.jpg`).delete());
+    await assertFails(s.ref(`proofs/${A}`).listAll());
+    await assertFails(storageOf(B).ref(`proofs/${A}/${'p'.repeat(20)}.jpg`).getMetadata());
+  });
+});

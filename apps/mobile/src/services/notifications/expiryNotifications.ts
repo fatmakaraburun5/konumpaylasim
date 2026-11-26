@@ -38,6 +38,8 @@ import { lightColors } from '../../ui/tokens';
 import { isF4PushType } from './f4Push';
 import { isF5PushType } from './f5Push';
 import { isF7PushType } from './f7Push';
+import { isF9PushType } from './f9Push';
+import { configureF9Categories, configureF9Channels } from './safeReturnNotifications';
 import {
   ACTION_EXTEND,
   CHANNELS,
@@ -168,6 +170,10 @@ async function doConfigure(): Promise<void> {
       if (isF7PushType(type)) {
         return { shouldShowBanner: true, shouldShowList: true, shouldPlaySound: type !== 'event_rsvp', shouldSetBadge: false };
       }
+      // Faz 9: yaklaşma, Güvenli Dönüş başladı / bitti / "Güvende misin?" ve yerel Güvenli Dönüş hatırlatıcıları: afiş + ses.
+      if (isF9PushType(type) || type === 'safe_return_local') {
+        return { shouldShowBanner: true, shouldShowList: true, shouldPlaySound: true, shouldSetBadge: false };
+      }
       if (isF4PushType(type)) {
         const isSos = type === 'sos';
         return { shouldShowBanner: true, shouldShowList: true, shouldPlaySound: isSos || type === 'sos_resolved', shouldSetBadge: false, ...(isSos ? { priority: Notifications.AndroidNotificationPriority.MAX } : {}) };
@@ -199,6 +205,7 @@ async function doConfigure(): Promise<void> {
       importance: Notifications.AndroidImportance.DEFAULT,
     });
     await configureF4Channels();
+    await configureF9Channels().catch(() => undefined);
   }
 
   /**
@@ -227,6 +234,8 @@ async function doConfigure(): Promise<void> {
   for (const c of [NOTIFICATION_CHANNELS_F7.movement, NOTIFICATION_CHANNELS_F7.events, NOTIFICATION_CHANNELS_F7.eventReminders]) {
     await Notifications.setNotificationCategoryAsync(c, [], { showTitle: true }).catch(() => undefined);
   }
+  // Faz 9: Güvenli Dönüş "Güvende misin?" kategorisi (Güvendeyim / +15 dk; safeReturnActions).
+  await configureF9Categories().catch(() => undefined);
 }
 
 /** Planlanan (ya da teslim edilmiş) bildirimlerin `prompt_at` değerleri; -1 = önceki çalıştırmadan, anı bilinmiyor. */

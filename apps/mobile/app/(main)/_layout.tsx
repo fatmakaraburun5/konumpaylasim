@@ -6,6 +6,7 @@ import { ApproveLocationRequestSheet } from '../../src/features/locationRequest/
 import { OnboardingFlow } from '../../src/features/onboarding/OnboardingFlow';
 import { GenderGate } from '../../src/features/profile/GenderGate';
 import { QuickShareSheet } from '../../src/features/quickShare/QuickShareSheet';
+import { FinalWarning } from '../../src/features/safeReturn/FinalWarning';
 import { startGateServices, startSessionServices } from '../../src/services/sharingCoordinator';
 import { useAuthStore, useNeedsConsent } from '../../src/state/authStore';
 import { onboardingStore, useOnboardingStore } from '../../src/state/onboardingStore';
@@ -26,6 +27,9 @@ import { onboardingStore, useOnboardingStore } from '../../src/state/onboardingS
  * isteği, konum izni geri almaları); kapıdaki "Paylaşımlarımı durdur ve görünmez ol" onay vermeden tüm paylaşımları ve
  * QR bağlantılarını bitirir. Görünür olurken
  * geri yükleme sayfası (InvisibleRestoreSheet; Profil ve harita şeridi açar) her ekranın üstündedir.
+ *
+ * Faz 9: Güvenli Dönüş (`safe-return`) ve SMS yedeği (`sms-fallback`) ekranları; Güvenli Dönüş son uyarısı
+ * ("Güvende misin?", FinalWarning) her ekranın üstündedir.
  */
 export default function MainLayout() {
   const status = useAuthStore((s) => s.status);
@@ -65,11 +69,16 @@ export default function MainLayout() {
         <Stack.Screen name="events/new" options={{ presentation: 'modal' }} />
         <Stack.Screen name="events/[id]" />
         <Stack.Screen name="privacy" />
+        {/* Faz 9 */}
+        <Stack.Screen name="safe-return" />
+        <Stack.Screen name="sms-fallback" />
       </Stack>
       <QuickShareSheet />
       <InvisibleRestoreSheet />
       {/* Konum İste: Onayla → süre seçici (bildirimden de açılır). */}
       <ApproveLocationRequestSheet />
+      {/* Faz 9: Güvenli Dönüş süresi dolunca "Güvende misin?" (2 dk geri sayım). */}
+      <FinalWarning />
     </>
   );
 }

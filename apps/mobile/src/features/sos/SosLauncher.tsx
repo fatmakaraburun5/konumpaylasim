@@ -9,8 +9,12 @@
  *     → SosActiveScreen ("Uyarı gönderildi", acks, 112, "Güvendeyim")
  *
  * Aktif SOS varken düğme "SOS aktif" olur ve ekranı yeniden açar (yeni uyarı açılmaz).
+ *
+ * Faz 9: internet yoksa geri sayım / hata ekranında "SMS ile gönder (N kişi)" (sosStore `offline`); SOS arka planda
+ * yeniden denenir, sonradan giderse "Uyarı gönderildi" ekranı kendiliğinden açılır.
  */
 import { isSosActive, sosCountdownLeft, sosFlowReduce, sosHoldProgress, type SosFlowEvent, type SosFlowState, type SosRoute } from '@konum/core';
+import { useRouter } from 'expo-router';
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
 import { useFriendNames } from '../../state/friendsStore';
@@ -46,6 +50,8 @@ export function SosLauncher({ route }: SosLauncherProps) {
   const storePhase = useSosStore((s) => s.phase);
   const storeError = useSosStore((s) => s.error);
   const liveShareSkipped = useSosStore((s) => s.liveShareSkipped);
+  const offline = useSosStore((s) => s.offline);
+  const router = useRouter();
   const accuracy = useLocationStore((s) => s.myPosition?.accuracy ?? null);
   const sosActive = outgoing !== null && isSosActive(outgoing);
 
@@ -105,6 +111,17 @@ export function SosLauncher({ route }: SosLauncherProps) {
     return () => clearTimeout(t);
   }, [hint]);
 
+  // Faz 9: çevrimdışı arka plan denemesi sonradan başardı → hata ekranı kapanır, "Uyarı gönderildi" açılır.
+  const prevStorePhase = useRef(storePhase);
+  useEffect(() => {
+    const prev = prevStorePhase.current;
+    prevStorePhase.current = storePhase;
+    if (prev === 'sending' && storePhase === 'active' && flow.phase !== 'sending') {
+      if (flow.phase === 'error') dispatch({ type: 'cancel' });
+      setScreenOpen(true);
+    }
+  }, [storePhase, flow.phase]);
+
   // Uyarı çözüldü (bu cihazdan ya da başka yerden): yerel akış başa döner.
   useEffect(() => {
     if (flow.phase === 'active' && !sosActive) dispatch({ type: 'resolved' });
@@ -152,6 +169,8 @@ export function SosLauncher({ route }: SosLauncherProps) {
           send({ type: 'a11y_activate', at: Date.now() });
           dispatch({ type: 'send_now' });
         }}
+        offline={offline}
+        onOpenSmsSettings={() => router.push('/sms-fallback')}
       />
 
       <SosActiveScreen

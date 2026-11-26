@@ -57,6 +57,15 @@ const HTTPS_CODE: Record<ErrorCode, FunctionsErrorCode> = {
   event_invitee_limit: 'resource-exhausted',
   event_started: 'failed-precondition',
   event_limit_reached: 'resource-exhausted',
+  // Faz 9
+  proof_not_found: 'not-found',
+  proof_expired: 'failed-precondition',
+  proof_invalid: 'invalid-argument',
+  proof_stale_capture: 'failed-precondition',
+  proof_limit_reached: 'resource-exhausted',
+  safe_return_active: 'failed-precondition',
+  safe_return_not_active: 'failed-precondition',
+  safe_return_extend_limit: 'failed-precondition',
 };
 
 export interface ErrorDetails {

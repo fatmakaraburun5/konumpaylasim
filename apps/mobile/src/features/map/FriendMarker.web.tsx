@@ -45,6 +45,12 @@ export interface FriendMarkerProps {
   note?: string | null;
   /** Faz 4: nabız halkası — `ping` (birincil renk) ya da `sos` (aktif SOS, kırmızı pin). */
   pulse?: 'ping' | 'sos' | null;
+  /** Faz 9: etkin anlık fotoğraf → avatarın sağ üstünde küçük 📷 rozeti. */
+  photo?: boolean;
+  /** Faz 9: hedef durumu satırı (core `destBadgeText`). */
+  dest?: string | null;
+  /** Faz 9: hedefe 200 m kala (`near`) satır vurgulanır. */
+  destNear?: boolean;
 }
 
 const DIM: ReadonlySet<ReceiverStatus> = new Set(['offline_suspected', 'stale']);
@@ -81,6 +87,9 @@ export function FriendMarker({
   verifiedLabel,
   note = null,
   pulse = null,
+  photo = false,
+  dest = null,
+  destNear = false,
 }: FriendMarkerProps) {
   const { colors, radius } = useTheme();
   const project = useContext(MapProjectionContext);
@@ -114,7 +123,7 @@ export function FriendMarker({
       <Pressable
         onPress={onPress}
         accessibilityRole="button"
-        accessibilityLabel={`${sos ? 'Acil durum: ' : ''}${name} konumu, ${status}${warn && verifiedLabel ? `, ${verifiedLabel}` : ''}${note ? `, not: ${note}` : ''}`}
+        accessibilityLabel={`${sos ? 'Acil durum: ' : ''}${name} konumu, ${status}${warn && verifiedLabel ? `, ${verifiedLabel}` : ''}${note ? `, not: ${note}` : ''}${dest ? `, ${dest}` : ''}${photo ? ', anlık fotoğraf var' : ''}`}
         accessibilityState={{ selected }}
         style={styles.press}
       >
@@ -130,6 +139,13 @@ export function FriendMarker({
             batteryPct={batteryPct}
             transition={0}
           />
+          {photo ? (
+            <View testID={`friend-marker-photo-${id}`} style={[styles.photoBadge, { backgroundColor: colors.surface, borderColor: colors.live }]}>
+              <Text style={styles.photoGlyph} maxFontSizeMultiplier={1}>
+                📷
+              </Text>
+            </View>
+          ) : null}
         </View>
         <View testID={`friend-marker-tail-${id}`} style={[styles.tail, { borderTopColor: tailColor }]} />
         <View
@@ -169,6 +185,30 @@ export function FriendMarker({
             </Text>
           </View>
         ) : null}
+        {dest ? (
+          <View
+            testID={`friend-marker-dest-${id}`}
+            style={[
+              styles.note,
+              {
+                backgroundColor: destNear ? colors.liveSoft : colors.surface,
+                borderColor: destNear ? colors.live : colors.border,
+                borderRadius: radius.sm,
+                boxShadow: '0px 1px 4px rgba(15, 23, 42, 0.14)',
+              },
+              shift ? { transform: [{ translateX: shift }] } : null,
+            ]}
+          >
+            <Text
+              variant="caption"
+              numberOfLines={1}
+              maxFontSizeMultiplier={1}
+              style={{ color: destNear ? colors.live : colors.text, fontSize: 11, lineHeight: 14, fontWeight: destNear ? '700' : undefined }}
+            >
+              {`🏁 ${dest}`}
+            </Text>
+          </View>
+        ) : null}
       </Pressable>
     </View>
   );
@@ -191,4 +231,6 @@ const styles = StyleSheet.create({
   dim: { opacity: 0.55 },
   label: { marginTop: 3, paddingHorizontal: 7, paddingVertical: 2, maxWidth: WIDTH },
   note: { marginTop: 2, paddingHorizontal: 6, paddingVertical: 1, maxWidth: WIDTH, borderWidth: 1 },
+  photoBadge: { position: 'absolute', top: -2, right: -4, width: 18, height: 18, borderRadius: 9, borderWidth: 1.5, alignItems: 'center', justifyContent: 'center' },
+  photoGlyph: { fontSize: 10, lineHeight: 12 },
 });

@@ -21,7 +21,27 @@
  * iOS notu: AsyncStorage klasörü cihaz yedeğine dahildir. Bu yüzden imleç (kendi son konumun)
  * paylaşım bitince silinir (`clearCursor`). Android'de `allowBackup: false`. [Varsayım: doğrulanmalı]
  */
-import type { EpochMs, LastPublished, LinkId, LinkPublishTarget, PublishTarget, SessionId, ShareId, StatusNote, TrackingProfileId, UserId } from '@konum/core';
+import {
+  APPROACH_LIMITS,
+  DESTINATION_KINDS,
+  SAFE_RETURN_DEST_KINDS,
+  SAFE_RETURN_STATUSES,
+  type ApproachState,
+  type EpochMs,
+  type LastPublished,
+  type LatLng,
+  type LinkId,
+  type LinkPublishTarget,
+  type PublishTarget,
+  type SafeReturnDestKind,
+  type SafeReturnStatus,
+  type SessionId,
+  type ShareDestination,
+  type ShareId,
+  type StatusNote,
+  type TrackingProfileId,
+  type UserId,
+} from '@konum/core';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { z } from 'zod';
 
@@ -54,6 +74,19 @@ const PENDING_INVISIBLE_KEY = 'konum.f8.pendingInvisible.v1';
  */
 const PRIVACY_KEY = 'konum.bg.privacy.v1';
 const MOVEMENT_KEY = 'konum.bg.movement.v1';
+/**
+ * Faz 9 (hepsi çıkışta silinir):
+ *  - PROOF: etkin anlık fotoğrafımın kimliği ve bitişi (konum hattı `photo_id` + `photo_exp` ekler). Görsel YOK.
+ *  - DESTINATION: tek etkin hedefim (koordinat YALNIZCA bu cihazda) + oturum başına yaklaşma durumu + bekleyen rapor.
+ *  - SAFE_RETURN: süren Güvenli Dönüş (hedef koordinatı ve yarıçapı varış algılaması için; kimlik, bitişler).
+ *  - LAST_FIX: son doğrulanmış konum (≤ 100 m) + pil; çevrimdışı SOS SMS'i için (paylaşım olmasa da yazılır).
+ */
+const PROOF_KEY = 'konum.bg.proof.v1';
+const DESTINATION_KEY = 'konum.bg.destination.v1';
+const SAFE_RETURN_KEY = 'konum.bg.safeReturn.v1';
+const LAST_FIX_KEY = 'konum.bg.lastFix.v1';
+/** Güvenli Dönüş'ün kendi başlattığı canlı paylaşım oturumu (check-in / iptalde durdurulur; kayıt silinse de kalır). */
+const SAFE_RETURN_SHARE_KEY = 'konum.safeReturn.liveShare.v1';
 
 /**
  * Yayın hedefi + sunucunun onayladığı oturum özeti. Özet, açılışta sunucu dinleyicisi henüz
@@ -413,10 +446,27 @@ export async function savePendingInvisible(v: PendingInvisibleIntents): Promise<
  */
 export async function clearBackgroundState(): Promise<void> {
   await withTargetsLock(() =>
-    AsyncStorage.multiRemove([TARGETS_KEY, CURSOR_KEY, PROFILE_KEY, STATUS_NOTE_KEY, ZONES_KEY, ZONE_FILTER_KEY, ZONE_REPORTS_KEY, PUBLISH_HOLD_KEY, PRIVACY_KEY, MOVEMENT_KEY]),
+    AsyncStorage.multiRemove([
+      TARGETS_KEY,
+      CURSOR_KEY,
+      PROFILE_KEY,
+      STATUS_NOTE_KEY,
+      ZONES_KEY,
+      ZONE_FILTER_KEY,
+      ZONE_REPORTS_KEY,
+      PUBLISH_HOLD_KEY,
+      PRIVACY_KEY,
+      MOVEMENT_KEY,
+      PROOF_KEY,
+      DESTINATION_KEY,
+      SAFE_RETURN_KEY,
+      LAST_FIX_KEY,
+      SAFE_RETURN_SHARE_KEY,
+    ]),
   );
   statusNoteCache = null;
   privacyCache = null;
+  for (const r of F9_RECORDS) r.forget(null);
 }
 
 // --- Faz 7: gizlilik tercihi (pil paylaşımı) ve "yola çıktı" -----------------------------------------
@@ -564,3 +614,254 @@ export const saveZoneReports = (v: PersistedZoneReports): Promise<void> => write
 export async function clearZoneState(): Promise<void> {
   await AsyncStorage.multiRemove([ZONES_KEY, ZONE_FILTER_KEY, ZONE_REPORTS_KEY]).catch(() => undefined);
 }
+
+// --- Faz 9: anlık fotoğraf, hedef / yaklaşma, Güvenli Dönüş, son doğrulanmış konum -------------------------
+
+/** Bellek önbellekli tek kayıt (konum hattı her örnekte diske gitmesin). `undefined` = henüz okunmadı. */
+interface CachedRecord<T> {
+  load(): Promise<T | null>;
+  save(v: T | null): Promise<void>;
+  /** Önbelleği verilen değere ayarlar (`undefined` = bir sonraki okumada diskten). */
+  forget(v?: T | null): void;
+}
+
+function cachedRecord<T>(key: string, schema: z.ZodType<T>): CachedRecord<T> {
+  let cache: T | null | undefined;
+  return {
+    load: async () => {
+      if (cache !== undefined) return cache;
+      const v = await read(key, schema.nullable(), null);
+      cache = v;
+      return v;
+    },
+    save: async (v) => {
+      cache = v;
+      try {
+        if (v) await AsyncStorage.setItem(key, JSON.stringify(v));
+        else await AsyncStorage.removeItem(key);
+      } catch {
+        // disk yazılamadı: bellek önbelleği bu çalıştırma için yeterli
+      }
+    },
+    forget: (v) => {
+      cache = v;
+    },
+  };
+}
+
+/** Etkin anlık fotoğrafım (görsel değil; görsel önbellek dizininde, bkz. services/proof/cache). */
+export interface PersistedProof {
+  uid: UserId;
+  proof_id: string;
+  /** Sunucu saati. */
+  expires_at: EpochMs;
+  captured_at: EpochMs;
+  caption: string | null;
+  width: number;
+  height: number;
+}
+
+const PersistedProofSchema: z.ZodType<PersistedProof> = z.object({
+  uid: z.string().min(1),
+  proof_id: z.string().min(1),
+  expires_at: z.number(),
+  captured_at: z.number(),
+  caption: z.string().nullable(),
+  width: z.number(),
+  height: z.number(),
+});
+
+const ApproachStateSchema: z.ZodType<ApproachState> = z.object({
+  dest_key: z.string(),
+  phase: z.enum(['unarmed', 'armed', 'confirming', 'fired']),
+  confirm_count: z.number(),
+  confirm_since: z.number().nullable(),
+  fired_at: z.number().nullable(),
+  arrived_at: z.number().nullable(),
+  last_distance_m: z.number().nullable(),
+});
+
+const LatLngSchema: z.ZodType<LatLng> = z.object({ lat: z.number(), lng: z.number() });
+
+const ShareDestinationSchema: z.ZodType<ShareDestination> = z.object({
+  key: z.string(),
+  kind: z.enum(DESTINATION_KINDS),
+  ref_id: z.string().nullable(),
+  name: z.string(),
+  center: LatLngSchema,
+  radius_m: z.number(),
+  set_at: z.number(),
+});
+
+/** Çağrılamamış (çevrimdışı) "Neredeyse vardım" raporu: bağlantı gelince `maxReportAgeMs` içinde bir kez denenir. */
+export interface PendingApproachReport {
+  request: {
+    op_id: string;
+    session_ids: SessionId[];
+    dest_key: string;
+    dest_name: string;
+    dest_kind: ShareDestination['kind'];
+    distance_m: number;
+    eta_min: number;
+    at: EpochMs;
+  };
+  created_at: EpochMs;
+}
+
+export interface ApproachReportResult {
+  at: EpochMs;
+  status: 'sent' | 'already_sent' | 'no_recipients' | 'stale' | 'invisible' | 'dropped';
+  notified_count: number;
+}
+
+export interface PersistedDestination {
+  uid: UserId;
+  destination: ShareDestination;
+  /** Oturum başına yaklaşma durumu (core `approachReduce`); `fired` kalıcıdır. */
+  approach: Record<SessionId, ApproachState>;
+  pending_report: PendingApproachReport | null;
+  last_report: ApproachReportResult | null;
+}
+
+const PersistedDestinationSchema: z.ZodType<PersistedDestination> = z.object({
+  uid: z.string().min(1),
+  destination: ShareDestinationSchema,
+  approach: z.record(z.string(), ApproachStateSchema),
+  pending_report: z
+    .object({
+      request: z.object({
+        op_id: z.string(),
+        session_ids: z.array(z.string()),
+        dest_key: z.string(),
+        dest_name: z.string(),
+        dest_kind: z.enum(DESTINATION_KINDS),
+        distance_m: z.number(),
+        eta_min: z.number(),
+        at: z.number(),
+      }),
+      created_at: z.number(),
+    })
+    .nullable()
+    .default(null),
+  last_report: z
+    .object({
+      at: z.number(),
+      status: z.enum(['sent', 'already_sent', 'no_recipients', 'stale', 'invisible', 'dropped']),
+      notified_count: z.number(),
+    })
+    .nullable()
+    .default(null),
+});
+
+/** Güvenli Dönüş hedefi: sunucuya yalnızca ad / tür / bölge kimliği gider; koordinat ve yarıçap BURADA kalır. */
+export interface PersistedSafeReturnDestination {
+  kind: SafeReturnDestKind;
+  name: string;
+  zone_id: string | null;
+  center: LatLng | null;
+  radius_m: number | null;
+}
+
+export interface PersistedSafeReturn {
+  uid: UserId;
+  safe_return_id: string;
+  status: SafeReturnStatus;
+  destination: PersistedSafeReturnDestination;
+  contact_ids: UserId[];
+  /** Yerel bildirim metni için kişi adları ("Annem ve Babam"); bilinmiyorsa null. */
+  contact_label: string | null;
+  duration_min: number;
+  started_at: EpochMs;
+  due_at: EpochMs;
+  grace_until: EpochMs;
+  extend_count: number;
+  /** Son `safe_return_update` anı (sunucu saati; en sık `updateMinIntervalMs`). */
+  last_update_at: EpochMs | null;
+  /** Nokta / bölge hedefinde varış algılaması (core `approachReduce` varış yarıçapı). */
+  approach: ApproachState | null;
+  /** Varış algılandı, `check_in {reason:'arrived'}` henüz onaylanmadı (aynı op_id ile yeniden denenir). */
+  arrived_pending: { op_id: string; at: EpochMs } | null;
+}
+
+const PersistedSafeReturnSchema: z.ZodType<PersistedSafeReturn> = z.object({
+  uid: z.string().min(1),
+  safe_return_id: z.string().min(1),
+  status: z.enum(SAFE_RETURN_STATUSES),
+  destination: z.object({
+    kind: z.enum(SAFE_RETURN_DEST_KINDS),
+    name: z.string(),
+    zone_id: z.string().nullable(),
+    center: LatLngSchema.nullable(),
+    radius_m: z.number().nullable(),
+  }),
+  contact_ids: z.array(z.string()),
+  contact_label: z.string().nullable().default(null),
+  duration_min: z.number(),
+  started_at: z.number().default(0),
+  due_at: z.number(),
+  grace_until: z.number(),
+  extend_count: z.number().default(0),
+  last_update_at: z.number().nullable(),
+  approach: ApproachStateSchema.nullable(),
+  arrived_pending: z.object({ op_id: z.string(), at: z.number() }).nullable(),
+});
+
+/** Son doğrulanmış konum (doğruluk ≤ 100 m) + pil. Zaman damgası sunucu saati. */
+export interface PersistedLastFix {
+  uid: UserId | null;
+  lat: number;
+  lng: number;
+  accuracy: number;
+  timestamp: EpochMs;
+  battery_pct: number | null;
+  is_charging: boolean | null;
+}
+
+const PersistedLastFixSchema: z.ZodType<PersistedLastFix> = z.object({
+  uid: z.string().nullable(),
+  lat: z.number(),
+  lng: z.number(),
+  accuracy: z.number(),
+  timestamp: z.number(),
+  battery_pct: z.number().nullable(),
+  is_charging: z.boolean().nullable(),
+});
+
+const proofRecord = cachedRecord(PROOF_KEY, PersistedProofSchema);
+const destinationRecord = cachedRecord(DESTINATION_KEY, PersistedDestinationSchema);
+const safeReturnRecord = cachedRecord(SAFE_RETURN_KEY, PersistedSafeReturnSchema);
+const lastFixRecord = cachedRecord(LAST_FIX_KEY, PersistedLastFixSchema);
+
+/** Güvenli Dönüş'ün başlattığı canlı paylaşım (yalnızca eksik kişilerle açılan yeni oturum). */
+export interface PersistedSafeReturnShare {
+  uid: UserId;
+  safe_return_id: string;
+  session_id: SessionId;
+}
+const PersistedSafeReturnShareSchema: z.ZodType<PersistedSafeReturnShare> = z.object({
+  uid: z.string().min(1),
+  safe_return_id: z.string().min(1),
+  session_id: z.string().min(1),
+});
+const safeReturnShareRecord = cachedRecord(SAFE_RETURN_SHARE_KEY, PersistedSafeReturnShareSchema);
+export const loadSafeReturnShare = (): Promise<PersistedSafeReturnShare | null> => safeReturnShareRecord.load();
+export const saveSafeReturnShare = (v: PersistedSafeReturnShare | null): Promise<void> => safeReturnShareRecord.save(v);
+
+const F9_RECORDS: CachedRecord<unknown>[] = [proofRecord, destinationRecord, safeReturnRecord, lastFixRecord, safeReturnShareRecord] as CachedRecord<unknown>[];
+
+export const loadProof = (): Promise<PersistedProof | null> => proofRecord.load();
+export const saveProof = (v: PersistedProof | null): Promise<void> => proofRecord.save(v);
+export const loadDestination = (): Promise<PersistedDestination | null> => destinationRecord.load();
+export const saveDestination = (v: PersistedDestination | null): Promise<void> => destinationRecord.save(v);
+export const loadSafeReturn = (): Promise<PersistedSafeReturn | null> => safeReturnRecord.load();
+export const saveSafeReturn = (v: PersistedSafeReturn | null): Promise<void> => safeReturnRecord.save(v);
+export const loadLastFix = (): Promise<PersistedLastFix | null> => lastFixRecord.load();
+export const saveLastFix = (v: PersistedLastFix | null): Promise<void> => lastFixRecord.save(v);
+
+/** Testler: Faz 9 bellek önbelleklerini sıfırla (bir sonraki okuma diskten). */
+export function __resetF9CacheForTests(): void {
+  for (const r of F9_RECORDS) r.forget(undefined);
+}
+
+/** Yaklaşma raporu en çok bu kadar bekletilir (core `APPROACH_LIMITS.maxReportAgeMs`; sunucu daha eskisini `stale` sayar). */
+export const APPROACH_PENDING_MAX_AGE_MS = APPROACH_LIMITS.maxReportAgeMs;

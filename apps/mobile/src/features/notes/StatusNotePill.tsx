@@ -6,6 +6,7 @@ import { composeNoteLabel, formatNoteLeft } from '@konum/core';
 import { Pressable, StyleSheet } from 'react-native';
 import { useNow } from '../../lib/useNow';
 import { useNotesStore } from '../../state/notesStore';
+import { useMyProof } from '../../state/proofStore';
 import { cardShadow, MIN_TOUCH, Text, useTheme } from '../../ui';
 
 export function StatusNotePill({ onPress }: { onPress: () => void }) {
@@ -13,7 +14,10 @@ export function StatusNotePill({ onPress }: { onPress: () => void }) {
   const note = useNotesStore((s) => s.myStatus);
   const now = useNow(30_000);
   const active = note !== null && note.expires_at > now;
-  const label = active ? composeNoteLabel(note.emoji, note.text) : '＋ Not ekle';
+  // Faz 9: etkin anlık fotoğraf varsa kamera işareti.
+  const proof = useMyProof();
+  const photo = proof !== null && proof.expires_at > now ? '📷 ' : '';
+  const label = `${photo}${active ? composeNoteLabel(note.emoji, note.text) : '＋ Not ekle'}`;
   return (
     <Pressable
       onPress={onPress}

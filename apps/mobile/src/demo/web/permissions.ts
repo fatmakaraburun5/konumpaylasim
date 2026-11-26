@@ -14,7 +14,7 @@
 import { safeStorage } from '../server/storage';
 
 export type DemoPermStatus = 'undetermined' | 'granted' | 'denied';
-export type DemoPermKind = 'foreground' | 'background' | 'notifications' | 'motion';
+export type DemoPermKind = 'foreground' | 'background' | 'notifications' | 'motion' | 'contacts';
 
 export interface DemoPerms {
   foreground: DemoPermStatus;
@@ -22,6 +22,8 @@ export interface DemoPerms {
   background: DemoPermStatus;
   notifications: DemoPermStatus;
   motion: DemoPermStatus;
+  /** Faz 9: Rehber (yalnızca SMS acil numarası seçmek için). Varsayılan "sorulmadı" (ilk açılış adımı görünsün). */
+  contacts: DemoPermStatus;
   /** Tam (kesin) konum. */
   precise: boolean;
   /** Sistem penceresi bu izin için bir kez gösterildi mi (iOS: sonrası yalnızca Ayarlar). */
@@ -35,15 +37,20 @@ const ALL_GRANTED: DemoPerms = {
   background: 'granted',
   notifications: 'granted',
   motion: 'granted',
+  contacts: 'granted',
   precise: true,
-  asked: { foreground: true, background: true, notifications: true, motion: true },
+  asked: { foreground: true, background: true, notifications: true, motion: true, contacts: true },
 };
+
+/** Demo açılış varsayılanı: Faz 1–8 izinleri verilmiş, rehber sorulmamış (Faz 9 ilk açılış adımı görünsün). */
+const DEFAULT_PERMS: DemoPerms = { ...ALL_GRANTED, contacts: 'undetermined', asked: { foreground: true, background: true, notifications: true, motion: true } };
 
 const FIRST_RUN: DemoPerms = {
   foreground: 'undetermined',
   background: 'undetermined',
   notifications: 'undetermined',
   motion: 'undetermined',
+  contacts: 'undetermined',
   precise: true,
   asked: {},
 };
@@ -53,7 +60,7 @@ const STATUS = new Set<DemoPermStatus>(['undetermined', 'granted', 'denied']);
 function load(): DemoPerms {
   try {
     const raw = safeStorage.get(KEY);
-    if (!raw) return { ...ALL_GRANTED, asked: { ...ALL_GRANTED.asked } };
+    if (!raw) return { ...DEFAULT_PERMS, asked: { ...DEFAULT_PERMS.asked } };
     const v = JSON.parse(raw) as Partial<DemoPerms>;
     const pick = (s: unknown, d: DemoPermStatus): DemoPermStatus => (STATUS.has(s as DemoPermStatus) ? (s as DemoPermStatus) : d);
     return {
@@ -61,11 +68,12 @@ function load(): DemoPerms {
       background: pick(v.background, 'granted'),
       notifications: pick(v.notifications, 'granted'),
       motion: pick(v.motion, 'granted'),
+      contacts: pick(v.contacts, 'undetermined'),
       precise: v.precise !== false,
       asked: typeof v.asked === 'object' && v.asked ? v.asked : {},
     };
   } catch {
-    return { ...ALL_GRANTED, asked: { ...ALL_GRANTED.asked } };
+    return { ...DEFAULT_PERMS, asked: { ...DEFAULT_PERMS.asked } };
   }
 }
 
@@ -170,6 +178,9 @@ function ask(kind: SystemPromptRequest['kind'], title: string, message: string, 
 const WHEN_IN_USE_TEXT = 'Konumunu yalnızca seçtiğin kişilerle, seçtiğin süre boyunca paylaşmak için kullanılır.';
 const ALWAYS_TEXT = 'Haftalık ve süresiz paylaşımların uygulama kapalıyken ya da ekran kilitliyken de sürmesi için kullanılır.';
 const MOTION_TEXT = 'Telefonun masadayken GPS’i kapatıp pil tasarrufu yapmak için hareket etkinliği kullanılır.';
+/** app.config `NSContactsUsageDescription` (expo-contacts) ile aynı. */
+const CONTACTS_TEXT =
+  'İnternet yokken SOS mesajını SMS ile gönderebilmen için acil durum numaralarını rehberinden seçmene izin veriyoruz. Rehberin sunucuya yüklenmez ve taranmaz; yalnızca seçtiğin numaralar bu telefonda saklanır.';
 
 /**
  * Sistem izin penceresi (izin zaten verilmiş/reddedilmişse ya da iOS bir daha sormuyorsa pencere açmadan döner).
@@ -212,6 +223,14 @@ export async function requestDemoPermission(kind: DemoPermKind): Promise<DemoPer
       next = b === 'allow' ? 'granted' : 'denied';
       break;
     }
+    case 'contacts': {
+      const b = await ask('alert', '“Konum” Kişilerinize Erişmek İstiyor', CONTACTS_TEXT, [
+        { id: 'deny', label: 'İzin Verme' },
+        { id: 'allow', label: 'Tamam', bold: true },
+      ]);
+      next = b === 'allow' ? 'granted' : 'denied';
+      break;
+    }
   }
   save({ ...perms, [kind]: next, asked: { ...perms.asked, [kind]: true } });
   return next;
@@ -247,4 +266,11 @@ export async function openDemoSettings(): Promise<void> {
     default:
       break;
   }
+}
+
+/** Faz 9 demo paneli: "Rehber / SMS izinlerini sıfırla" — rehber yeniden "sorulmadı". */
+export function resetDemoContactsPerm(): void {
+  const asked = { ...perms.asked };
+  delete asked.contacts;
+  save({ ...perms, contacts: 'undetermined', asked });
 }

@@ -35,7 +35,22 @@ export interface LinkExpiryTaskData {
   version: number;
 }
 
-export type ExpiryTaskPayload = ExpiryTaskData | LinkExpiryTaskData;
+/**
+ * Faz 9: anlık fotoğrafın 1 saatlik silinmesi (`expires_at` anında) ve Güvenli Dönüş sunucu zamanlayıcısı
+ * (`due_at` ve `grace_until` anlarında) AYNI kuyruğa alınır. İşleyici alana göre ayırır (index.ts): `proof_id`,
+ * `safe_return_id`. Uzatılan Güvenli Dönüş'ün eski görevi gelince tick hiçbir şey yapmaz (belge yeniden okunur).
+ */
+export interface ProofExpiryTaskData {
+  proof_id: string;
+}
+
+export interface SafeReturnTaskData {
+  safe_return_id: string;
+  /** Görevin hedef anı (due_at ya da grace_until). */
+  at: number;
+}
+
+export type ExpiryTaskPayload = ExpiryTaskData | LinkExpiryTaskData | ProofExpiryTaskData | SafeReturnTaskData;
 
 /** Cloud Tasks en çok 30 gün sonrasına zamanlanabilir; paylaşımlar en çok 7 gün sürer. */
 const MAX_SCHEDULE_AHEAD_MS = 29 * 24 * 60 * 60 * 1000;
@@ -74,6 +89,27 @@ export async function scheduleExpiryTasks(effects: readonly AclSource[], now: Ep
 export async function scheduleLinkExpiryTasks(effects: readonly LinkAclSource[], now: EpochMs = Date.now()): Promise<void> {
   const tasks = effects.map((s) => linkExpiryTaskFor(s, now)).filter((t): t is NonNullable<typeof t> => t !== null);
   await enqueueExpiryTasks(tasks);
+}
+
+/** Faz 9: fotoğraf silme görevi (kimlik `proof-{id}`; aynı fotoğraf iki kez kuyruğa girmez). Hata fırlatmaz. */
+export async function scheduleProofExpiryTask(p: { proof_id: string; expires_at: EpochMs }, now: EpochMs = Date.now()): Promise<void> {
+  await enqueueExpiryTasks([
+    { id: `proof-${p.proof_id}`.replace(/[^A-Za-z0-9_-]/g, '-'), data: { proof_id: p.proof_id }, scheduleTime: new Date(Math.max(p.expires_at, now)) },
+  ]);
+}
+
+/**
+ * Faz 9: Güvenli Dönüş görevleri `due_at` ("Güvende misin?") ve `grace_until` (alarm) anlarına. Kimlik
+ * `sr-{id}-{an}`: uzatma yeni anlar = yeni görevler. Hata fırlatmaz (dakikalık süpürücü yedektir).
+ */
+export async function scheduleSafeReturnTasks(d: { safe_return_id: string; due_at: EpochMs; grace_until: EpochMs }, now: EpochMs = Date.now()): Promise<void> {
+  await enqueueExpiryTasks(
+    [d.due_at, d.grace_until].map((at) => ({
+      id: `sr-${d.safe_return_id}-${at}`.replace(/[^A-Za-z0-9_-]/g, '-'),
+      data: { safe_return_id: d.safe_return_id, at } satisfies SafeReturnTaskData,
+      scheduleTime: new Date(Math.max(at, now)),
+    })),
+  );
 }
 
 async function enqueueExpiryTasks(tasks: { id: string; data: ExpiryTaskPayload; scheduleTime: Date }[]): Promise<void> {

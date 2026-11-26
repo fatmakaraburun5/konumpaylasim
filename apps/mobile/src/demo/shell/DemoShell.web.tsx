@@ -15,6 +15,9 @@
  *    galerisi, tek tuşla 1 saatlik paylaşım (oturumsuz `widget_quick_share`) ve hata / izin düşüşü senaryoları.
  *  - Faz 7 (Faz7.web.tsx): "FAZ 7 SENARYOLARI" (Ayşe etkinliğe davet etsin, hatırlatmayı şimdi gönder, Mehmet yola
  *    çıksın) ve gizlilik tercihleri.
+ *  - Faz 9 (Faz9.web.tsx): "FAZ 9 SENARYOLARI" (Ayşe anlık fotoğraf, süreyi ileri sar, Ayşe hedefe yaklaşsın,
+ *    Güvenli Dönüş son uyarı / alarm, Ayşe yanıt vermesin, internetsiz SOS → SMS, rehber / SMS sıfırla); telefonun
+ *    içinde simüle Mesajlar ekranı ve rehber seçici.
  */
 // Ekran kilidi simülasyonu `document.visibilityState`'i bu modül yüklenirken bağlar (AppState'ten önce olmalı).
 import '../web/screen';
@@ -52,6 +55,7 @@ import { Faz5Section } from './Faz5.web';
 import { Faz6Section } from './Faz6.web';
 import { Faz7Section } from './Faz7.web';
 import { Faz8Section } from './Faz8.web';
+import { Faz9Hosts, Faz9Section } from './Faz9.web';
 
 const WIDE_MIN = 900;
 const SCREEN_W = 390;
@@ -212,7 +216,7 @@ function PhoneFrame({ children, scale }: { children: ReactNode; scale: number })
           },
         ]}
       >
-        <View style={[styles.screen, { backgroundColor: colors.bg }]}>
+        <View style={[styles.screen, { backgroundColor: colors.bg }]} testID="demo-phone">
           <View style={styles.app}>
             {children}
             <ScreenHostLayer />
@@ -220,6 +224,7 @@ function PhoneFrame({ children, scale }: { children: ReactNode; scale: number })
           </View>
           <LockScreen />
           <SystemPromptHost />
+          <Faz9Hosts />
           {/* Durum çubuğu en üstte (kilit ekranında da görünür). */}
           <View style={styles.statusLayer} pointerEvents="none">
             <StatusBarMock battery={battery} />
@@ -392,6 +397,7 @@ function DemoPanel({ showNotice, onNavigate, padding, footer }: { showNotice: bo
       <Faz6Section snap={snap} renderRow={renderRow} onNavigate={onNavigate} />
       <Faz7Section snap={snap} renderRow={renderRow} />
       <Faz8Section snap={snap} renderRow={renderRow} />
+      <Faz9Section snap={snap} renderRow={renderRow} />
       <PermissionsSection renderRow={renderRow} />
 
       {showNotice ? (
@@ -495,6 +501,7 @@ export function DemoShell({ children }: { children: ReactNode }) {
       <PushBanner />
       <LockScreen />
       <SystemPromptHost />
+      <Faz9Hosts />
       <Pressable
         accessibilityRole="button"
         accessibilityLabel="Demo kontrollerini aç"

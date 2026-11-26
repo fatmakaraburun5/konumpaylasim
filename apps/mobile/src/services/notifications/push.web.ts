@@ -19,6 +19,7 @@ import { f5ForegroundContent, isF5PushType, routeF5Received } from './f5Push';
 import { f6ForegroundContent, isF6PushType, routeF6Received } from './f6Push';
 import { f7ForegroundContent, isF7PushType, routeF7Received } from './f7Push';
 import { f8ForegroundContent, isF8PushType, routeF8Received } from './f8Push';
+import { f9ForegroundContent, isF9PushType, routeF9Received } from './f9Push';
 import { friendsStore, selectFriends } from '../../state/friendsStore';
 import { locationRequestLocalContent } from './locationRequestPush';
 
@@ -103,6 +104,18 @@ async function handleForegroundMessage(m: PushLike): Promise<void> {
     await Notifications.scheduleNotificationAsync({
       content: { title: f8.title, body: f8.body, data: f8.data, interruptionLevel: f8.interruptionLevel },
       trigger: { channelId: f8.channelId },
+    });
+    return;
+  }
+  // Faz 9: "Neredeyse vardım" (movement kanalı) ve Güvenli Dönüş başladı / bitti bildirim kartı; sahibin "Güvende
+  // misin?" push'u önde gösterilmez (uygulama içi son uyarı + planlanmış yerel bildirim), yalnızca durum tazelenir.
+  if (isF9PushType(m.data?.type)) {
+    routeF9Received(m.data);
+    const f9 = f9ForegroundContent(m, (id) => selectFriends(friendsStore.getState()).find((f) => f.uid === id)?.displayName || null);
+    if (!f9) return;
+    await Notifications.scheduleNotificationAsync({
+      content: { title: f9.title, body: f9.body, data: f9.data, interruptionLevel: f9.interruptionLevel },
+      trigger: { channelId: f9.channelId },
     });
     return;
   }

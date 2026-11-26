@@ -28,6 +28,8 @@
  *  - Aktif SOS'un alıcıları canlı tutulur: `sos_update` her güncellemede listeyi geçerli alıcılarla KESİŞTİRİR;
  *    `emergency_contacts_set`, arkadaşlık kaldırma / engelleme (graph.ts `readPairF4Cleanup`), grafik sıfırlama
  *    (`pruneSosForGraphReset`) ve onayı geri çekme (access.ts, SOS kapanır) alıcıyı hemen çıkarır.
+ *  - Faz 9: `sos_send` gövdesi `openOrRefreshSos` olarak paylaşılır; Güvenli Dönüş sunucu alarmı (safeReturn.ts) aynı
+ *    yoldan `origin:'safe_return'` + `safe_return` özetiyle uyarı açar (elle SOS kaydında `origin` alanı yazılmaz).
  */
 import {
   CALLABLES,
@@ -41,7 +43,9 @@ import {
   type SosAlert,
   type SosAlertResponse,
   type SosLocation,
+  type SosOrigin,
   type SosResolveRequestSchema,
+  type SosSafeReturnInfo,
   type SosSendRequestSchema,
   type SosSendResponse,
   type SosUpdateRequestSchema,
@@ -114,18 +118,28 @@ async function contactPairs(tx: FirebaseFirestore.Transaction, me: UserId, ids: 
  * kayıttan kalır: sahibinin o zamanki seçimidir. Bu kişiler için `sos_alert` (`via:'migration'`) aynı transaction'da
  * yazılır (`migrate`) ve kişi alıcı sayılır; aksi hâlde eski kullanıcı acil durumda `no_emergency_contacts` alırdı.
  */
-interface SosAudience {
+export interface SosAudience {
   recipients: UserId[];
   migrate: { id: UserId; grant: PermissionGrantDoc | null }[];
 }
 
-async function sosAudience(tx: FirebaseFirestore.Transaction, me: UserId, ids: readonly UserId[]): Promise<SosAudience> {
+/**
+ * `canMigrate`: Faz 9 Güvenli Dönüş kişileri istemciden gelir; göç izni yalnızca sahibin `emergency_contacts` listesindeki
+ * kişilere yazılır (listede olmayan arkadaşa SOS izni sessizce verilmez). Varsayılan: hepsi (liste zaten acil kişiler).
+ */
+export async function sosAudience(
+  tx: FirebaseFirestore.Transaction,
+  me: UserId,
+  ids: readonly UserId[],
+  canMigrate: (id: UserId) => boolean = () => true,
+): Promise<SosAudience> {
   const pairs = await contactPairs(tx, me, ids);
   const out: SosAudience = { recipients: [], migrate: [] };
   for (const { id, pair } of pairs) {
     if (!pair || !isFriend(pair)) continue;
     let grant = pair.grantOut;
     if (!hasGrant(grant, 'sos_alert')) {
+      if (!canMigrate(id)) continue;
       out.migrate.push({ id, grant });
       grant = withGranted(grant ?? emptyGrantDoc(me, id, 0), ['sos_alert'], 'migration', 0);
     }
@@ -135,7 +149,7 @@ async function sosAudience(tx: FirebaseFirestore.Transaction, me: UserId, ids: r
 }
 
 /** Yazma aşaması: göç izinleri (`sos_alert`, `via:'migration'`); ret anları istemci belgesine yazılmaz. */
-function writeSosMigration(tx: FirebaseFirestore.Transaction, me: UserId, a: SosAudience, now: EpochMs): void {
+export function writeSosMigration(tx: FirebaseFirestore.Transaction, me: UserId, a: SosAudience, now: EpochMs): void {
   for (const m of a.migrate) {
     tx.set(refs.grant(me, m.id), { ...withGranted(m.grant ?? emptyGrantDoc(me, m.id, now), ['sos_alert'], 'migration', now), declined_at: {} });
   }
@@ -163,7 +177,7 @@ export function writeSosRecipientPrune(tx: FirebaseFirestore.Transaction, alerts
   return n;
 }
 
-async function pushAll(uids: readonly UserId[], msg: PushMessage, send: PushSender, what: string): Promise<void> {
+export async function pushAll(uids: readonly UserId[], msg: PushMessage, send: PushSender, what: string): Promise<void> {
   const res = await Promise.allSettled(uids.map((u) => send(u, msg)));
   const failed = res.filter((r) => r.status === 'rejected').length;
   if (failed) logger.warn(`${what}: bazı alıcılara gönderilemedi`, { failed, total: res.length });
@@ -219,55 +233,111 @@ export async function sosSend(ctx: CallCtx, data: z.output<typeof SosSendRequest
   return runOp(ctx, data.op_id, CALLABLES.sosSend, data, async (tx) => {
     const me = await readCaller(tx, ctx.uid);
     const rate = await readRateLimit(tx, ctx.uid, 'sos_send', SOS_LIMITS.maxSendsPerHour, HOUR, now);
-    const audience = await sosAudience(tx, ctx.uid, me.emergency_contacts ?? []);
-    const recipients = audience.recipients;
-    if (recipients.length === 0) throw fail('no_emergency_contacts');
-    const activeSnap = await tx.get(
-      db().collection(COL.sosAlerts).where('sender_id', '==', ctx.uid).where('status', '==', 'active').limit(1),
-    );
-    const current = activeSnap.docs[0]?.data() as SosAlertDoc | undefined;
-
-    const common = {
-      sender_name: me.display_name ?? '',
-      recipient_ids: recipients,
+    const opened = await openOrRefreshSos(tx, ctx.uid, me, me.emergency_contacts ?? [], {
+      newId,
+      now,
       location,
       address,
-      maps_url: sosMapsUrl(location.lat, location.lng),
       battery_pct: data.battery_pct ?? null,
       is_charging: data.is_charging ?? null,
       route: data.route ? { destination_label: data.route.destination_label ?? null, eta_s: data.route.eta_s, distance_m: data.route.distance_m } : null,
-      updated_at: now,
-    };
-    let doc: SosAlertDoc;
-    if (current) {
-      // Aktif SOS varken yeni basış: aynı uyarı tazelenir ve yeniden push edilir.
-      doc = { ...current, ...common, update_count: (current.update_count ?? 0) + 1 };
-      tx.update(refs.sosAlert(current.sos_id), { ...common, update_count: doc.update_count });
-    } else {
-      doc = {
-        sos_id: newId,
-        sender_id: ctx.uid,
-        status: 'active',
-        resolve_reason: null,
-        message: SOS_MESSAGE,
-        created_at: now,
-        resolved_at: null,
-        acks: {},
-        update_count: 0,
-        ...common,
-        purge_at: activePurgeAt(now),
-      };
-      tx.set(refs.sosAlert(newId), doc);
-    }
+    });
     writeRateLimit(tx, rate, HOUR);
-    writeSosMigration(tx, ctx.uid, audience, now);
-    // Faz 8: görünmezken SOS gider ve görünmez mod GERİ YÜKLEMESİZ kapanır (anlık görüntü silinir).
-    if (isInvisible(me)) tx.update(refs.user(ctx.uid), { invisible: null, visible_since: now });
-
-    const sos = toSosAlert(doc);
-    const response: SosSendResponse = { sos, recipients: recipients.length, server_now: now };
-    return { response, after: () => pushAll(recipients, buildSosPush(sos), send, 'sos_send') };
+    const sos = toSosAlert(opened.doc);
+    const response: SosSendResponse = { sos, recipients: opened.recipients.length, server_now: now };
+    return { response, after: () => pushAll(opened.recipients, buildSosPush(sos), send, 'sos_send') };
   });
+}
+
+export interface SosOpenInput {
+  /** Yeni uyarı açılırsa kullanılacak kimlik (transaction dışında üretilir). */
+  newId: string;
+  now: EpochMs;
+  location: SosLocation;
+  address: string | null;
+  battery_pct: number | null;
+  is_charging: boolean | null;
+  route: SosAlert['route'];
+  /** Faz 9: `safe_return` = Güvenli Dönüş sunucu alarmı (yoksa elle SOS; alan yazılmaz). */
+  origin?: SosOrigin;
+  safe_return?: SosSafeReturnInfo | null;
+  message?: string;
+  /** Göç izni kimlere yazılabilir (bkz. `sosAudience`). */
+  canMigrate?: (id: UserId) => boolean;
+}
+
+export interface SosOpenResult {
+  doc: SosAlertDoc;
+  recipients: UserId[];
+  /** Aktif uyarı tazelendi (yeni açılmadı). */
+  refreshed: boolean;
+}
+
+/**
+ * `sos_send` gövdesi (Faz 9'da Güvenli Dönüş alarmı da kullanır). ÖNCE okur (alıcılar, aktif uyarı), SONRA yazar:
+ * çağıranın kendi okumaları bu çağrıdan önce bitmiş olmalı. Geçerli alıcı yoksa `no_emergency_contacts` (yazmadan).
+ *  - Aktif SOS varsa yenisi açılmaz: aynı belge tazelenir (aynı `sos_id`). Güvenli Dönüş alarmı süren bir SOS'a
+ *    denk gelirse alıcılar BİRLEŞİR ve daha yeni konum korunur (canlı SOS akışı eski son konumla ezilmez).
+ *  - Görünmezken SOS gider ve görünmez mod geri yüklemesiz kapanır; göç izinleri aynı transaction'da yazılır.
+ */
+export async function openOrRefreshSos(
+  tx: FirebaseFirestore.Transaction,
+  uid: UserId,
+  me: UserDoc,
+  contactIds: readonly UserId[],
+  input: SosOpenInput,
+): Promise<SosOpenResult> {
+  const now = input.now;
+  const audience = await sosAudience(tx, uid, contactIds, input.canMigrate);
+  if (audience.recipients.length === 0) throw fail('no_emergency_contacts');
+  const activeSnap = await tx.get(db().collection(COL.sosAlerts).where('sender_id', '==', uid).where('status', '==', 'active').limit(1));
+  const current = activeSnap.docs[0]?.data() as SosAlertDoc | undefined;
+
+  const fromSafeReturn = input.origin === 'safe_return';
+  const keepCurrentLocation = Boolean(current && fromSafeReturn && current.location.timestamp >= input.location.timestamp);
+  const recipients = current && fromSafeReturn ? unique([...(current.recipient_ids ?? []), ...audience.recipients]) : audience.recipients;
+  const located = keepCurrentLocation && current
+    ? { location: current.location, address: current.address, maps_url: current.maps_url, battery_pct: current.battery_pct, is_charging: current.is_charging }
+    : {
+        location: input.location,
+        address: input.address,
+        maps_url: sosMapsUrl(input.location.lat, input.location.lng),
+        battery_pct: input.battery_pct,
+        is_charging: input.is_charging,
+      };
+  const common = {
+    sender_name: me.display_name ?? '',
+    recipient_ids: recipients,
+    ...located,
+    route: keepCurrentLocation && current ? (current.route ?? null) : input.route,
+    updated_at: now,
+  };
+  let doc: SosAlertDoc;
+  if (current) {
+    // Aktif SOS varken yeni basış / alarm: aynı uyarı tazelenir ve yeniden push edilir.
+    doc = { ...current, ...common, update_count: (current.update_count ?? 0) + 1 };
+    tx.update(refs.sosAlert(current.sos_id), { ...common, update_count: doc.update_count });
+  } else {
+    doc = {
+      sos_id: input.newId,
+      sender_id: uid,
+      status: 'active',
+      resolve_reason: null,
+      message: input.message ?? SOS_MESSAGE,
+      created_at: now,
+      resolved_at: null,
+      acks: {},
+      update_count: 0,
+      ...common,
+      ...(input.origin && input.origin !== 'manual' ? { origin: input.origin, safe_return: input.safe_return ?? null } : {}),
+      purge_at: activePurgeAt(now),
+    };
+    tx.set(refs.sosAlert(input.newId), doc);
+  }
+  writeSosMigration(tx, uid, audience, now);
+  // Faz 8: görünmezken SOS gider ve görünmez mod GERİ YÜKLEMESİZ kapanır (anlık görüntü silinir).
+  if (isInvisible(me)) tx.update(refs.user(uid), { invisible: null, visible_since: now });
+  return { doc, recipients, refreshed: Boolean(current) };
 }
 
 // ---------------------------------------------------------------------------

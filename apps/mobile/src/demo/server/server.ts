@@ -406,12 +406,62 @@ import {
   type PrivacySettings,
   type PrivacySettingsResponse,
 } from '@konum/core';
+import {
+  approachMarkId,
+  approachPushText,
+  APPROACH_LIMITS,
+  ApproachReportRequestSchema,
+  bytesToBase64,
+  canViewProof,
+  createSafeReturnDoc,
+  DEST_STATES,
+  destinationKey,
+  isFreshCapture,
+  PACKET_F9_LIMITS,
+  PATHS,
+  PROOF_ID_RE,
+  PROOF_LIMITS,
+  ProofCreateRequestSchema,
+  ProofDeleteRequestSchema,
+  proofExpiresAt,
+  ProofGetRequestSchema,
+  reduceSafeReturn,
+  SAFE_RETURN_LIMITS,
+  safeReturnAlarmMessage,
+  SafeReturnCheckInRequestSchema,
+  safeReturnDuePushText,
+  safeReturnEndedPushText,
+  SafeReturnIdRequestSchema,
+  SafeReturnStartRequestSchema,
+  safeReturnStartedPushText,
+  SafeReturnUpdateRequestSchema,
+  sanitizeDestName,
+  sanitizeProofCaption,
+  toProofView,
+  validateProofJpeg,
+  type ApproachReportResponse,
+  type ApproachReportStatus,
+  type DestState,
+  type PhotoProofDoc,
+  type ProofCreateResponse,
+  type ProofDeleteResponse,
+  type ProofEndReason,
+  type ProofGetResponse,
+  type SafeReturnAction,
+  type SafeReturnDoc,
+  type SafeReturnFix,
+  type SafeReturnResponse,
+  type SafeReturnStatus,
+  type SosSafeReturnInfo,
+} from '@konum/core';
 import { z } from 'zod';
 import { botAvatarUrls, DEMO_STORAGE_BUCKET, DEMO_STORAGE_HOST, DemoAvatarStore, DemoStorageError, uriToDataUrl } from './avatars';
 import { fakeComputeRoutes, fakeReverseGeocode } from './fakeGoogle';
 import { fakePlacesNearby, fakeRouteMatrix } from './fakePlaces';
 import { demoCurrentUid } from '../web/session';
 import { safeStorage } from './storage';
+import { DEMO_PROOF_FALLBACK } from './proofFallback';
+import { DemoProofObjects } from './proofObjects';
 import {
   AYSE_PATH,
   DEMO_ME,
@@ -727,6 +777,41 @@ interface Db {
   movement_cooldown: Record<UserId, EpochMs>;
   /** Demo paneli: en son "yola çıktı" raporum. */
   movement_last: { at: EpochMs; status: MovementReportResponse['status']; notified: number } | null;
+  // --- Faz 9 (eski kayıtlarda yok: `withPhase9` tamamlar) ---
+  phase9: boolean;
+  /** Firestore `photo_proofs/{proof_id}` (istemciye kapalı). Bayt sahte Storage'da (`proofObjects.ts`). */
+  proofs: Record<string, ProofRec>;
+  /** Faz 9 hız sınırı sayaçları `{uid}|{tür}|{pencere başlangıcı}` (proof_create, proof_get, approach_report, safe_return_start). */
+  f9_rate: Record<string, number>;
+  /** Firestore `approach_marks/{uid}_{session}_{dest_key}` (tek sefer kaydı, 48 sa). */
+  approach_marks: Record<string, ApproachMarkRec>;
+  /** Firestore `safe_returns/{id}` (yalnızca sahibi okur). */
+  safe_returns: Record<string, SafeReturnRec>;
+  /** Bot hedef durumu (bot paketlerine `dest_*` olarak eklenir). */
+  bot_dest: Record<UserId, { name: string; state: DestState; eta: number | null }>;
+  /** Demo paneli: en son "Neredeyse vardım" raporum. */
+  approach_last: { at: EpochMs; status: ApproachReportStatus; notified: number; dest_name: string } | null;
+  /** Demo paneli: simüle Mesajlar ekranında hazırlanan SMS'ler (en yeni önde, en çok 10). */
+  sms_log: DemoSmsLogEntry[];
+}
+
+/** Faz 9: `photo_proofs` kaydı (+ TTL). */
+type ProofRec = PhotoProofDoc & { purge_at: EpochMs };
+/** Faz 9: `safe_returns` kaydı (+ TTL). */
+type SafeReturnRec = SafeReturnDoc & { purge_at: EpochMs };
+interface ApproachMarkRec {
+  uid: UserId;
+  session_id: string;
+  dest_key: string;
+  created_at: EpochMs;
+  purge_at: EpochMs;
+}
+/** Demo paneli: SMS yedeği günlüğü (yalnızca demo; gerçek uygulamada SMS içeriği bize ulaşmaz). */
+export interface DemoSmsLogEntry {
+  at: EpochMs;
+  numbers: string[];
+  body: string;
+  result: 'sent' | 'cancelled';
 }
 
 /** Backend `EventReminderDoc` (TTL alanı yok). */
@@ -941,6 +1026,19 @@ function withPhase7(db: Db): Db {
   return db;
 }
 
+/** Faz 7 kaydına Faz 9 alanlarını ekler (demo verisi silinmeden; DB_VERSION değişmez). */
+function withPhase9(db: Db): Db {
+  db.proofs ??= {};
+  db.f9_rate ??= {};
+  db.approach_marks ??= {};
+  db.safe_returns ??= {};
+  db.bot_dest ??= {};
+  db.approach_last ??= null;
+  db.sms_log ??= [];
+  db.phase9 ??= true;
+  return db;
+}
+
 // --- hata modeli -----------------------------------------------------------------------------
 
 /** Firebase `HttpsError` benzeri: istemci `details.code` → core ERROR_CODES eşlemesini kullanır. */
@@ -1004,6 +1102,15 @@ const TRANSPORT: Record<ErrorCode, string> = {
   event_invitee_limit: 'resource-exhausted',
   event_started: 'failed-precondition',
   event_limit_reached: 'resource-exhausted',
+  // Faz 9 (backend `errors.ts` ile aynı)
+  proof_not_found: 'not-found',
+  proof_expired: 'failed-precondition',
+  proof_invalid: 'invalid-argument',
+  proof_stale_capture: 'failed-precondition',
+  proof_limit_reached: 'resource-exhausted',
+  safe_return_active: 'failed-precondition',
+  safe_return_not_active: 'failed-precondition',
+  safe_return_extend_limit: 'failed-precondition',
 };
 
 /** RTDB kural reddi (RNFB `database/permission-denied` ile aynı biçim). */
@@ -1023,6 +1130,15 @@ const fail = (code: ErrorCode, message?: string, extra?: Record<string, unknown>
 
 const clone = <T>(v: T): T => (v === undefined ? v : (JSON.parse(JSON.stringify(v)) as T));
 const randomHex32 = () => uuidV4().replace(/-/g, '');
+/** Backend `newProofId`: 15 rastgele bayt → 20 karakter base64url (core `PROOF_ID_RE`). */
+const B64URL = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+function newProofId(): string {
+  const bytes = new Uint8Array(20);
+  const c = (globalThis as { crypto?: { getRandomValues?: (a: Uint8Array) => Uint8Array } }).crypto;
+  if (c?.getRandomValues) c.getRandomValues(bytes);
+  else for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
+  return Array.from(bytes, (b) => B64URL[b & 63]).join('');
+}
 /**
  * Backend `outgoingId(uid, via, değer)` gibi deterministik 32 hex: aynı kişiye tekrar istek aynı kaydı tazeler.
  * (Kriptografik değil; yalnızca demo kimliği.)
@@ -1180,6 +1296,18 @@ export interface DemoSnapshot {
     lastMovement: { at: EpochMs; status: MovementReportResponse['status']; notified: number } | null;
     movementCooldownLeftMs: number;
   };
+  /** Faz 9: anlık fotoğraflar, yaklaşma, Güvenli Dönüş ve SMS yedeği günlüğü. */
+  f9: {
+    myProof: { proof_id: string; expires_at: EpochMs } | null;
+    ayseProof: { proof_id: string; expires_at: EpochMs; caption: string | null } | null;
+    /** Sahte Storage'daki `proofs/` nesneleri (süre dolunca 0'a iner). */
+    proofObjects: number;
+    ayseDest: { name: string; state: DestState; eta: number | null } | null;
+    lastApproach: { at: EpochMs; status: ApproachReportStatus; notified: number; dest_name: string } | null;
+    mySafeReturn: { status: SafeReturnStatus; destination: string; due_at: EpochMs; grace_until: EpochMs; contacts: string[]; sos_id: string | null } | null;
+    ayseSafeReturn: { status: SafeReturnStatus; destination: string; due_at: EpochMs; grace_until: EpochMs; sos_id: string | null } | null;
+    lastSms: DemoSmsLogEntry | null;
+  };
 }
 
 /** Faz 6: widget önizlemesinin ham kaynağı (`widgetSource`). Avatar adresi yerel (gösterilebilir) adrestir. */
@@ -1207,12 +1335,15 @@ export class DemoServer {
   /** `reset()` sonrası: hiçbir şey diske yazılmaz (sayfa yenilenirken `pagehide` eski durumu geri yazmasın). */
   private disposed = false;
   private lastPrune = 0;
+  private lastF9Prune = 0;
   /** Açık `link_live` dinleyicileri (demo paneli: "izleyici açık"). */
   private linkListeners = 0;
   /** Faz 3: FCM benzeri push dinleyicileri (uygulama `registerPushToken` ile abone olur). */
   private pushListeners = new Map<UserId, Set<(m: DemoPushMessage) => void>>();
   /** Faz 6: sahte Storage (yüklenen avatarlar; ana durumdan ayrı anahtarda). */
   private avatars = new DemoAvatarStore();
+  /** Faz 9: sahte Storage `proofs/{uid}/{proof_id}.jpg` (istemciye kapalı). */
+  private proofObjects = new DemoProofObjects();
 
   constructor() {
     this.db = this.load() ?? this.seed(Date.now());
@@ -1234,7 +1365,7 @@ export class DemoServer {
       if (!db || db.v !== DB_VERSION || !db.users || !db.users[DEMO_ME]) return null;
       const cutoff = Date.now() - DAY;
       for (const [k, op] of Object.entries(db.ops)) if (op.at < cutoff) delete db.ops[k];
-      return withPhase7(withPhase8(withPhase6(withPhase5(withPhase4(withPhase3(withPhase2(db)))))));
+      return withPhase9(withPhase7(withPhase8(withPhase6(withPhase5(withPhase4(withPhase3(withPhase2(db))))))));
     } catch {
       return null;
     }
@@ -1350,6 +1481,14 @@ export class DemoServer {
       event_auto: {},
       movement_cooldown: {},
       movement_last: null,
+      phase9: true,
+      proofs: {},
+      f9_rate: {},
+      approach_marks: {},
+      safe_returns: {},
+      bot_dest: {},
+      approach_last: null,
+      sms_log: [],
     };
     this.db = db;
     withPhase4(db);
@@ -1377,6 +1516,7 @@ export class DemoServer {
     withPhase8(db);
     // Faz 7: botlar pil paylaşır, Ayşe / Mehmet / Zeynep bana etkinlik daveti izni vermiş.
     withPhase7(db);
+    withPhase9(db);
     this.seedBotShares(now);
     return db;
   }
@@ -1819,7 +1959,7 @@ export class DemoServer {
       at = { lat: bot.spot.lat + j.lat, lng: bot.spot.lng + j.lng };
       bot.next_at = now + this.botIntervalMs(bot);
     }
-    const extras: PacketExtras = { hb: this.botHb(botId), ...statusNoteExtras(this.db.bot_notes[botId], now) };
+    const extras: PacketExtras = { hb: this.botHb(botId), ...statusNoteExtras(this.db.bot_notes[botId], now), ...this.botF9Extras(botId, now) };
     const packets = buildPackets(
       { lat: Math.round(at.lat * 1e6) / 1e6, lng: Math.round(at.lng * 1e6) / 1e6, accuracy, speed_mps: speed, heading, timestamp: now, mocked: false },
       { batteryLevel: bot.battery / 100, isCharging: bot.charging },
@@ -1883,6 +2023,7 @@ export class DemoServer {
     if (this.sweepPhase8(now)) changed = true;
     if (this.sweepLocationRequests(now)) changed = true;
     if (this.sweepPhase7(now)) changed = true;
+    if (this.sweepPhase9(now)) changed = true;
     if (now - this.lastPrune > MINUTE) {
       this.lastPrune = now;
       if (this.prunePhase2(now)) changed = true;
@@ -2140,7 +2281,8 @@ export class DemoServer {
     const required = ['v', 'share_id', 'sender_id', 'lat', 'lng', 'accuracy', 'activity_state', 'timestamp', 'share_mode', 'server_ts'];
     for (const k of required) if (!(k in v)) deny(`eksik alan ${k}`);
     // Faz 3: isteğe bağlı `hb`, `q`, `recorded_at` (core DELIVERED_OPTIONAL_F3_FIELDS); Faz 4: `note`, `note_exp`.
-    const allowed = new Set([...required, 'speed_mps', 'heading', 'battery_pct', 'is_charging', 'expires_at', 'hb', 'q', 'recorded_at', 'note', 'note_exp']);
+    // Faz 9: `photo_id`, `photo_exp`, `dest_name`, `dest_state`, `dest_eta` (core DELIVERED_OPTIONAL_F9_FIELDS).
+    const allowed = new Set([...required, 'speed_mps', 'heading', 'battery_pct', 'is_charging', 'expires_at', 'hb', 'q', 'recorded_at', 'note', 'note_exp', 'photo_id', 'photo_exp', 'dest_name', 'dest_state', 'dest_eta']);
     for (const k of Object.keys(v)) if (!allowed.has(k)) deny(`izinsiz alan ${k}`);
     const num = (k: string) => (typeof v[k] === 'number' && Number.isFinite(v[k]) ? (v[k] as number) : deny(`${k} sayı olmalı`));
     if (v.v !== 1) deny('v');
@@ -2174,6 +2316,7 @@ export class DemoServer {
       if (typeof v.note !== 'string' || v.note.length < 1 || v.note.length > PACKET_NOTE_MAX_CHARS) deny('note');
       num('note_exp');
     }
+    this.validateF9Fields(v, deny, now);
     const ts = num('timestamp');
     if (!Number.isInteger(ts) || ts > now + 60_000) deny('timestamp penceresi');
     // Faz 3 (RTDB kuralıyla aynı): kuyruktan gelen nokta (q: 1) 24 sa'e kadar eski olabilir, ama HER YAŞTA düğümdekinden
@@ -2490,6 +2633,33 @@ export class DemoServer {
         return this.privacySettingsSetCall(payload, uid, now);
       case 'movement_report':
         return this.movementReportCall(payload, uid, now);
+      // Faz 9
+      case 'proof_create':
+        return this.proofCreateCall(payload, uid, now);
+      case 'proof_get':
+        return this.proofGetCall(payload, uid, now);
+      case 'proof_delete':
+        return this.proofDeleteCall(payload, uid, now);
+      case 'approach_report':
+        return this.approachReportCall(payload, uid, now);
+      case 'safe_return_start':
+        return this.safeReturnStartCall(payload, uid, now);
+      case 'safe_return_update': {
+        const d = this.parse(SafeReturnUpdateRequestSchema, payload);
+        return this.mutateSafeReturn(d.safe_return_id, uid, now, { type: 'update', fix: { ...d.fix, timestamp: Math.min(d.fix.timestamp, now) } });
+      }
+      case 'safe_return_check_in': {
+        const d = this.parse(SafeReturnCheckInRequestSchema, payload);
+        return this.mutateSafeReturn(d.safe_return_id, uid, now, { type: 'check_in', reason: d.reason }, d.fix ? { ...d.fix, timestamp: Math.min(d.fix.timestamp, now) } : null);
+      }
+      case 'safe_return_extend': {
+        const d = this.parse(SafeReturnIdRequestSchema, payload);
+        return this.mutateSafeReturn(d.safe_return_id, uid, now, { type: 'extend' });
+      }
+      case 'safe_return_cancel': {
+        const d = this.parse(SafeReturnIdRequestSchema, payload);
+        return this.mutateSafeReturn(d.safe_return_id, uid, now, { type: 'cancel' });
+      }
       default:
         return fail('invalid_argument', `Demo sunucusunda yok: ${name}`);
     }
@@ -4554,6 +4724,8 @@ export class DemoServer {
       const kept = prev?.snapshot ?? [];
       const snapshot = [...kept, ...fresh.filter((f) => !kept.some((k) => k.receiver_id === f.receiver_id))].slice(0, INVISIBLE_SNAPSHOT_MAX);
       const ended = this.endOutgoing(uid, now);
+      // Faz 9: etkin anlık fotoğraf biter (nesne hemen silinir); Güvenli Dönüş sürer.
+      this.endProofsOf(uid, 'invisible', now);
       me.invisible = { on: true, since: prev?.since ?? now, snapshot, links_ended: (prev?.links_ended ?? 0) + ended.links };
       return { invisible: true, restored_receiver_ids: [], skipped_receiver_ids: [], server_now: now };
     }
@@ -4622,6 +4794,9 @@ export class DemoServer {
     for (const a of Object.values(this.db.sos)) if (a.sender_id === uid && a.status === 'active') this.resolveSos(a, 'safe', now, true);
     for (const n of Object.values(this.db.place_notes)) if (n.owner_id === uid) delete this.db.place_notes[n.note_id];
     for (const m of Object.values(this.db.meetups)) if (m.from === uid && isMeetupActive(m, now)) m.status = 'cancelled';
+    // Faz 9: anlık fotoğraf biter; etkin Güvenli Dönüş iptal edilir (kişilere "iptal etti").
+    this.endProofsOf(uid, 'consent_withdrawn', now);
+    for (const d of Object.values(this.db.safe_returns)) if (d.owner_id === uid && d.status === 'active') this.applySafeReturn(d.safe_return_id, { type: 'cancel' }, now);
     const rec = me.consent ? this.db.consents[uid]?.[me.consent.version] : undefined;
     if (rec) rec.withdrawn_at = now;
     me.consent = null;
@@ -5399,6 +5574,625 @@ export class DemoServer {
     };
   }
 
+  // --- Faz 9: anlık fotoğraf ispatı (backend `handlers/proofs.ts`) --------------------------------
+
+  /** Pencere başlıklı sayaç (backend `rate_limits`): doluysa `code` (+ `retry_after_ms`); geçerse sayar. */
+  private f9Rate(uid: UserId, kind: string, limit: number, windowMs: number, now: EpochMs, code: ErrorCode = 'rate_limited'): void {
+    const start = Math.floor(now / windowMs) * windowMs;
+    const key = `${uid}|${kind}|${start}`;
+    const n = this.db.f9_rate[key] ?? 0;
+    if (n >= limit) fail(code, undefined, { retry_after_ms: start + windowMs - now });
+    this.db.f9_rate[key] = n + 1;
+  }
+
+  /** Sahibin süresi dolmamış etkin fotoğrafı (en çok bir tane). */
+  private activeProofOf(uid: UserId, now: EpochMs): ProofRec | null {
+    return Object.values(this.db.proofs).find((p) => p.owner_id === uid && p.state === 'active' && p.expires_at > now) ?? null;
+  }
+
+  /** Fotoğrafı bitirir ve nesneyi hemen siler; bot sahibi yeni paket yayınlar (paketten `photo_*` düşer). */
+  private endProof(p: ProofRec, reason: ProofEndReason, now: EpochMs): void {
+    if (p.state !== 'active') return;
+    this.proofObjects.remove(p.storage_path);
+    this.db.proofs[p.proof_id] = { ...p, state: 'ended', end_reason: reason, ended_at: now, object_deleted: true, purge_at: Math.max(p.expires_at, now) + PROOF_LIMITS.purgeAfterMs };
+    this.refreshBotPacket(p.owner_id, now);
+  }
+
+  private endProofsOf(uid: UserId, reason: ProofEndReason, now: EpochMs): number {
+    let n = 0;
+    for (const p of Object.values(this.db.proofs)) {
+      if (p.owner_id !== uid || p.state !== 'active') continue;
+      this.endProof(p, p.expires_at <= now ? 'expired' : reason, now);
+      n++;
+    }
+    return n;
+  }
+
+  /** Bot bana paylaşıyorsa hemen yeni paket (paket alanları değişti). */
+  private refreshBotPacket(bot: UserId, now: EpochMs): void {
+    const b = this.db.bots[bot];
+    if (b && !b.offline && this.isSharingWithMe(bot)) this.botPublish(bot, now, true);
+  }
+
+  /** Bot paketinin Faz 9 alanları: etkin fotoğraf + hedef durumu. */
+  private botF9Extras(bot: UserId, now: EpochMs): PacketExtras {
+    const out: PacketExtras = {};
+    const p = this.activeProofOf(bot, now);
+    if (p) {
+      out.photo_id = p.proof_id;
+      out.photo_exp = p.expires_at;
+    }
+    const d = this.db.bot_dest?.[bot];
+    if (d) {
+      out.dest_name = d.name;
+      out.dest_state = d.state;
+      if (d.state === 'near' && d.eta !== null) out.dest_eta = d.eta;
+    }
+    return out;
+  }
+
+  /** RTDB kuralı (`database.rules.json`): `photo_id` + `photo_exp` birlikte; `dest_name` + `dest_state`; `dest_eta` yalnızca near. */
+  private validateF9Fields(v: Record<string, unknown>, deny: (why: string) => never, now: EpochMs): void {
+    const int = (k: string) => (typeof v[k] === 'number' && Number.isInteger(v[k]) ? (v[k] as number) : deny(`${k} tam sayı olmalı`));
+    if ('photo_id' in v || 'photo_exp' in v) {
+      if (!('photo_id' in v) || !('photo_exp' in v)) deny('photo_id ve photo_exp birlikte olmalı');
+      if (typeof v.photo_id !== 'string' || !PROOF_ID_RE.test(v.photo_id)) deny('photo_id');
+      const exp = int('photo_exp');
+      if (exp <= 0 || exp > now + PACKET_F9_LIMITS.photoExpMaxAheadMs) deny('photo_exp');
+    }
+    if ('dest_name' in v || 'dest_state' in v) {
+      if (!('dest_name' in v) || !('dest_state' in v)) deny('dest_name ve dest_state birlikte olmalı');
+      if (typeof v.dest_name !== 'string' || v.dest_name.length < 1 || v.dest_name.length > PACKET_F9_LIMITS.destNameMaxChars) deny('dest_name');
+      if (!(DEST_STATES as readonly unknown[]).includes(v.dest_state)) deny('dest_state');
+    }
+    if ('dest_eta' in v) {
+      if (v.dest_state !== 'near') deny('dest_eta yalnızca near');
+      const eta = int('dest_eta');
+      if (eta < 0 || eta > PACKET_F9_LIMITS.destEtaMax) deny('dest_eta');
+    }
+  }
+
+  /**
+   * Backend `proof_create`: tazelik → JPEG doğrulama (core `validateProofJpeg`, EXIF / COM atılır) → günlük sınır →
+   * görünmez değil → önceki etkin fotoğraf `replaced` (nesnesi hemen silinir) → yeni kayıt (1 saat).
+   */
+  private proofCreateCall(payload: unknown, uid: UserId, now: EpochMs): ProofCreateResponse {
+    const req = this.parse(ProofCreateRequestSchema, payload);
+    if (!isFreshCapture(req.captured_at, now)) fail('proof_stale_capture');
+    const img = validateProofJpeg(req.jpeg_b64, { width: req.width, height: req.height });
+    if (!img.ok) return fail('proof_invalid', undefined, { reason: img.reason });
+    const me = this.db.users[uid];
+    if (!me) return fail('unauthenticated');
+    this.f9Rate(uid, 'proof_create', PROOF_LIMITS.perDay, DAY, now, 'proof_limit_reached');
+    if (isInvisible(me)) fail('invisible_mode');
+    let replaced: string | null = null;
+    for (const p of Object.values(this.db.proofs)) {
+      if (p.owner_id !== uid || p.state !== 'active') continue;
+      this.endProof(p, p.expires_at <= now ? 'expired' : 'replaced', now);
+      replaced ??= p.proof_id;
+    }
+    const proof_id = newProofId();
+    const expires_at = proofExpiresAt(now);
+    const round6 = (x: number) => Math.round(x * 1e6) / 1e6;
+    const doc: ProofRec = {
+      proof_id,
+      owner_id: uid,
+      caption: sanitizeProofCaption(req.caption),
+      source: 'camera',
+      width: img.width,
+      height: img.height,
+      bytes: img.bytes.length,
+      position: req.position
+        ? { lat: round6(req.position.lat), lng: round6(req.position.lng), accuracy: req.position.accuracy === null ? null : Math.round(req.position.accuracy) }
+        : null,
+      captured_at: Math.min(req.captured_at, now),
+      created_at: now,
+      expires_at,
+      state: 'active',
+      end_reason: null,
+      ended_at: null,
+      object_deleted: false,
+      storage_path: PATHS.proofObject(uid, proof_id),
+      purge_at: expires_at + PROOF_LIMITS.purgeAfterMs,
+    };
+    this.db.proofs[proof_id] = doc;
+    this.proofObjects.put(doc.storage_path, bytesToBase64(img.bytes));
+    return { proof: toProofView(doc), replaced_proof_id: replaced, server_now: now };
+  }
+
+  /**
+   * Backend `proof_get`: erişim HER istekte core `canViewProof` ile (sahibinden etkin paylaşım + sahibi görünür).
+   * Erişimi olmayan `proof_not_found` (varlık sızmaz), süresi dolan / nesnesi silinen `proof_expired`.
+   */
+  private proofGetCall(payload: unknown, uid: UserId, now: EpochMs): ProofGetResponse {
+    const req = this.parse(ProofGetRequestSchema, payload);
+    const doc = this.db.proofs[req.proof_id];
+    if (!doc || doc.owner_id !== req.owner_id) return fail('proof_not_found');
+    const owner = this.db.users[doc.owner_id];
+    const sh = doc.owner_id === uid ? undefined : this.db.shares[shareId(doc.owner_id, uid)];
+    const access = canViewProof({
+      proof: doc,
+      viewerId: uid,
+      now,
+      hasActiveShareFromOwner: !!sh && sh.status === 'active' && (sh.expires_at === null || sh.expires_at > now),
+      ownerInvisible: !owner || isInvisible(owner),
+    });
+    if (access === 'not_found') return fail('proof_not_found');
+    if (access === 'expired') return fail('proof_expired');
+    this.f9Rate(uid, 'proof_get', 240, HOUR, now);
+    const b64 = this.proofObjects.get(doc.storage_path);
+    if (!b64) return fail('proof_expired');
+    return { proof: toProofView(doc), jpeg_b64: b64, server_now: now };
+  }
+
+  /** Backend `proof_delete` (onaydan muaf): yalnızca sahibi; biten fotoğrafta `deleted: false`. */
+  private proofDeleteCall(payload: unknown, uid: UserId, now: EpochMs): ProofDeleteResponse {
+    const req = this.parse(ProofDeleteRequestSchema, payload);
+    const doc = this.db.proofs[req.proof_id];
+    if (!doc || doc.owner_id !== uid) return fail('proof_not_found');
+    if (doc.state !== 'active') {
+      if (!doc.object_deleted) {
+        this.proofObjects.remove(doc.storage_path);
+        this.db.proofs[doc.proof_id] = { ...doc, object_deleted: true };
+      }
+      return { proof_id: doc.proof_id, deleted: false, server_now: now };
+    }
+    this.endProof(doc, 'deleted', now);
+    return { proof_id: doc.proof_id, deleted: true, server_now: now };
+  }
+
+  // --- Faz 9: 200 m yaklaşma (backend `handlers/approach.ts`) ---------------------------------------
+
+  private approachReportCall(payload: unknown, uid: UserId, now: EpochMs): ApproachReportResponse {
+    const req = this.parse(ApproachReportRequestSchema, payload);
+    const r = this.approachNow(uid, req, now, false);
+    if (uid === DEMO_ME) this.db.approach_last = { at: now, status: r.status, notified: r.notified_count, dest_name: sanitizeDestName(req.dest_name) };
+    return r;
+  }
+
+  /**
+   * Oturum + hedef başına TEK bildirim (`approach_marks`). Alıcılar: yeni işaretlenen oturumların etkin paylaşım
+   * alıcıları ve "yola çıktı / neredeyse vardım" tercihini kapatmamış olanlar. Push'ta koordinat YOK.
+   */
+  private approachNow(
+    uid: UserId,
+    req: { session_ids: string[]; dest_key: string; dest_name: string; distance_m: number; eta_min: number; at: EpochMs },
+    now: EpochMs,
+    demoBypassLimit: boolean,
+  ): ApproachReportResponse {
+    const done = (status: ApproachReportStatus, n = 0): ApproachReportResponse => ({ status, notified_count: n, server_now: now });
+    const me = this.db.users[uid];
+    if (!me) return fail('unauthenticated');
+    if (!demoBypassLimit) this.f9Rate(uid, 'approach_report', APPROACH_LIMITS.perHour, HOUR, now);
+    if (isInvisible(me)) return done('invisible');
+    if (now - req.at > APPROACH_LIMITS.maxReportAgeMs || req.at > now + APPROACH_LIMITS.maxReportAgeMs) return done('stale');
+    const sessions = [...new Set(req.session_ids)];
+    const live = Object.values(this.db.shares).filter(
+      (s) => s.sender_id === uid && s.status === 'active' && (s.expires_at === null || s.expires_at > now) && sessions.includes(s.session_id),
+    );
+    const marked = (sid: string) => !!this.db.approach_marks[approachMarkId(uid, sid, req.dest_key)];
+    const fresh = sessions.filter((sid) => !marked(sid) && live.some((s) => s.session_id === sid));
+    if (fresh.length === 0) return done(sessions.some(marked) ? 'already_sent' : 'no_recipients');
+    for (const sid of fresh) {
+      this.db.approach_marks[approachMarkId(uid, sid, req.dest_key)] = { uid, session_id: sid, dest_key: req.dest_key, created_at: now, purge_at: now + APPROACH_LIMITS.markTtlMs };
+    }
+    const to = [...new Set(live.filter((s) => fresh.includes(s.session_id)).map((s) => s.receiver_id))].filter(
+      (r) => parsePrivacy(this.db.users[r]?.privacy).movement_alerts,
+    );
+    if (to.length === 0) return done('no_recipients');
+    const destName = sanitizeDestName(req.dest_name);
+    const data: Extract<PushData, { type: 'approach' }> = { type: 'approach', from: uid, dest_name: destName, eta_min: String(Math.round(req.eta_min)) };
+    const text = approachPushText(me.display_name, destName, req.eta_min, req.distance_m);
+    for (const r of to) this.push(r, { notification: text, data });
+    return done('sent', to.length);
+  }
+
+  // --- Faz 9: Güvenli Dönüş (backend `handlers/safeReturn.ts`) --------------------------------------
+
+  /** TTL: sürerken başlangıç + 3 sa + son uyarı + 7 gün; bitince bitiş + 7 gün. */
+  private safeReturnRec(doc: SafeReturnDoc): SafeReturnRec {
+    const base = doc.status === 'active' ? doc.started_at + SAFE_RETURN_LIMITS.maxTotalMs + SAFE_RETURN_LIMITS.graceMs : (doc.ended_at ?? doc.updated_at);
+    return { ...doc, purge_at: base + SAFE_RETURN_LIMITS.purgeAfterMs };
+  }
+
+  private static stripPurge(r: SafeReturnRec): SafeReturnDoc {
+    const { purge_at: _p, ...doc } = r;
+    return doc;
+  }
+
+  /**
+   * Alıcı kuralı (SOS ile aynı): kabul edilmiş arkadaş + benden `sos_alert` izni; izinsiz ama acil kişi listemdeki
+   * arkadaşa ilk kullanımda göç izni (`migration`). Diğerleri sessizce düşer.
+   */
+  private safeReturnAudience(uid: UserId, ids: readonly UserId[], now: EpochMs, migrate: boolean): UserId[] {
+    const em = this.db.emergency[uid] ?? [];
+    const out: UserId[] = [];
+    for (const c of new Set(ids)) {
+      if (c === uid || !this.areFriends(uid, c)) continue;
+      if (canSendSos(this.pair(uid, c))) out.push(c);
+      else if (em.includes(c)) {
+        if (migrate) this.grantScope(uid, c, 'sos_alert', 'migration', now);
+        out.push(c);
+      }
+    }
+    return out;
+  }
+
+  private safeReturnStartCall(payload: unknown, uid: UserId, now: EpochMs): SafeReturnResponse {
+    const req = this.parse(SafeReturnStartRequestSchema, payload);
+    return this.safeReturnStartNow(uid, req, now, false);
+  }
+
+  private safeReturnStartNow(uid: UserId, req: z.output<typeof SafeReturnStartRequestSchema>, now: EpochMs, demoBypassLimit: boolean): SafeReturnResponse {
+    if (!this.db.users[uid]) return fail('unauthenticated');
+    if (!demoBypassLimit) this.f9Rate(uid, 'safe_return_start', SAFE_RETURN_LIMITS.startsPerDay, DAY, now);
+    if (Object.values(this.db.safe_returns).some((d) => d.owner_id === uid && d.status === 'active')) fail('safe_return_active');
+    const contacts = this.safeReturnAudience(uid, req.contact_ids, now, true);
+    if (contacts.length === 0) fail('no_emergency_contacts');
+    const doc = createSafeReturnDoc({
+      safe_return_id: `sr${randomHex32().slice(0, 18)}`,
+      owner_id: uid,
+      owner_name: this.nameOf(uid),
+      contact_ids: contacts,
+      destination: req.destination,
+      duration_min: req.duration_min,
+      fix: { ...req.fix, timestamp: Math.min(req.fix.timestamp, now) },
+      time_zone: req.time_zone,
+      now,
+    });
+    this.db.safe_returns[doc.safe_return_id] = this.safeReturnRec(doc);
+    const text = safeReturnStartedPushText(doc.owner_name, doc.destination.name, doc.duration_min);
+    const data: Extract<PushData, { type: 'safe_return_started' }> = { type: 'safe_return_started', safe_return_id: doc.safe_return_id, from: uid, due_at: String(doc.due_at) };
+    for (const c of doc.contact_ids) this.push(c, { notification: text, data });
+    return { safe_return: clone(doc), notified_count: doc.contact_ids.length, server_now: now };
+  }
+
+  /** Sahibin callable'ları (update / check_in / extend / cancel): core `reduceSafeReturn`. */
+  private mutateSafeReturn(id: string, uid: UserId, now: EpochMs, action: SafeReturnAction, checkInFix: SafeReturnFix | null = null): SafeReturnResponse {
+    const cur = this.db.safe_returns[id];
+    if (!cur || cur.owner_id !== uid) return fail('safe_return_not_active');
+    // Varışta gelen konum (son konumdan yeniyse) önce yazılır; sıklık sınırı uygulanmaz.
+    if (checkInFix && cur.status === 'active' && checkInFix.timestamp > cur.last_fix.timestamp) this.db.safe_returns[id] = { ...cur, last_fix: checkInFix };
+    if (action.type === 'update' && cur.status === 'active') {
+      const gap = action.fix.timestamp - cur.last_fix.timestamp;
+      if (gap > 0 && gap < SAFE_RETURN_LIMITS.updateMinIntervalMs - 5 * SECOND) {
+        return fail('rate_limited', undefined, { retry_after_ms: SAFE_RETURN_LIMITS.updateMinIntervalMs - gap });
+      }
+    }
+    return { safe_return: clone(this.applySafeReturn(id, action, now)), server_now: now };
+  }
+
+  /** Geçişi uygular, etkileri gönderir (bitiş → kişilere push). Hata → fırlatır. */
+  private applySafeReturn(id: string, action: SafeReturnAction, now: EpochMs): SafeReturnDoc {
+    const cur = this.db.safe_returns[id];
+    if (!cur) return fail('safe_return_not_active');
+    const r = reduceSafeReturn(DemoServer.stripPurge(cur), action, now);
+    if (r.error) return fail(r.error);
+    if (r.changed) this.db.safe_returns[id] = this.safeReturnRec(r.doc);
+    for (const e of r.effects) if (e.kind === 'ended') this.safeReturnEndedPush(r.doc, e.reason);
+    return r.doc;
+  }
+
+  private safeReturnEndedPush(doc: SafeReturnDoc, reason: 'arrived' | 'checked_in' | 'cancelled'): void {
+    const text = safeReturnEndedPushText(doc.owner_name, doc.destination.name, reason);
+    const data: Extract<PushData, { type: 'safe_return_ended' }> = { type: 'safe_return_ended', safe_return_id: doc.safe_return_id, from: doc.owner_id, reason };
+    for (const c of doc.contact_ids) if (this.areFriends(doc.owner_id, c)) this.push(c, { notification: text, data });
+  }
+
+  /** "A", "A ve B", "A, B ve C"; kimse yoksa "acil durum kişilerin". */
+  private contactNames(ids: readonly UserId[]): string {
+    const names = ids.map((id) => this.nameOf(id));
+    if (names.length === 0) return 'acil durum kişilerin';
+    if (names.length === 1) return names[0] as string;
+    return `${names.slice(0, -1).join(', ')} ve ${names[names.length - 1]}`;
+  }
+
+  /**
+   * Backend `tickSafeReturn` (Cloud Tasks `due_at` / `grace_until` + dakikalık süpürücü; demo: her saniye):
+   * `due` → sahibin cihazlarına "Güvende misin?"; `alarm` → aynı işlemde SOS (`origin: 'safe_return'`).
+   */
+  private tickSafeReturn(id: string, now: EpochMs): 'noop' | 'due' | 'alarm' | 'alarm_no_contacts' | 'not_active' {
+    const cur = this.db.safe_returns[id];
+    if (!cur) return 'not_active';
+    const r = reduceSafeReturn(DemoServer.stripPurge(cur), { type: 'tick' }, now);
+    if (!r.changed) return cur.status === 'active' ? 'noop' : 'not_active';
+    let doc = r.doc;
+    let outcome: 'noop' | 'due' | 'alarm' | 'alarm_no_contacts' = 'noop';
+    for (const e of r.effects) {
+      if (e.kind === 'due') {
+        const data: Extract<PushData, { type: 'safe_return_due' }> = { type: 'safe_return_due', safe_return_id: doc.safe_return_id, grace_until: String(doc.grace_until) };
+        this.push(doc.owner_id, { notification: safeReturnDuePushText(this.contactNames(doc.contact_ids)), data });
+        outcome = 'due';
+      } else if (e.kind === 'alarm') {
+        const sos = this.safeReturnAlarmSos(doc, now);
+        if (sos) {
+          doc = reduceSafeReturn(doc, { type: 'alarm_opened', sos_id: sos.sos_id }, now).doc;
+          outcome = 'alarm';
+        } else outcome = 'alarm_no_contacts';
+      }
+    }
+    this.db.safe_returns[id] = this.safeReturnRec(doc);
+    return outcome;
+  }
+
+  /**
+   * Backend `openOrRefreshSos` (origin `safe_return`): alıcılar = seçilen kişiler ∩ arkadaş ∩ `sos_alert` (göç yalnızca
+   * acil kişi listesindekilere). Son bildirilen konum + doğruluk + pil + adres + harita bağlantısı. Aktif SOS varsa
+   * aynı kayıt tazelenir (alıcılar birleşir, daha yeni konum kalır, kaynağı / mesajı korunur). Görünmez mod kapanır.
+   */
+  private safeReturnAlarmSos(doc: SafeReturnDoc, now: EpochMs): SosAlert | null {
+    const owner = doc.owner_id;
+    const recipients = this.safeReturnAudience(owner, doc.contact_ids, now, true);
+    if (recipients.length === 0) return null;
+    const fix = doc.last_fix;
+    const location: SosLocation = { lat: fix.lat, lng: fix.lng, accuracy: fix.accuracy, timestamp: fix.timestamp };
+    const address = this.sosAddress(location, now);
+    const info: SosSafeReturnInfo = { safe_return_id: doc.safe_return_id, destination_name: doc.destination.name, duration_min: doc.duration_min, due_at: doc.due_at };
+    const existing = Object.values(this.db.sos).find((a) => a.sender_id === owner && a.status === 'active');
+    let alert: SosAlert;
+    if (existing) {
+      const newer = fix.timestamp > existing.location.timestamp;
+      alert = {
+        ...existing,
+        recipient_ids: [...new Set([...existing.recipient_ids, ...recipients])],
+        ...(newer ? { location, address, maps_url: sosMapsUrl(location.lat, location.lng), battery_pct: fix.battery_pct, is_charging: fix.is_charging } : {}),
+        updated_at: now,
+        update_count: existing.update_count + 1,
+      };
+    } else {
+      alert = {
+        sos_id: `s${randomHex32().slice(0, 19)}`,
+        sender_id: owner,
+        sender_name: this.nameOf(owner),
+        recipient_ids: recipients,
+        status: 'active',
+        resolve_reason: null,
+        message: safeReturnAlarmMessage(doc.destination.name, doc.duration_min),
+        location,
+        address,
+        maps_url: sosMapsUrl(location.lat, location.lng),
+        battery_pct: fix.battery_pct,
+        is_charging: fix.is_charging,
+        route: null,
+        created_at: now,
+        updated_at: now,
+        resolved_at: null,
+        acks: {},
+        update_count: 0,
+        origin: 'safe_return',
+        safe_return: info,
+      };
+    }
+    this.db.sos[alert.sos_id] = alert;
+    const sender = this.db.users[owner];
+    if (sender && isInvisible(sender)) {
+      sender.invisible = null;
+      sender.visible_since = now;
+    }
+    const text = sosPushText(alert);
+    const data: Extract<PushData, { type: 'sos' }> = { type: 'sos', sos_id: alert.sos_id, sender_id: owner, origin: 'safe_return' };
+    for (const r of alert.recipient_ids) {
+      this.push(r, { notification: text, data });
+      if (r !== DEMO_ME && this.db.bots[r] && alert.acks[r] === undefined) this.db.sos_auto_ack[`${alert.sos_id}|${r}`] = now + randomBetween(4_000, 9_000);
+    }
+    return alert;
+  }
+
+  /** Firestore `safe_returns where owner_id == uid` (kural: yalnızca sahibi okur). */
+  safeReturnsOf(uid: UserId): SafeReturnDoc[] {
+    return Object.values(this.db.safe_returns)
+      .filter((d) => d.owner_id === uid)
+      .sort((a, b) => a.started_at - b.started_at)
+      .map((d) => DemoServer.stripPurge(d));
+  }
+
+  /** Süpürücü: fotoğraf süresi (1 sa) → nesne silinir; Güvenli Dönüş tik'i; TTL'ler. */
+  private sweepPhase9(now: EpochMs): boolean {
+    let changed = false;
+    for (const p of Object.values(this.db.proofs)) {
+      if (p.state === 'active' && p.expires_at <= now) {
+        this.endProof(p, 'expired', now);
+        changed = true;
+      } else if (p.state === 'ended' && !p.object_deleted) {
+        this.proofObjects.remove(p.storage_path);
+        this.db.proofs[p.proof_id] = { ...p, object_deleted: true };
+        changed = true;
+      } else if (p.state === 'ended' && p.purge_at <= now) {
+        delete this.db.proofs[p.proof_id];
+        changed = true;
+      }
+    }
+    for (const d of Object.values(this.db.safe_returns)) {
+      if (d.status === 'active' && d.due_at <= now && (d.due_notified_at === null || now >= d.grace_until)) {
+        this.tickSafeReturn(d.safe_return_id, now);
+        changed = true;
+      } else if (d.status !== 'active' && d.purge_at <= now) {
+        delete this.db.safe_returns[d.safe_return_id];
+        changed = true;
+      }
+    }
+    if (now - this.lastF9Prune > MINUTE) {
+      this.lastF9Prune = now;
+      for (const [k, m] of Object.entries(this.db.approach_marks)) {
+        if (m.purge_at > now) continue;
+        delete this.db.approach_marks[k];
+        changed = true;
+      }
+      for (const k of Object.keys(this.db.f9_rate)) {
+        if (Number(k.split('|')[2]) >= now - 2 * DAY) continue;
+        delete this.db.f9_rate[k];
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
+  // --- Faz 9 demo paneli ------------------------------------------------------------------------
+
+  /**
+   * "Ayşe anlık fotoğraf paylaşsın": `proof_create` ile aynı yoldan (kamera kaynağı, taze çekim), açıklama ve aynı
+   * metinli durum notu (1 saat). `jpeg` tarayıcıda o an çizilen kare; yoksa gömülü küçük JPEG. Dönen: kimlik ya da kod.
+   */
+  botProof(bot: UserId, caption: string, jpeg: { base64: string; width: number; height: number } | null): { ok: true; proof_id: string; expires_at: EpochMs } | { ok: false; code: string } {
+    const now = Date.now();
+    if (!this.areFriends(bot, DEMO_ME)) return { ok: false, code: 'not_friends' };
+    const img = jpeg ?? DEMO_PROOF_FALLBACK;
+    const pos = this.botPosition(bot);
+    try {
+      const r = this.proofCreateCall(
+        { op_id: uuidV4(), source: 'camera', jpeg_b64: img.base64, width: img.width, height: img.height, captured_at: now - 1_500, caption, position: pos },
+        bot,
+        now,
+      );
+      this.db.bot_notes[bot] = { emoji: '📷', text: caption, expires_at: r.proof.expires_at };
+      this.refreshBotPacket(bot, now);
+      this.commit();
+      return { ok: true, proof_id: r.proof.proof_id, expires_at: r.proof.expires_at };
+    } catch (e) {
+      return { ok: false, code: (e as DemoHttpsError).details?.code ?? 'internal' };
+    }
+  }
+
+  /**
+   * "Fotoğrafın süresini 1 saat ileri sar": etkin fotoğrafların (benim ve botların) bitişi `ms` öne çekilir; süpürücü
+   * hemen bitirir, Storage nesnesi silinir, bot paketinden `photo_*` düşer. Dönen: biten fotoğraf sayısı.
+   */
+  fastForwardProofs(ms: number = HOUR): number {
+    const now = Date.now();
+    let n = 0;
+    for (const p of Object.values(this.db.proofs)) {
+      if (p.state !== 'active') continue;
+      const shifted = { ...p, created_at: p.created_at - ms, captured_at: p.captured_at - ms, expires_at: p.expires_at - ms };
+      this.db.proofs[p.proof_id] = shifted;
+      if (shifted.expires_at <= now) n++;
+      const note = this.db.bot_notes[p.owner_id];
+      if (note && this.db.bots[p.owner_id]) this.db.bot_notes[p.owner_id] = { ...note, expires_at: Math.min(note.expires_at, shifted.expires_at) };
+    }
+    this.sweepPhase9(now);
+    this.commit();
+    return n;
+  }
+
+  /**
+   * "Ayşe hedefine 200 m yaklaşsın": Ayşe'nin paylaşım oturumu için `approach_report` (kitap kafe hedefi, 180 m,
+   * 1 dk) → bana "Ayşe: Neredeyse vardım (1 dk)" + paket `dest_state: near`. Tek sefer: tekrar basınca bildirim
+   * gitmez (`already_sent`), durum "vardı"ya geçer. Dönen: sunucu durumu ya da null (paylaşım yok).
+   */
+  botApproach(bot: UserId): { status: ApproachReportStatus; notified: number; dest_state: DestState } | null {
+    const now = Date.now();
+    const s = this.db.shares[shareId(bot, DEMO_ME)];
+    if (!s || s.status !== 'active' || (s.expires_at !== null && s.expires_at <= now)) return null;
+    // Hedefin koordinatı yalnızca Ayşe'nin "cihazında": sunucu koordinatsız anahtarı görür.
+    const center = { lat: 40.9958, lng: 29.0305 };
+    const name = 'Kitap Kafe';
+    const prev = this.db.bot_dest[bot];
+    const next: DestState = prev?.state === 'near' ? 'arrived' : 'near';
+    this.db.bot_dest[bot] = { name, state: next, eta: next === 'near' ? 1 : null };
+    const r = this.approachNow(
+      bot,
+      { session_ids: [s.session_id], dest_key: destinationKey('point', null, center), dest_name: name, distance_m: next === 'near' ? 180 : 40, eta_min: 1, at: now },
+      now,
+      true,
+    );
+    this.refreshBotPacket(bot, now);
+    this.commit();
+    return { status: r.status, notified: r.notified_count, dest_state: next };
+  }
+
+  /**
+   * "Ayşe Güvenli Dönüş başlatsın ve yanıt vermesin": 15 dk'lık zamanlayıcı (hedef Ev, acil kişi ben). Demo kısaltması:
+   * süre 20 sn sonra dolar, son uyarı 20 sn sürer → sunucu alarmı (SOS `origin: 'safe_return'`, son konum + pil).
+   * Ayşe'nin önceki etkin zamanlayıcısı sessizce iptal edilir. Dönen: alarma kalan sn ya da hata kodu.
+   */
+  botSafeReturnStart(bot: UserId): { ok: true; alarm_in_s: number } | { ok: false; code: string } {
+    const now = Date.now();
+    if (!this.areFriends(bot, DEMO_ME)) return { ok: false, code: 'not_friends' };
+    const list = this.db.emergency[bot] ?? [];
+    if (!list.includes(DEMO_ME)) this.db.emergency[bot] = [DEMO_ME, ...list].slice(0, SOS_LIMITS.maxContacts);
+    this.grantScope(bot, DEMO_ME, 'sos_alert', 'emergency_contact', now);
+    for (const d of Object.values(this.db.safe_returns)) {
+      if (d.owner_id === bot && d.status === 'active') this.db.safe_returns[d.safe_return_id] = { ...d, status: 'cancelled', ended_at: now, updated_at: now };
+    }
+    const b = this.db.bots[bot];
+    if (b) {
+      b.battery = 31;
+      b.charging = false;
+    }
+    const pos = this.botPosition(bot);
+    try {
+      const r = this.safeReturnStartNow(
+        bot,
+        {
+          op_id: uuidV4(),
+          duration_min: 15,
+          destination: { kind: 'point', name: 'Ev', zone_id: null },
+          contact_ids: [DEMO_ME],
+          fix: { lat: pos.lat, lng: pos.lng, accuracy: 9, timestamp: now - 2_000, battery_pct: 31, is_charging: false },
+          time_zone: DEFAULT_TZ,
+        },
+        now,
+        true,
+      );
+      const id = r.safe_return.safe_return_id;
+      const rec = this.db.safe_returns[id];
+      if (rec) this.db.safe_returns[id] = { ...rec, due_at: now + 20 * SECOND, grace_until: now + 40 * SECOND };
+      this.refreshBotPacket(bot, now);
+      this.commit();
+      return { ok: true, alarm_in_s: 40 };
+    } catch (e) {
+      return { ok: false, code: (e as DemoHttpsError).details?.code ?? 'internal' };
+    }
+  }
+
+  /**
+   * "Güvenli Dönüş: süreyi bitir" (benim etkin zamanlayıcım): `due` → süre şimdi dolar (son uyarı + "Güvende misin?"
+   * push'u); `alarm` → son uyarı da biter, sunucu alarmı açar. Dönen: tik sonucu ya da null (etkin zamanlayıcı yok).
+   */
+  expireMySafeReturn(stage: 'due' | 'alarm'): string | null {
+    const now = Date.now();
+    const cur = Object.values(this.db.safe_returns).find((d) => d.owner_id === DEMO_ME && d.status === 'active');
+    if (!cur) return null;
+    const patch =
+      stage === 'due'
+        ? { due_at: Math.min(cur.due_at, now), grace_until: Math.min(cur.grace_until, now + SAFE_RETURN_LIMITS.graceMs) }
+        : { due_at: Math.min(cur.due_at, now - SAFE_RETURN_LIMITS.graceMs), grace_until: now };
+    this.db.safe_returns[cur.safe_return_id] = { ...cur, ...patch };
+    const r = this.tickSafeReturn(cur.safe_return_id, now);
+    this.commit();
+    return r;
+  }
+
+  /** Demo SMS yedeği: simüle Mesajlar ekranında Gönder / Vazgeç (yalnızca demo günlüğü; gerçekte bize ulaşmaz). */
+  logSms(numbers: readonly string[], body: string, result: 'sent' | 'cancelled'): void {
+    this.db.sms_log = [{ at: Date.now(), numbers: [...numbers], body, result }, ...(this.db.sms_log ?? [])].slice(0, 10);
+    this.commit();
+  }
+
+  private f9View(): DemoSnapshot['f9'] {
+    const now = Date.now();
+    const ayse = PEOPLE.ayse.uid;
+    const mine = this.activeProofOf(DEMO_ME, now);
+    const ap = this.activeProofOf(ayse, now);
+    const sr = (uid: UserId) =>
+      Object.values(this.db.safe_returns)
+        .filter((d) => d.owner_id === uid)
+        .sort((a, b) => b.started_at - a.started_at)[0] ?? null;
+    const my = sr(DEMO_ME);
+    const as = sr(ayse);
+    return {
+      myProof: mine ? { proof_id: mine.proof_id, expires_at: mine.expires_at } : null,
+      ayseProof: ap ? { proof_id: ap.proof_id, expires_at: ap.expires_at, caption: ap.caption } : null,
+      proofObjects: this.proofObjects.paths().length,
+      ayseDest: this.db.bot_dest[ayse] ?? null,
+      lastApproach: this.db.approach_last,
+      mySafeReturn: my
+        ? { status: my.status, destination: my.destination.name, due_at: my.due_at, grace_until: my.grace_until, contacts: my.contact_ids.map((c) => this.nameOf(c)), sos_id: my.sos_id }
+        : null,
+      ayseSafeReturn: as ? { status: as.status, destination: as.destination.name, due_at: as.due_at, grace_until: as.grace_until, sos_id: as.sos_id } : null,
+      lastSms: this.db.sms_log[0] ?? null,
+    };
+  }
+
   snapshot(): DemoSnapshot {
     const deliveries: DemoSnapshot['myDeliveries'] = [];
     for (const [receiver, inbox] of Object.entries(this.db.live)) {
@@ -5435,6 +6229,7 @@ export class DemoServer {
       f6: this.f6View(),
       f7: this.f7View(),
       f8: this.f8View(),
+      f9: this.f9View(),
       mapsDown: this.db.maps_down,
       maps: {
         route: q?.route ?? 0,
@@ -5460,5 +6255,6 @@ export class DemoServer {
     this.subs.clear();
     safeStorage.remove(DEMO_STORAGE_KEY);
     this.avatars.reset();
+    this.proofObjects.reset();
   }
 }

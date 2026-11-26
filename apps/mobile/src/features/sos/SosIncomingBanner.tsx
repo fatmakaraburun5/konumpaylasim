@@ -2,7 +2,7 @@
  * Faz 4: alıcı tam ekran kartı kapattıktan sonra haritanın üstünde kalan kırmızı şerit: "ACİL: Ayşe tehlikede ·
  * 2 dk önce". Dokun → kart yeniden açılır (`sosStore.focus`). Yalnızca aktif uyarılar; en yeni üstte.
  */
-import { formatAgo, isSosActive, type EpochMs, type SosAlert } from '@konum/core';
+import { formatAgo, isSosActive, sosPushText, type EpochMs, type SosAlert } from '@konum/core';
 import { Pressable, StyleSheet, View } from 'react-native';
 import { sosStore } from '../../state/sosStore';
 import { lightColors, MIN_TOUCH, Text, useTheme } from '../../ui';
@@ -19,7 +19,7 @@ export function SosIncomingBanner({ alerts, now }: { alerts: readonly SosAlert[]
           key={a.sos_id}
           onPress={() => sosStore.getState().focus(a.sos_id)}
           accessibilityRole="alert"
-          accessibilityLabel={`Acil durum: ${a.sender_name} tehlikede, ${formatAgo(a.created_at, now)}. Ayrıntılar için dokun.`}
+          accessibilityLabel={`${sosPushText(a).title}, ${formatAgo(a.created_at, now)}. Ayrıntılar için dokun.`}
           testID={`sos-banner-${a.sos_id}`}
           style={({ pressed }) => [
             styles.card,
@@ -28,7 +28,8 @@ export function SosIncomingBanner({ alerts, now }: { alerts: readonly SosAlert[]
         >
           <View style={[styles.dot, { backgroundColor: SOS_FG }]} />
           <Text variant="heading" style={[styles.fg, styles.flex]} numberOfLines={1}>
-            {`ACİL: ${a.sender_name} tehlikede`}
+            {/* Faz 9: Güvenli Dönüş alarmı kendi başlığıyla ("ACİL: Ayşe Güvenli Dönüş'te yanıt vermedi"). */}
+            {sosPushText(a).title}
           </Text>
           <Text variant="label" style={styles.fg}>
             {formatAgo(a.created_at, now)}

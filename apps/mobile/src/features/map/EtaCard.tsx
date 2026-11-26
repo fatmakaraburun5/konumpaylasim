@@ -7,14 +7,17 @@
  *     ya da sakin durum metni (konum yok / hesaplanıyor / servis yok / kota doldu)
  *   Faz 4: arkadaşın durum notu satırı ("☕ Kahve molasındayım") + eylem yuvası (`children`: arkadaş hedefinde
  *   "📍 Buradayım / 🚶 Yoldayım", nokta hedefinde "Buraya not bırak")
+ *   Faz 9: hedef durumu ("🏁 Neredeyse vardı · Ev · ~1 dk") · anlık fotoğraf (küçük resim + "52 dk kaldı" → görüntüleyici)
  *   "Rotayı kapat"
  *
  * Kart açık değilken rota ve adres ÇAĞRILMAZ (bkz. useEta + routesRepo/geocodeRepo).
  */
 import { formatDistanceTr, formatEtaDuration, TRAVEL_MODES, type TravelMode } from '@konum/core';
-import type { ReactNode } from 'react';
+import type { DestState, EpochMs, UserId } from '@konum/core';
+import { useRef, type ReactNode } from 'react';
 import { ActivityIndicator, Linking, StyleSheet, View } from 'react-native';
 import { Avatar, Button, cardShadow, Chip, Text, useTheme } from '../../ui';
+import { FriendProofRow } from '../proof/FriendProofRow';
 import type { AddressState, EtaState, EtaTarget } from './useEta';
 
 /** Çip etiketleri (kısa). Core `TRAVEL_MODE_TEXT` ("Araçla" …) erişilebilirlik ipucunda kullanılır. */
@@ -37,10 +40,31 @@ export interface EtaCardProps {
   note?: string | null;
   /** Faz 4: "Rotayı kapat" üstündeki eylemler (ping düğmeleri / "Buraya not bırak"). */
   children?: ReactNode;
+  /** Faz 9: arkadaşın hedef durumu (core `destBadgeText`). */
+  dest?: { text: string; state: DestState } | null;
+  /** Faz 9: arkadaşın etkin anlık fotoğrafı (paket referansı). */
+  proof?: { ownerId: UserId; ref: { photo_id: string; photo_exp: EpochMs } } | null;
 }
 
-export function EtaCard({ target, subtitle, mode, onModeChange, eta, address, onClose, onRequestLocation, locationBlocked = false, note = null, children }: EtaCardProps) {
+export function EtaCard({
+  target,
+  subtitle,
+  mode,
+  onModeChange,
+  eta,
+  address,
+  onClose,
+  onRequestLocation,
+  locationBlocked = false,
+  note = null,
+  children,
+  dest = null,
+  proof = null,
+}: EtaCardProps) {
   const { colors, spacing, radius } = useTheme();
+  // Faz 9: fotoğraf paketten kalkınca açık görüntüleyici kapanmasın ("süresi doldu" göstersin).
+  const lastProof = useRef(proof);
+  if (proof) lastProof.current = proof;
   const result = eta.entry?.result ?? null;
   const error = eta.entry?.error ?? null;
 
@@ -134,6 +158,30 @@ export function EtaCard({ target, subtitle, mode, onModeChange, eta, address, on
           </Text>
         </View>
       ) : null}
+
+      {dest ? (
+        <View
+          style={[
+            styles.note,
+            {
+              backgroundColor: dest.state === 'near' ? colors.liveSoft : colors.surfaceAlt,
+              borderColor: dest.state === 'near' ? colors.live : colors.border,
+              borderRadius: radius.md,
+              paddingHorizontal: spacing.sm,
+              paddingVertical: spacing.xxs,
+            },
+          ]}
+          accessible
+          accessibilityLabel={`${target.title}: ${dest.text}`}
+          testID="eta-card-dest"
+        >
+          <Text variant="label" numberOfLines={1} style={dest.state === 'near' ? { color: colors.live, fontWeight: '700' } : undefined}>
+            {`🏁 ${dest.text}`}
+          </Text>
+        </View>
+      ) : null}
+
+      {proof || lastProof.current ? <FriendProofRow ownerId={(proof ?? lastProof.current)!.ownerId} name={target.title} proofRef={proof?.ref ?? null} /> : null}
 
       <View style={[styles.row, { gap: spacing.xs }]} accessibilityRole="radiogroup" accessibilityLabel="Ulaşım şekli">
         {TRAVEL_MODES.map((m) => (

@@ -21,6 +21,9 @@
  *
  * Faz 5: süresi geçen `meetups` (iptal edilenler dahil) ve `meetup_cache` belgeleri silinir (TTL yedek).
  *
+ * Faz 9: süresi dolan anlık fotoğraflar bitirilir ve Storage nesnesi silinir (Cloud Tasks yedeği; silinememiş nesneler
+ * yeniden denenir); Güvenli Dönüş zamanlayıcısının sunucu yedeği ("Güvende misin?" ve alarm, `sweepSafeReturns`).
+ *
  * Bu modül firebase-functions tetikleyicilerine bağlı değildir: testler `sweepExpired({ now })` ve
  * `handleExpiryTask(data, now)` ile enjekte edilen saatle doğrudan çağırır.
  */
@@ -48,6 +51,8 @@ import { sweepExpiredPlaceNotes } from './notes';
 import { sweepExpiredPings } from './ping';
 import { timeoutActiveSos } from './sos';
 import { sweepExpiredMeetups } from './meetup';
+import { sweepExpiredProofs } from './proofs';
+import { type SafeReturnDeps, sweepSafeReturns } from './safeReturn';
 
 export interface SweepOptions {
   /** Enjekte edilebilir saat (testler); varsayılan `Date.now()`. */
@@ -56,6 +61,8 @@ export interface SweepOptions {
   maxBatches?: number;
   /** Tam ACL denetimi + mezar taşı temizliği. Varsayılan açık; dakikalık zamanlayıcı 5 dk'da bir açar. */
   audit?: boolean;
+  /** Faz 9: Güvenli Dönüş push / adres bağımlılıkları (testler sahte verir). */
+  safeReturn?: SafeReturnDeps;
 }
 
 export interface SweepResult {
@@ -75,6 +82,10 @@ export interface SweepResult {
   /** Faz 5: silinen süresi geçmiş buluşma önerileri ve öneri önbelleği belgeleri. */
   purged_meetups: number;
   purged_meetup_cache: number;
+  /** Faz 9: süresi dolup silinen anlık fotoğraflar; Güvenli Dönüş son uyarıları ve alarmları. */
+  expired_proofs: number;
+  safe_return_due_ids: string[];
+  safe_return_alarm_ids: string[];
 }
 
 export async function sweepExpired(opts: SweepOptions = {}): Promise<SweepResult> {
@@ -94,6 +105,9 @@ export async function sweepExpired(opts: SweepOptions = {}): Promise<SweepResult
     timed_out_sos_ids: [],
     purged_meetups: 0,
     purged_meetup_cache: 0,
+    expired_proofs: 0,
+    safe_return_due_ids: [],
+    safe_return_alarm_ids: [],
   };
 
   // --- paylaşımlar: (status, expires_at) bileşik dizini ---
@@ -167,6 +181,15 @@ export async function sweepExpired(opts: SweepOptions = {}): Promise<SweepResult
   } catch (err) {
     logger.error('tarama: buluşma önerileri silinemedi', { err: String(err) });
   }
+
+  // --- Faz 9: anlık fotoğraflar (1 sa) ve Güvenli Dönüş sunucu zamanlayıcısı (bağımsız) ---
+  const [proofs, sr] = await Promise.allSettled([sweepExpiredProofs(now), sweepSafeReturns(now, opts.safeReturn)]);
+  if (proofs.status === 'fulfilled') result.expired_proofs = proofs.value;
+  else logger.error('tarama: anlık fotoğraflar silinemedi', { err: String(proofs.reason) });
+  if (sr.status === 'fulfilled') {
+    result.safe_return_due_ids = sr.value.due;
+    result.safe_return_alarm_ids = sr.value.alarms;
+  } else logger.error('tarama: Güvenli Dönüş zamanlayıcısı uygulanamadı', { err: String(sr.reason) });
 
   // --- ACL onarımı ---
   result.reconciled_share_ids.push(...(await reconcilePendingAcls(now, batchSize * maxBatches)));

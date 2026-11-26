@@ -159,6 +159,34 @@ import {
   type MovementReportResponse,
   type PrivacySettingsResponse,
   type PrivacySettingsSetRequest,
+  // Faz 9
+  ApproachReportRequestSchema,
+  ApproachReportResponseSchema,
+  ProofCreateRequestSchema,
+  ProofCreateResponseSchema,
+  ProofDeleteRequestSchema,
+  ProofDeleteResponseSchema,
+  ProofGetRequestSchema,
+  ProofGetResponseSchema,
+  SafeReturnCheckInRequestSchema,
+  SafeReturnIdRequestSchema,
+  SafeReturnResponseSchema,
+  SafeReturnStartRequestSchema,
+  SafeReturnUpdateRequestSchema,
+  type ApproachReportRequest,
+  type ApproachReportResponse,
+  type ProofCreateRequest,
+  type ProofCreateResponse,
+  type ProofDeleteRequest,
+  type ProofDeleteResponse,
+  type ProofGetRequest,
+  type ProofGetResponse,
+  type SafeReturnCancelRequest,
+  type SafeReturnCheckInRequest,
+  type SafeReturnExtendRequest,
+  type SafeReturnResponse,
+  type SafeReturnStartRequest,
+  type SafeReturnUpdateRequest,
 } from '@konum/core';
 import { z } from 'zod';
 import { KonumError, toKonumError } from '../../lib/errors';
@@ -653,3 +681,67 @@ export interface PrivacyApi {
   privacySettingsSet: typeof privacySettingsSet;
 }
 export const privacyApi: PrivacyApi = { privacySettingsSet };
+
+// --- Faz 9: anlık fotoğraf, 200 m yaklaşma, Güvenli Dönüş -------------------------------------------
+
+/**
+ * Anlık fotoğraf ispatı (core `proof.ts`). Bayt YALNIZCA bu callable'larla taşınır (Storage istemciye kapalı).
+ *  - `proof_create`: yalnızca `source: 'camera'`; yeni fotoğraf eskisinin yerine geçer (`replaced_proof_id`).
+ *  - `proof_get`: okuma (op_id yok); erişim her istekte sunucuda yeniden denetlenir.
+ *  - `proof_delete`: sahip; onaydan muaf, idempotent.
+ */
+export function proofCreate(input: WithOp<ProofCreateRequest>): Promise<ProofCreateResponse> {
+  return invoke(CALLABLES.proofCreate, ProofCreateRequestSchema, op(input), ProofCreateResponseSchema);
+}
+export function proofGet(input: ProofGetRequest): Promise<ProofGetResponse> {
+  return invoke(CALLABLES.proofGet, ProofGetRequestSchema, input, ProofGetResponseSchema);
+}
+export function proofDelete(input: WithOp<ProofDeleteRequest>): Promise<ProofDeleteResponse> {
+  return invoke(CALLABLES.proofDelete, ProofDeleteRequestSchema, op(input), ProofDeleteResponseSchema);
+}
+
+export interface ProofApi {
+  proofCreate: typeof proofCreate;
+  proofGet: typeof proofGet;
+  proofDelete: typeof proofDelete;
+}
+export const proofApi: ProofApi = { proofCreate, proofGet, proofDelete };
+
+/** "Neredeyse vardım (1 dk)": tetik anındaki etkin oturumlar; sunucu oturum başına tek bildirim yazar. */
+export function approachReport(input: WithOp<ApproachReportRequest>): Promise<ApproachReportResponse> {
+  return invoke(CALLABLES.approachReport, ApproachReportRequestSchema, op(input), ApproachReportResponseSchema);
+}
+
+export interface ApproachApi {
+  approachReport: typeof approachReport;
+}
+export const approachApi: ApproachApi = { approachReport };
+
+/**
+ * Güvenli Dönüş (core `safeReturn.ts`). Zamanlayıcı sunucudadır; cihaz son konumu ve check-in'i bildirir.
+ * `check_in` ve `cancel` onaydan muaftır.
+ */
+export function safeReturnStart(input: WithOp<SafeReturnStartRequest>): Promise<SafeReturnResponse> {
+  return invoke(CALLABLES.safeReturnStart, SafeReturnStartRequestSchema, op(input), SafeReturnResponseSchema);
+}
+export function safeReturnUpdate(input: WithOp<SafeReturnUpdateRequest>): Promise<SafeReturnResponse> {
+  return invoke(CALLABLES.safeReturnUpdate, SafeReturnUpdateRequestSchema, op(input), SafeReturnResponseSchema);
+}
+export function safeReturnCheckIn(input: WithOp<SafeReturnCheckInRequest>): Promise<SafeReturnResponse> {
+  return invoke(CALLABLES.safeReturnCheckIn, SafeReturnCheckInRequestSchema, op(input), SafeReturnResponseSchema);
+}
+export function safeReturnExtend(input: WithOp<SafeReturnExtendRequest>): Promise<SafeReturnResponse> {
+  return invoke(CALLABLES.safeReturnExtend, SafeReturnIdRequestSchema, op(input), SafeReturnResponseSchema);
+}
+export function safeReturnCancel(input: WithOp<SafeReturnCancelRequest>): Promise<SafeReturnResponse> {
+  return invoke(CALLABLES.safeReturnCancel, SafeReturnIdRequestSchema, op(input), SafeReturnResponseSchema);
+}
+
+export interface SafeReturnApi {
+  safeReturnStart: typeof safeReturnStart;
+  safeReturnUpdate: typeof safeReturnUpdate;
+  safeReturnCheckIn: typeof safeReturnCheckIn;
+  safeReturnExtend: typeof safeReturnExtend;
+  safeReturnCancel: typeof safeReturnCancel;
+}
+export const safeReturnApi: SafeReturnApi = { safeReturnStart, safeReturnUpdate, safeReturnCheckIn, safeReturnExtend, safeReturnCancel };

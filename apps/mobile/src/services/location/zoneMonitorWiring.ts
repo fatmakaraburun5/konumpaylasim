@@ -8,6 +8,7 @@
  *  - Örnekler: ön plan (f5Services, locationStore) + arka plan görevi / nabız (pipeline → zoneSampleTap).
  *  - Rapor sonucu → `zonesStore.addLocalEvent`; `start_share` başladıysa yerel bildirim ("Ev · çıktın: Ayşe ile konum
  *    paylaşımı başladı") — otomatik paylaşım kullanıcıdan gizli kalmasın. [Varsayım]
+ *  - Faz 9: varış kararı Güvenli Dönüş hedefi bölgesiyse `f9Hooks.onZoneArrive` (otomatik `check_in arrived`).
  */
 import {
   osRegionRadius,
@@ -24,6 +25,7 @@ import {
 } from '@konum/core';
 import { Platform } from 'react-native';
 import { getServerOffsetMs } from '../../lib/clock';
+import { f9Hooks } from './f9Hooks';
 import { KonumError } from '../../lib/errors';
 import { authStore } from '../../state/authStore';
 import { friendsStore, selectFriends } from '../../state/friendsStore';
@@ -178,6 +180,8 @@ export function createZoneMonitor(platform: ZonePlatform): ZoneMonitorApi {
     sleep: (ms) => platform.sleep(ms),
     newOpId: uuidV4,
     onDecision: (d) => {
+      // Faz 9: Güvenli Dönüş hedefi bu bölgeyse varış → otomatik "Vardım" (rapor kuyruğa düşse de cihazda karar verildi).
+      if (d.emit === 'arrive') void f9Hooks.onZoneArrive(d.zone_id, Date.now() + getServerOffsetMs()).catch(() => undefined);
       decisionLog.unshift(d);
       decisionLog.length = Math.min(decisionLog.length, DECISIONS_MAX);
       for (const l of [...decisionListeners]) {

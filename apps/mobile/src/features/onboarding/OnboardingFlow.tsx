@@ -6,8 +6,12 @@
  *
  * Sıradaki adımı core `nextOnboardingStep` seçer: verilmiş izin atlanır, reddedilmiş izin için "Ayarlarda aç" gösterilir.
  * Her adımda "Şimdi değil" vardır; akış paylaşımı engellemez ve atlanan izinler ihtiyaç anında yeniden sorulur.
+ *
+ * Faz 9 (v2): Bildirimler'den sonra Rehber (sistem istemi; şeffaf açıklama: rehber yüklenmez, yalnızca seçilen numara
+ * cihazda kalır) ve SMS ile acil durum yedeği (uygulama içi AÇIK ONAY kutusu + isteğe bağlı numara; "Kapalı kalsın").
+ * v1'i bitirmiş kullanıcı yalnızca bu iki adımı görür (onboardingStore).
  */
-import { nextOnboardingStep, ONBOARDING_TEXT, onboardingProgress, parsePrivacy, PRIVACY_TEXT, type OnboardingStep } from '@konum/core';
+import { nextOnboardingStep, ONBOARDING_TEXT, onboardingProgress, parsePrivacy, PRIVACY_TEXT, SMS_FALLBACK_TEXT, type OnboardingStep } from '@konum/core';
 import { useEffect, useMemo, useState } from 'react';
 import { ActivityIndicator, ScrollView, StyleSheet, Switch, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -15,7 +19,9 @@ import { openSystemSettings, requestPermission } from '../../services/permission
 import { useAuthStore } from '../../state/authStore';
 import { onboardingStore, useOnboardingStore } from '../../state/onboardingStore';
 import { privacyStore } from '../../state/privacyStore';
-import { Button, cardShadow, Icon, Text, useTheme, type IconName } from '../../ui';
+import { selectSmsFallbackDecided, smsFallbackStore, useSmsFallbackStore } from '../../state/smsFallbackStore';
+import { Button, cardShadow, CheckRow, Icon, Text, useTheme, type IconName } from '../../ui';
+import { SmsNumbers } from '../sms/SmsNumbers';
 import { usePermissionSnapshot } from '../privacy/usePermissionSnapshot';
 
 const STEP_ICON: Record<Exclude<OnboardingStep, 'done'>, IconName> = {
@@ -23,6 +29,8 @@ const STEP_ICON: Record<Exclude<OnboardingStep, 'done'>, IconName> = {
   location: 'mapPin',
   location_always: 'crosshair',
   notifications: 'bell',
+  contacts: 'users',
+  sms: 'message',
   battery_share: 'battery',
   camera_photos: 'camera',
 };
@@ -35,12 +43,16 @@ export function OnboardingFlow() {
   const rawPrivacy = useAuthStore((s) => s.profile?.privacy);
   const privacy = useMemo(() => parsePrivacy(rawPrivacy), [rawPrivacy]);
   const [battery, setBattery] = useState(false);
+  // Faz 9: SMS yedeği açık onayı (kutu işaretlenmeden açılmaz).
+  const [smsConsent, setSmsConsent] = useState(false);
+  const smsDecided = useSmsFallbackStore(selectSmsFallbackDecided);
+  const smsEnabled = useSmsFallbackStore((s) => s.settings.enabled);
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const plan = useMemo(
-    () => (snapshot ? nextOnboardingStep({ perms: snapshot, batteryShareDecided: privacy.updated_at !== null, done }) : null),
-    [snapshot, privacy.updated_at, done],
+    () => (snapshot ? nextOnboardingStep({ perms: snapshot, batteryShareDecided: privacy.updated_at !== null, smsFallbackDecided: smsDecided, done }) : null),
+    [snapshot, privacy.updated_at, smsDecided, done],
   );
 
   useEffect(() => {
@@ -64,6 +76,12 @@ export function OnboardingFlow() {
     setError(null);
     onboardingStore.getState().markDone(step);
   };
+  /** Faz 9: SMS adımında "Kapalı kalsın" (karar kaydedilir). */
+  const declineSms = async () => {
+    setError(null);
+    await smsFallbackStore.getState().decline();
+    onboardingStore.getState().markDone(step);
+  };
 
   const primary = async () => {
     setError(null);
@@ -73,6 +91,17 @@ export function OnboardingFlow() {
         onboardingStore.getState().markDone(step);
       } else if (plan.action === 'open_settings') {
         await openSystemSettings();
+        onboardingStore.getState().markDone(step);
+      } else if (step === 'sms') {
+        // Uygulama içi açık onay (iOS/Android'de SMS izni yoktur); cihaz SMS gönderemiyorsa yalnızca bilgi.
+        if (plan.action === 'in_app_toggle') {
+          if (!smsEnabled && !(await smsFallbackStore.getState().enable(smsConsent))) {
+            setError('Açmak için önce onay kutusunu işaretle.');
+            return;
+          }
+        } else {
+          await smsFallbackStore.getState().decline();
+        }
         onboardingStore.getState().markDone(step);
       } else if (plan.action === 'in_app_toggle') {
         const r = await privacyStore.getState().set({ battery_share: battery });
@@ -128,6 +157,29 @@ export function OnboardingFlow() {
           </View>
         ) : null}
 
+        {step === 'sms' && plan.action === 'in_app_toggle' ? (
+          <View style={{ gap: spacing.sm }} testID="onboarding-sms">
+            <View style={[cardShadow, { backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.sm }]}>
+              <CheckRow checked={smsConsent || smsEnabled} onPress={() => setSmsConsent((c) => !c)} disabled={smsEnabled} title={SMS_FALLBACK_TEXT.consent} testID="onboarding-sms-consent" />
+            </View>
+            {smsConsent || smsEnabled ? (
+              <View style={[cardShadow, { backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.md, gap: spacing.xs }]}>
+                <Text variant="heading">{`${SMS_FALLBACK_TEXT.numbersTitle} (isteğe bağlı)`}</Text>
+                <SmsNumbers compact />
+              </View>
+            ) : null}
+            <Text variant="caption" color="textSecondary">
+              {SMS_FALLBACK_TEXT.costNote}
+            </Text>
+          </View>
+        ) : null}
+
+        {step === 'sms' && plan.action === 'info' ? (
+          <Text variant="label" color="textSecondary">
+            {SMS_FALLBACK_TEXT.unavailable}
+          </Text>
+        ) : null}
+
         {step === 'notifications' ? (
           <View style={{ gap: spacing.xs }}>
             {[
@@ -153,14 +205,19 @@ export function OnboardingFlow() {
           </Text>
         ) : null}
         <Button
-          title={settings && text.settingsPrimary ? text.settingsPrimary : text.primary}
+          title={step === 'sms' ? (plan.action === 'info' ? 'Devam' : text.primary) : settings && text.settingsPrimary ? text.settingsPrimary : text.primary}
           onPress={() => void primary()}
           loading={working}
-          disabled={working}
+          disabled={working || (step === 'sms' && plan.action === 'in_app_toggle' && !smsConsent && !smsEnabled)}
           size="lg"
           testID="onboarding-primary"
         />
-        {step !== 'welcome' ? <Button title="Şimdi değil" variant="ghost" onPress={skip} disabled={working} testID="onboarding-skip" /> : null}
+        {step === 'sms' && plan.action === 'in_app_toggle' ? (
+          // "Kapalı kalsın": karar kaydedilir (Gizlilik Merkezi'nden sonra açılabilir).
+          <Button title={text.settingsPrimary ?? 'Kapalı kalsın'} variant="ghost" onPress={() => void declineSms()} disabled={working} testID="onboarding-skip" />
+        ) : step !== 'welcome' ? (
+          <Button title="Şimdi değil" variant="ghost" onPress={skip} disabled={working} testID="onboarding-skip" />
+        ) : null}
       </ScrollView>
     </View>
   );

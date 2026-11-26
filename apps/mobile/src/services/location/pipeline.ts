@@ -38,6 +38,14 @@
  * Faz 8: yayın kesme anahtarı (`state/publishHold`: görünmez mod niyeti ya da onay kapısı) açıkken HİÇBİR hedef
  * kullanılabilir sayılmaz: hedefler kilit içinde boşaltılır, takip kapanır, imleç ve kuyruk silinir; yazmadan hemen
  * önce ve yayıncının her denemesinde de sorulur (sunucu ayrıca paylaşımları bitirir ve RTDB yazılarını reddeder).
+ *
+ * Faz 9 (`f9Hooks`):
+ *  - Her güvenilir örnek (≤ 100 m) hedef denetiminden ÖNCE son doğrulanmış konum olarak kaydedilir (`lastFix`,
+ *    çevrimdışı SOS SMS'i; paylaşım olmasa da).
+ *  - Arkadaş paketlerine anlık fotoğraf (`photo_id` + `photo_exp`) ve hedef durumu (`dest_name`, `dest_state`,
+ *    `dest_eta`) eklenir; değişince yayın zorlanır (not anahtarına katılır). Bağlantı (QR) paketlerine GİTMEZ.
+ *  - 200 m yaklaşma tetiklenince `approach_report` (oturum başına tek bildirim), Güvenli Dönüş sürerken en sık 60 sn'de
+ *    bir `safe_return_update` ve hedefe varışta otomatik `safe_return_check_in`.
  */
 import {
   batteryPct,
@@ -108,6 +116,8 @@ import { locationEngine } from './ExpoLocationEngine';
 import type { LocationEngine } from './LocationEngine';
 import { getBackgroundPermissionsAsync } from './locationPermissions';
 import { tapZoneSamples } from './zoneSampleTap';
+import { f9ExtrasKey, f9Hooks, type F9Extras, type F9Hooks } from './f9Hooks';
+import { recordLastFix } from './lastFix';
 
 export type SampleSource = 'task' | 'watch' | 'heartbeat';
 
@@ -180,6 +190,10 @@ export interface PipelineDeps {
   lastDepartureAt: (uid: UserId) => Promise<EpochMs | null>;
   /** Faz 7: "yola çıktı" bildir (hata yutulur). */
   reportDeparture: (uid: UserId, at: EpochMs) => Promise<void>;
+  /** Faz 9: güvenilir örneği son doğrulanmış konum olarak kaydet (hedef olmasa da; hata yutulur). */
+  recordFix: (raw: RawLocationSample, offsetMs: number, uid: UserId | null) => Promise<unknown>;
+  /** Faz 9: fotoğraf / hedef paket alanları, yaklaşma raporu, Güvenli Dönüş tazeleme ve varış. */
+  f9: Pick<F9Hooks, 'onSample'>;
 }
 
 /** "Yola çıktı" çağrısı konum hattını en çok bu kadar bekletir. */
@@ -298,6 +312,8 @@ const defaultDeps = (getDeps: () => PipelineDeps): PipelineDeps => ({
     return m && m.uid === uid ? m.last_report_at : null;
   },
   reportDeparture: defaultReportDeparture,
+  recordFix: recordLastFix,
+  f9: f9Hooks,
 });
 
 /**
@@ -421,6 +437,11 @@ async function pruneAndMaybeStop(d: PipelineDeps): Promise<void> {
 }
 
 // --- Faz 3 yardımcıları ------------------------------------------------------------------------
+
+/** Faz 9: etkin arkadaş paylaşım oturumları (yaklaşma raporu oturum başına; eski kayıtta oturum kimliği yok). */
+export function friendSessionIds(targets: readonly PersistedTarget[]): string[] {
+  return [...new Set(targets.map((t) => t.session_id).filter((s): s is string => typeof s === 'string' && s.length > 0))];
+}
 
 /** Düşük pil durumu oturum başına: arkadaş oturumu `s:<session_id>` (eski kayıtta `s:share:<share_id>`), bağlantı `l:<link_id>`. */
 export function sessionKeysOf(targets: readonly PersistedTarget[], links: readonly PersistedLinkTarget[]): string[] {
@@ -602,6 +623,10 @@ async function processSamples(
   const targets = persisted.targets.filter(usableAt(d, now));
   const linkTargets = persisted.linkTargets.filter(usableLinkAt(d, now));
 
+  // Faz 9: son doğrulanmış konum (paylaşım olmasa da; çevrimdışı SOS SMS'i).
+  const newest = raws.reduce<RawLocationSample | null>((a, r) => (!a || r.timestamp > a.timestamp ? r : a), null);
+  if (newest) await d.recordFix(newest, offset, persisted.uid).catch(() => undefined);
+
   if (!persisted.uid || (targets.length === 0 && linkTargets.length === 0)) {
     await pruneAndMaybeStop(d);
     return;
@@ -663,13 +688,27 @@ async function processSamples(
   const lowFired = shareBattery ? [...new Set([...(carry.lowBatteryFired ?? []), ...obs.lowBatteryFired])] : [];
   const lowNotify = shareBattery ? [...new Set([...lowFired, ...(carry.lowBatteryRearmed ?? []), ...obs.lowBatteryRearmed])] : [];
   await maybeReportDeparture(d, uid, obs, now, targets.length > 0);
+  // Faz 9: yaklaşma / Güvenli Dönüş (oturum yoksa yalnızca Güvenli Dönüş) ve paket alanları.
+  const f9Extras: F9Extras = await d.f9
+    .onSample({
+      uid,
+      sample: norm.sample,
+      activity,
+      now,
+      sessionIds: friendSessionIds(targets),
+      battery_pct: pct,
+      is_charging: pct === null ? null : device.isCharging,
+    })
+    .catch(() => ({}));
 
   const cursor = await loadCursor();
   if (cursor.authMissingSince !== null) await saveCursor({ authMissingSince: null });
   const key = combinedTargetsKey(targets, linkTargets);
   // Faz 4: durum notu (süresi geçmişse boş). Not eklendi / değişti / kalktı → hemen yayın (alıcı hemen görsün).
   const noteExtras = targets.length ? statusNoteExtras(await d.statusNote(uid).catch(() => null), now) : {};
-  const noteKey = noteExtras.note ?? '';
+  // Faz 9: fotoğraf / hedef değişince de yayın zorlanır (Faz 9 alanı yoksa anahtar Faz 4'teki gibi kalır).
+  const f9Key = targets.length ? f9ExtrasKey(f9Extras) : '';
+  const noteKey = (noteExtras.note ?? '') + (f9Key ? `#${f9Key}` : '');
   const noteChanged = targets.length > 0 && (cursor.lastNoteKey ?? '') !== noteKey;
   const force = cursor.lastTargetsKey !== key || needsHeartbeatAnnounce(obs.lastSentHb, plan) || lowFired.length > 0 || noteChanged;
   const decision = shouldPublish(cursor.lastPublished, { sample: norm.sample, battery_pct: pubPct, activity }, plan.profile, now, force);
@@ -702,8 +741,8 @@ async function processSamples(
 
     // Arkadaşlar ve bağlantılar AYRI yazmalarla: birinin kural reddi diğerini düşürmez.
     const extras = { hb };
-    // Faz 4: not yalnızca arkadaş paketlerine (bağlantı izleyicilerine gitmez).
-    const friendExtras = { hb, ...noteExtras };
+    // Faz 4: not yalnızca arkadaş paketlerine (bağlantı izleyicilerine gitmez). Faz 9: fotoğraf ve hedef de.
+    const friendExtras = { hb, ...noteExtras, ...f9Extras };
     const friendResult: PublishResult | null = finalTargets.length
       ? await publishSample(
           { sample: norm.sample, device: pubDevice, senderId: uid, targets: finalTargets, now, activity, extras: friendExtras },

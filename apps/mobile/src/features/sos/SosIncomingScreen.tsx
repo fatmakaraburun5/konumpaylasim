@@ -7,11 +7,18 @@
  *   eski konum uyarısı (`isSosLocationStale`)
  *   "Haritada göster" · "Yol tarifi" (`sosDirectionsUrl`) · "112'yi ara" · "Gördüm" (sos_ack)
  *   Çözülünce yeşil "… güvende". Birden çok SOS: en yeni üstte, diğerleri altta listede.
+ *
+ * Faz 9: Güvenli Dönüş alarmı (`origin: 'safe_return'`, sunucu açar): başlık "GÜVENLİ DÖNÜŞ ALARMI", mesaj
+ * "Güvenli Dönüş süresi doldu: Ev hedefine 30 dk içinde varmadım ve yanıt vermedim", hedef / süre satırı ve son
+ * doğrulanmış konum + pil.
  */
 import {
   EMERGENCY_NUMBER,
   formatAccuracyTr,
   formatAgo,
+  formatClock,
+  sosOrigin,
+  sosPushText,
   formatCoords,
   formatSosRoute,
   isSosActive,
@@ -64,6 +71,8 @@ export function SosIncomingScreen({ onShowOnMap }: SosIncomingScreenProps) {
   const others = list.filter((a) => a.sos_id !== alert.sos_id);
   const bg = active ? lightColors.danger : lightColors.live;
   const close = () => sosStore.getState().focus(null);
+  const safeReturn = sosOrigin(alert) === 'safe_return';
+  const sr = alert.safe_return ?? null;
 
   const copy = async () => {
     await Clipboard.setStringAsync(formatCoords(loc.lat, loc.lng)).catch(() => false);
@@ -81,7 +90,7 @@ export function SosIncomingScreen({ onShowOnMap }: SosIncomingScreenProps) {
         <ScrollView contentContainerStyle={{ paddingTop: insets.top + spacing.md, paddingBottom: insets.bottom + spacing.lg, paddingHorizontal: spacing.lg, gap: spacing.md }}>
           <View style={styles.row}>
             <Text variant="title" style={[styles.fg, styles.flex, { letterSpacing: 1 }]} accessibilityRole="header">
-              {active ? 'ACİL DURUM' : 'GÜVENDE'}
+              {active ? (safeReturn ? 'GÜVENLİ DÖNÜŞ ALARMI' : 'ACİL DURUM') : 'GÜVENDE'}
             </Text>
             <IconButton icon="close" accessibilityLabel="Acil durum kartını kapat" onPress={close} variant="soft" size={40} />
           </View>
@@ -91,8 +100,13 @@ export function SosIncomingScreen({ onShowOnMap }: SosIncomingScreenProps) {
               {alert.sender_name}
             </Text>
             <Text variant="heading" style={styles.fg}>
-              {active ? SOS_MESSAGE : `${alert.sender_name} güvende olduğunu bildirdi.`}
+              {active ? (safeReturn ? alert.message || sosPushText(alert).title : SOS_MESSAGE) : `${alert.sender_name} güvende olduğunu bildirdi.`}
             </Text>
+            {safeReturn && sr ? (
+              <Text variant="label" style={styles.fg} testID="sos-incoming-safe-return">
+                {`Güvenli Dönüş · ${sr.destination_name} · ${sr.duration_min} dk · süre ${formatClock(sr.due_at)}'te doldu`}
+              </Text>
+            ) : null}
             <Text variant="label" style={styles.fgSoft}>
               {active
                 ? `${formatAgo(alert.created_at, now)} gönderildi · güncellendi ${formatAgo(alert.updated_at, now)}`
@@ -102,7 +116,7 @@ export function SosIncomingScreen({ onShowOnMap }: SosIncomingScreenProps) {
 
           <View style={[styles.box, { borderRadius: radius.lg, padding: spacing.md, gap: spacing.xs }]}>
             <Text variant="label" style={styles.fgSoft}>
-              {active ? 'Şu anki konumu' : 'Son konumu'}
+              {safeReturn ? 'Son doğrulanmış konumu' : active ? 'Şu anki konumu' : 'Son konumu'}
             </Text>
             <Text variant="heading" style={styles.fg}>
               {alert.address ?? 'Adres bulunamadı'}

@@ -35,6 +35,10 @@
  *   (`publishHold`: görünmez niyeti ya da onay kapısı) açıkken yayın hedefleri BOŞ sayılır (kalıcı hedefler boş
  *   yazılır → takip durur, ön plan yayını / nabız yok); bu cihazda konum izni geri alınan kişiye yayın hemen kesilir.
  *
+ *   Faz 9 (f9Services.ts): anlık fotoğraf (paket `photo_*`), hedef / yaklaşma (`dest_*`, `approach_report`),
+ *   Güvenli Dönüş (safe_returns → safeReturnStore, yerel bildirimler, Güvendeyim / +15 dk eylemleri), SMS yedeği;
+ *   bağlantı gelince bekleyen yaklaşma raporu / varış check-in'i.
+ *
  * Açılış sırası (yayın asla kullanıcının durdurduğu paylaşıma geri dönmez):
  *   1. Kalıcı durdurma niyetleri bu hesaba bağlanır ve reducer'a geri yüklenir (STOP_REQUESTED).
  *   2. Sunucu anlık görüntüsü henüz yoksa, kalıcı hedeflerdeki oturum özeti GEÇİCİ olarak gösterilir:
@@ -114,6 +118,7 @@ import { onF5Connected, resetF5State, startF5Services } from './f5Services';
 import { resetF6State, startF6Services } from './f6Services';
 import { installF7Guards, resetF7State, startF7Services } from './f7Services';
 import { installF8Guards, onF8Connected, resetF8State, startF8Services } from './f8Services';
+import { onF9Connected, resetF9State, startF9Services } from './f9Services';
 import { resetLocationRequestState, startLocationRequestServices } from './locationRequestServices';
 import { grantsStore, isLocationRevoked } from '../state/grantsStore';
 import { isPublishHeld, onPublishHoldChange } from '../state/publishHold';
@@ -410,6 +415,20 @@ export function startSessionServices(uid: UserId): () => void {
   unsubs.push(startF7Services(uid));
   // Faz 8: yönlü izinler, izin push'ları, bekleyen görünmez olma isteği.
   unsubs.push(startF8Services(uid));
+  // Faz 9: anlık fotoğraf, hedef / yaklaşma, Güvenli Dönüş, SMS yedeği; bildirim eylemleri.
+  unsubs.push(
+    startF9Services(uid, {
+      hasLiveTargets: () => hasLiveTargets(),
+      publishNow: () => {
+        void locationEngine
+          .getCurrentSample()
+          .then((raw) => {
+            if (raw && !disposed && hasLiveTargets()) void handleSamples([raw], 'heartbeat');
+          })
+          .catch(() => undefined);
+      },
+    }),
+  );
   // Konum İste: gelen / giden istekler, Onayla / Reddet bildirim eylemleri.
   unsubs.push(startLocationRequestServices(uid));
 
@@ -425,6 +444,8 @@ export function startSessionServices(uid: UserId): () => void {
       onF5Connected();
       // Faz 8: onaylanmamış görünmez olma isteği (aynı op_id).
       onF8Connected();
+      // Faz 9: bekleyen yaklaşma raporu / Güvenli Dönüş varış check-in'i (aynı op_id).
+      onF9Connected();
     }),
   );
 
@@ -766,5 +787,7 @@ onSignedOut(async () => {
   await resetF7State();
   // Faz 8: kesme anahtarı (görünmez niyeti / onay kapısı) ve izin / görünmez / onay bellek durumu.
   await resetF8State();
+  // Faz 9: fotoğraf önbelleği, hedef, Güvenli Dönüş (yerel bildirimler dahil), SMS yedeği tercihi.
+  await resetF9State();
   resetLocationRequestState();
 });

@@ -12,6 +12,7 @@ Her faz bir öncekinin sözleşmelerini (packages/core) **genişletir**, değiş
 | 6 | Ana ekran ve kilit ekranı widget'ları (iOS WidgetKit, Android AppWidget + Hızlı Ayar kutucuğu), favoriye tek dokunuşla 1 saatlik paylaşım (widget token'ı, arka plan tetiği, geri sayım + bildirim), kamera / galeriden profil fotoğrafı (kırpma, sıkıştırma, önbellek), kayıtta zorunlu cinsiyet ve cinsiyet renkli çerçeve (liste, widget, harita pini, baş harf yedeği) | Kod hazır; birim, kural (Firestore + Storage) ve emülatör testleri geçti, tarayıcı demosunda uçtan uca çalışıyor; Swift / Kotlin widget kodu derlenmedi, gerçek cihazda widget ve kilit ekranı davranışı bekliyor. Ayrıntı: [`PHASE6.md`](PHASE6.md), yayın listesi: [`RELEASE_CHECKLIST.md`](RELEASE_CHECKLIST.md) |
 | 7 | Etkinlik Alanı (tek seferde oylama: davetli katılımı, mekanı (1–3) ve saati (1–4) tek yanıtta işaretler, sonuçların tamamı düzenleyene düşer, düzenleyen onaylar; 300 karakterlik "Katılamayacağım" notu; davet anında, hatırlatma 1 gün önce ve sabah 08:00), bildirim mimarisi (özel sesli SOS alarm kanalı, "eve girdi / yola çıktı" heads-up), ilk açılış izin akışı ve İzin & Gizlilik Merkezi, varsayılan kapalı pil paylaşımı, harita Açık / Koyu / Sistem | Kod hazır; birim, kural ve emülatör testleri geçti, tarayıcı demosunda uçtan uca çalışıyor; gerçek cihazda bildirim kanalları, alarm sesi ve hatırlatma saatleri bekliyor. Ayrıntı: [`PHASE7.md`](PHASE7.md) |
 | 8 | Yönlü kişi izinleri (`permission_grants`: konumu görme, ping, varış bildirimi, buluşma daveti, SOS; arkadaşlık izin değil, varsayılan kapalı), izin isteği / onayı / geri alma zincirleri, sunucuda zorlanan görünmez mod (seçmeli geri yükleme), Güvenlik Sözleşmesi ve KVKK aydınlatma / açık rıza onay kapısı (kaydırma şartı, sürüm + SHA-256 kaydı, geri çekme) | Kod hazır; birim, kural ve emülatör testleri geçti, tarayıcı demosunda uçtan uca çalışıyor; KVKK metni hukuk incelemesi, gerçek cihazda deneme ve eski arkadaşlıklar için izin göçü bekliyor. Ayrıntı: [`PHASE8.md`](PHASE8.md) |
+| 9 | Tek kullanımlık anlık kamera fotoğrafı (yalnızca uygulama içi kamera, galeri kapalı; pine ve kişi kartına eklenir, kalan süre görünür, 1 saat sonra sunucudan ve önbelleklerden silinir), hedefe 200 m yaklaşınca tek seferlik "Neredeyse vardım (1 dk)" bildirimi ve harita durumu, Güvenli Dönüş / gece takip modu (15/30/45/60 dk + hedef; son uyarı geri sayımı, uygulama kapalıyken sunucu zamanlayıcısıyla acil kişilere SOS: son doğrulanmış konum + pil), Rehber ve SMS izinleri (ilk açılış v2, KVKK metni `2026-11-26`, Gizlilik Merkezi) ve internetsiz SOS için hazır dolu SMS yedeği (expo-sms / Android SMS intent, `SEND_SMS` yok) | Kod hazır; birim, kural ve emülatör testleri geçti, tarayıcı demosunda uçtan uca çalışıyor (Playwright 40 denetim); gerçek cihazda kamera, arka planda yaklaşma, uygulama kapalıyken alarm, SMS uygulaması ve `storage.lifecycle.json`'un kovaya uygulanması bekliyor. Ayrıntı: [`PHASE9.md`](PHASE9.md) |
 
 ## Faz 1 → Faz 2 geçiş noktası
 
@@ -329,3 +330,36 @@ denetim).
 - [ ] Cihazda: onay kapısı (ekran okuyucu, büyük yazı), görünmezken arka plan yayınının durması, geri almada alıcının
       ekranı, `permission_request` push'unun Arkadaşlar > İzin istekleri'ni açması (`PHASE8.md` §9.1).
 
+## Faz 9 (uygulandı)
+
+Tasarım sözleşmesi, uygulama kararları, testler ve cihazda doğrulanacaklar [`PHASE9.md`](PHASE9.md) dosyasındadır. Özet:
+
+| Parça | Ne yapıldı |
+| --- | --- |
+| Anlık fotoğraf | `proof_create` / `proof_get` / `proof_delete`. Yalnızca `expo-camera` ile o an çekilmiş kare (galeri, dosya ve sürükle-bırak yolu yok; çekim ≤ 2 dk taze). Core `validateProofJpeg` EXIF / GPS / yorum siler. Kişi başına 1 etkin fotoğraf (yenisi eskisini siler), günde 30. Bayt Storage `proofs/{uid}/{id}.jpg` (istemciye kapalı), kayıt `photo_proofs` (istemciye kapalı). Görme yalnızca sahibine ve ŞU AN etkin paylaşım alana (`canViewProof`). Pakette `photo_id` + `photo_exp`; pinde 📷, kişi kartında küçük resim + "52 dk kaldı", tam ekran görüntüleyici süre dolunca görseli kaldırır ("Fotoğrafın süresi doldu"). |
+| Silme zinciri (1 saat) | Cloud Task `{proof_id}` → dakikalık tarama yedeği → Firestore TTL (`purge_at`) → `storage.lifecycle.json` (`proofs/` ≥ 1 gün). İstemci önbellekleri (`cachePolicy="none"`, dosya deposu) süre dolunca siler. Görünmez mod ve onayı geri çekme fotoğrafı bitirir; hesap silme klasörü siler. |
+| 200 m yaklaşma | Hedef: kayıtlı bölge, etkinlik mekanı, buluşma noktası ya da haritadan "🏁 Hedefim yap". Core `approachReduce` (doğruluk kapısı, iki örnek, tek sefer) → `approach_report` (oturum + hedef başına tek push, `approach_marks` 48 sa TTL; alıcılar ∩ `movement_alerts`). Pakette `dest_name` / `dest_state` / `dest_eta`; pin altında "🏁 Neredeyse vardı · Kitap Kafe · ~1 dk". Çevrimdışıysa rapor diskte bekler, 2 dk içinde yeniden denenir. |
+| Güvenli Dönüş | `safe_return_start` / `update` / `check_in` / `extend` / `cancel` (core `reduceSafeReturn`). 15/30/45/60 dk + hedef (bölge / paylaşım hedefi / etkinlik) + acil kişiler (`sos_alert` izni) + isteğe bağlı canlı paylaşım. `due_at`'te "Güvende misin?" tam ekran son uyarı (2 dk; "Güvendeyim" / "Vardım" / "+15 dk"), `grace_until`'de sunucu aynı işlemde SOS açar (`origin:'safe_return'`, son doğrulanmış konum, doğruluk, pil, adres). Zamanlayıcı sunucuda (Cloud Tasks + dakikalık tarama) olduğu için uygulama kapalıyken de çalışır. Hedefe girince otomatik "vardı". |
+| Rehber + SMS | İlk açılış v2 (`ONBOARDING_VERSION = 2`; v1'i bitiren yalnızca yeni Rehber ve SMS adımlarını görür), KVKK metni `2026-11-26` (Rehber ve SMS maddeleri, açık rıza). Rehber yalnızca sistem kişi seçicisiyle numara seçmek için; rehber sunucuya gitmez, seçilen numaralar cihazda kalır. Gizlilik Merkezi'nde "Rehber" ve "SMS ile acil durum yedeği" satırları (`/sms-fallback`). |
+| Çevrimdışı SOS | SOS 3 sn içinde RTDB bağlantısı kuramaz ya da 10 sn yanıt alamazsa (`offlineSosDecision`) "SMS ile gönder (n kişi)": hazır dolu mesaj (son doğrulanmış koordinat, ± doğruluk, saat, pil %, `maps.google.com` bağlantısı); iOS `MFMessageComposeViewController` / Android SMS intent (expo-sms), Gönder'e kullanıcı dokunur, `SEND_SMS` / `READ_SMS` izni yok. Arka planda aynı `op_id` ile 15 dk yeniden deneme: internet gelince SOS uygulama üzerinden de gider. |
+
+Faz 9 kabul ölçütleri (bu depoda): yalnızca taze kamera karesi kabul edilir, EXIF atılır, etkin paylaşım almayana
+`proof_get` `proof_not_found`, 1 saat sonra görev (kaçarsa dakikalık tarama) nesneyi ve kaydı siler ✓; yaklaşma bildirimi oturum başına bir kez ✓; süre + son uyarı
+dolunca acil kişilere `origin:'safe_return'` SOS (görev kaçarsa tarama açar), "Güvendeyim" alarmı önler, uzatma ≤ 3 sa ✓ (emülatör +
+kural testleri); ilk açılışta Rehber + SMS adımları → Ayşe'nin fotoğrafı ("60 dk kaldı") → 1 saat ileri sar ("Fotoğrafın
+süresi doldu") → "Neredeyse vardım" → Güvenli Dönüş son uyarı + "Güvendeyim" → internetsiz SOS → hazır dolu SMS
+(koordinat + `maps.google.com`) → Gizlilik Merkezi Rehber / SMS satırları → Ayşe'nin yanıtsız Güvenli Dönüş alarmı ✓
+(tarayıcı demosu, `apps/mobile/e2e/faz9-smoke.cjs`, Playwright 40 denetim).
+
+**Faz 9 → yayın** (`RELEASE_CHECKLIST.md`'ye ek)
+- [ ] `backend/storage.lifecycle.json` kovaya uygulansın:
+      `gsutil lifecycle set backend/storage.lifecycle.json gs://<kova>` (ya da
+      `gcloud storage buckets update gs://<kova> --lifecycle-file=backend/storage.lifecycle.json`).
+- [ ] `firestore.rules`, `firestore.indexes.json` (5 bileşik dizin; TTL `photo_proofs.purge_at`,
+      `approach_marks.purge_at`, `safe_returns.purge_at`), `database.rules.json`, `storage.rules` ve 9 yeni callable.
+      KVKK sürümü değiştiği için istemci ve backend birlikte yayımlansın (eski istemci `consent_required` alır).
+- [ ] Yeni yerel eklentiler (`expo-camera` mikrofonsuz / barkodsuz, `expo-contacts`, `expo-sms`, iOS
+      `LSApplicationQueriesSchemes: sms`) için `expo prebuild` + yeni derleme; mağaza izin metinleri (kamera, rehber).
+- [ ] KVKK metninin Rehber / SMS / anlık fotoğraf maddeleri hukuk incelemesinden geçsin.
+- [ ] Cihazda doğrulanacaklar: [`PHASE9.md`](PHASE9.md) §8 (kamera, arka planda yaklaşma, uygulama öldürülmüşken
+      Güvenli Dönüş alarmı ve bildirim eylemleri, iOS Mesajlar / Android SMS, rehber izni reddi / sınırlı erişim).

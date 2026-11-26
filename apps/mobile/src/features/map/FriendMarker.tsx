@@ -26,6 +26,12 @@ export interface FriendMarkerProps {
   note?: string | null;
   /** Faz 4: nabız halkası — `ping` (yeni "Buradayım/Yoldayım", birincil renk) ya da `sos` (aktif SOS, kırmızı). */
   pulse?: 'ping' | 'sos' | null;
+  /** Faz 9: etkin anlık fotoğraf → avatarın sağ üstünde küçük 📷 rozeti (görsel bit eşleme girmez). */
+  photo?: boolean;
+  /** Faz 9: hedef durumu satırı (core `destBadgeText`, ör. "Neredeyse vardı · Ev · ~1 dk"). */
+  dest?: string | null;
+  /** Faz 9: hedefe 200 m kala (`near`) satır vurgulanır. */
+  destNear?: boolean;
 }
 
 const DIM: ReadonlySet<ReceiverStatus> = new Set(['offline_suspected', 'stale']);
@@ -47,16 +53,20 @@ const PULSE_BOX = 72;
 const LABEL_H = 20;
 /** Not balonu: marginTop 2 + dolgu 2 + satır 14 + kenarlık 2. */
 const NOTE_H = 20;
+/** Faz 9: hedef satırı (not balonuyla aynı ölçü). */
+const DEST_H = 20;
+/** Faz 9: 📷 rozeti. */
+const PHOTO_BADGE = 18;
 /** [Varsayım] Fotoğraf yüklenmezse bit eşlem izlemesi en geç bu sürede kapanır (harita yavaşlamasın). */
 const PHOTO_WAIT_MAX_MS = 5_000;
 const SETTLE_MS = 600;
 
 /** Çapa: kuyruk ucu (konum) / toplam yükseklik. Saf; testte de kullanılır. */
-export function friendMarkerAnchor(opts: { pulse: boolean; note: boolean }): { x: number; y: number } {
+export function friendMarkerAnchor(opts: { pulse: boolean; note: boolean; dest?: boolean }): { x: number; y: number } {
   const box = opts.pulse ? PULSE_BOX : BUBBLE + TAIL_H;
   const bubbleTop = opts.pulse ? (PULSE_BOX - BUBBLE) / 2 : 0;
   const tip = bubbleTop + BUBBLE + TAIL_H - 1;
-  const total = box + LABEL_H + (opts.note ? NOTE_H : 0);
+  const total = box + LABEL_H + (opts.note ? NOTE_H : 0) + (opts.dest ? DEST_H : 0);
   return { x: 0.5, y: Math.min(1, tip / total) };
 }
 
@@ -71,7 +81,24 @@ export function friendMarkerAnchor(opts: { pulse: boolean; note: boolean }): { x
  * Konum değişimi bit eşlemi yeniden çizdirmez: pin `useMarkerMotion` ile yeni konuma kayar.
  * Küçük boylar f6Services'te `Image.prefetch` ile önceden diske alınır: ilk çizim beklemesi kısalır.
  */
-export function FriendMarker({ id, uid, name, lat, lng, freshness, batteryPct, onPress, timestamp, selected = false, status, note = null, pulse = null }: FriendMarkerProps) {
+export function FriendMarker({
+  id,
+  uid,
+  name,
+  lat,
+  lng,
+  freshness,
+  batteryPct,
+  onPress,
+  timestamp,
+  selected = false,
+  status,
+  note = null,
+  pulse = null,
+  photo = false,
+  dest = null,
+  destNear = false,
+}: FriendMarkerProps) {
   const dim = status !== undefined && DIM.has(status);
   const { colors, radius } = useTheme();
   const coordinate = useMarkerMotion(lat, lng, timestamp);
@@ -90,13 +117,14 @@ export function FriendMarker({ id, uid, name, lat, lng, freshness, batteryPct, o
     // Fotoğraf henüz çizilmediyse onLoad beklenir (en çok PHOTO_WAIT_MAX_MS).
     const t = setTimeout(() => setTracks(false), photoReady ? SETTLE_MS : PHOTO_WAIT_MAX_MS);
     return () => clearTimeout(t);
-  }, [freshness, batteryPct, name, selected, colors, dim, note, pulse, photoUrl, av.gender, photoReady]);
+  }, [freshness, batteryPct, name, selected, colors, dim, note, pulse, photoUrl, av.gender, photoReady, photo, dest, destNear]);
 
   const sos = pulse === 'sos';
   const outline = sos ? lightColors.danger : selected ? colors.primary : colors.surface;
   const ring = genderRingColor(av.gender);
   const tailColor = sos ? lightColors.danger : selected ? colors.primary : ring;
-  const anchor = friendMarkerAnchor({ pulse: pulse !== null, note: !!note });
+  const anchor = friendMarkerAnchor({ pulse: pulse !== null, note: !!note, dest: !!dest });
+  const badgeInset = pulse ? (PULSE_BOX - BUBBLE) / 2 - 4 : 0;
 
   return (
     <AnimatedMarker
@@ -106,7 +134,7 @@ export function FriendMarker({ id, uid, name, lat, lng, freshness, batteryPct, o
       // Nabız halkası canlandığı sürece bit eşlem yeniden çizilmeli.
       tracksViewChanges={tracks || pulse !== null}
       onPress={onPress}
-      accessibilityLabel={`${sos ? 'Acil durum: ' : ''}${name} konumu${dim ? ', bağlantısı kopmuş olabilir' : ''}${note ? `, not: ${note}` : ''}`}
+      accessibilityLabel={`${sos ? 'Acil durum: ' : ''}${name} konumu${dim ? ', bağlantısı kopmuş olabilir' : ''}${note ? `, not: ${note}` : ''}${dest ? `, ${dest}` : ''}${photo ? ', anlık fotoğraf var' : ''}`}
       zIndex={sos ? 4 : selected ? 2 : 1}
     >
       <View style={[styles.wrap, dim && !selected && !sos ? styles.dim : null]}>
@@ -126,6 +154,13 @@ export function FriendMarker({ id, uid, name, lat, lng, freshness, batteryPct, o
             />
           </View>
           <View style={[styles.tail, { borderTopColor: tailColor }]} />
+          {photo ? (
+            <View style={[styles.photoBadge, { top: badgeInset, right: badgeInset, backgroundColor: colors.surface, borderColor: colors.live }]}>
+              <Text style={styles.photoGlyph} maxFontSizeMultiplier={1}>
+                📷
+              </Text>
+            </View>
+          ) : null}
         </View>
         <View style={[styles.label, { backgroundColor: sos ? lightColors.danger : selected ? colors.primary : colors.surface, borderRadius: radius.sm }]}>
           <Text variant="caption" numberOfLines={1} maxFontSizeMultiplier={1} style={selected || sos ? { color: colors.onPrimary, fontWeight: sos ? '700' : undefined } : undefined}>
@@ -136,6 +171,13 @@ export function FriendMarker({ id, uid, name, lat, lng, freshness, batteryPct, o
           <View style={[styles.note, { backgroundColor: colors.warningSoft, borderColor: colors.warning, borderRadius: radius.sm }]}>
             <Text variant="caption" numberOfLines={1} maxFontSizeMultiplier={1} style={{ color: colors.text, fontSize: 11, lineHeight: 14 }}>
               {note}
+            </Text>
+          </View>
+        ) : null}
+        {dest ? (
+          <View style={[styles.note, { backgroundColor: destNear ? colors.liveSoft : colors.surface, borderColor: destNear ? colors.live : colors.border, borderRadius: radius.sm }]}>
+            <Text variant="caption" numberOfLines={1} maxFontSizeMultiplier={1} style={{ color: destNear ? colors.live : colors.text, fontSize: 11, lineHeight: 14, fontWeight: destNear ? '700' : undefined }}>
+              {`🏁 ${dest}`}
             </Text>
           </View>
         ) : null}
@@ -163,4 +205,14 @@ const styles = StyleSheet.create({
   },
   label: { marginTop: 2, paddingHorizontal: 6, paddingVertical: 1, maxWidth: 96 },
   note: { marginTop: 2, paddingHorizontal: 5, paddingVertical: 1, maxWidth: 150, borderWidth: 1 },
+  photoBadge: {
+    position: 'absolute',
+    width: PHOTO_BADGE,
+    height: PHOTO_BADGE,
+    borderRadius: PHOTO_BADGE / 2,
+    borderWidth: 1.5,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  photoGlyph: { fontSize: 10, lineHeight: 12 },
 });
