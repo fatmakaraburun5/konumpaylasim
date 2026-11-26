@@ -119,4 +119,4 @@ eklemez; 5., 10. kişi de aynı yeri kaplar. Liste geçici bir görünümdür (s
 %28'ini kaplar, fazlası kaydırılır. Haritanın kalan ~%20'sini kitapçık değil, üst çubuk, "bana paylaşanlar" şeridi ve
 sağ alttaki düğmeler kaplar; kitapçığın kendi payı deste görünümünde ~%15, çubukta ~%5.
 
-Tüm paylaşımlar durdurulunca kitapçık kaybolur, yerine "Konumumu paylaş" düğmesi gelir (harita %76,7).
+Tüm paylaşımlar durdurulunca kitapçık kaybolur. "Konumumu paylaş" düğmesi her zaman kitapçığın altında durur (2026-11-26, Erim: paylaşım sürerken de başka birini kolayca ekleyebilmeli); paylaşım sürerken bir boy küçüktür ve haritadaki "QR ile paylaş" kısayolu kalktı (QR, paylaşım sayfasının "Bağlantı (QR)" sekmesinde).

@@ -9,10 +9,10 @@
  *   ├─ TopBar (avatar, başlık, davet kodu çipi, Faz 7 etkinlikler + okunmamış rozeti, arkadaşlar)
  *   ├─ IncomingStrip (bana paylaşanlar; dokununca seçer)
  *   ├─ SyncBanner (sunucuyla eşitleme hatası; dinleyici yeniden deneniyor)
- *   ├─ Faz 7 MapThemeButton (Sistem / Açık / Koyu harita görünümü, anında) · RecenterButton (+ paylaşım sürerken "QR ile paylaş" kısayolu)
+ *   ├─ Faz 7 MapThemeButton (Sistem / Açık / Koyu harita görünümü, anında) · RecenterButton
  *   ├─ alt alan:
  *   │   seçim varsa:  ExpiryBanner(lar) → EtaCard (ad/adres, Araç|Yürüyüş|Bisiklet, ETA · mesafe, "Rotayı kapat")
- *   │   yoksa:        BackgroundPermissionHint → ExpiryBanner(lar) → ShareDeck (tüm giden paylaşımlar tek kitapçıkta: öndeki kart + arka katmanlar, liste, ince çubuk) | ShareButton
+ *   │   yoksa:        BackgroundPermissionHint → ExpiryBanner(lar) → ShareDeck (tüm giden paylaşımlar tek kitapçıkta: öndeki kart + arka katmanlar, liste, ince çubuk) + ShareButton (her zaman; paylaşım sürerken bir boy küçük)
  *   ├─ ShareSheet ("Arkadaşlar | Bağlantı (QR)") ─ PermissionFlow
  *   ├─ LinkQrSheet (QR, bağlantı, Kopyala/Paylaş, kalan süre, +30 dk / +1 saat, "Paylaşımı durdur")
  *   ├─ çıkış sırasında ilerleme örtüsü
@@ -608,9 +608,6 @@ export function MapHome() {
             <View style={styles.flex} pointerEvents="box-none">
               {!target && !selectedNote ? <StatusNotePill onPress={openStatusNote} /> : null}
             </View>
-            {anyRunning && !target ? (
-              <IconButton icon="qr" variant="floating" size={48} accessibilityLabel="QR ile paylaş" onPress={() => openShare('link')} />
-            ) : null}
             {!safeReturnLive && !target ? (
               <IconButton icon="shield" variant="floating" size={48} accessibilityLabel={SAFE_RETURN_TEXT.title} onPress={() => router.push(SAFE_RETURN_ROUTE)} />
             ) : null}
@@ -691,7 +688,7 @@ export function MapHome() {
                 trackingError={trackingError}
                 actions={deckActions}
               />
-              {!anyRunning ? <ShareButton onPress={() => openShare()} /> : null}
+              <ShareButton onPress={() => openShare()} compact={anyRunning} />
             </>
           )}
         </View>

@@ -321,7 +321,7 @@ function Deck({ items, idx, names, nowOf, trackingError, actions, onFocus, onCol
           live.current.onCollapse();
           return;
         }
-        // Tek kartta da: liste "+ Yeni paylaşım"ın tek yeri (harita paylaş düğmesi paylaşım sürerken gizli).
+        // Tek kartta da liste açılır ("+ Yeni paylaşım" orada da var; harita "Konumumu paylaş" düğmesi de her zaman görünür).
         if (axis === 'y' && (g.dy < -40 || g.vy < -0.7)) {
           dragY.setValue(0);
           live.current.onOpenList();
