@@ -432,7 +432,7 @@ async function fireReminder(id: string, now: EpochMs, send: PushSender): Promise
       tx.update(remRef, { sent: true, sent_at: now, outcome: 'stale' });
       return { kind: 'stale' as const };
     }
-    const to = eventReminderRecipients(doc);
+    const to = eventReminderRecipients(doc, rem.kind);
     const text = eventReminderPushText(rem.kind, doc);
     const outgoing: Outgoing = { to, type: 'event_reminder', text, data: { type: 'event_reminder', event_id: doc.event_id, kind: rem.kind } };
     writeNotices(tx, [outgoing], now);

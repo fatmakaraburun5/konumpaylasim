@@ -1,4 +1,4 @@
-import { Redirect, Stack } from 'expo-router';
+import { Redirect, Stack, useRouter } from 'expo-router';
 import { useEffect } from 'react';
 import { ConsentGate } from '../../src/features/consent/ConsentScreen';
 import { InvisibleRestoreSheet } from '../../src/features/invisible/InvisibleRestoreSheet';
@@ -42,13 +42,22 @@ export default function MainLayout() {
     void onboardingStore.getState().hydrate();
   }, []);
 
+  // Faz 10: yeni telefona taşınma tamamlandı → bir kez "Aktif Cihazlar ve Oturumlar" (eski cihazı kapat).
+  const migratedPending = useAuthStore((s) => s.migratedPending);
+  const router = useRouter();
+  useEffect(() => {
+    if (status !== 'ready' || !migratedPending || needsConsent || needsGender || onboardingPending) return;
+    const t = setTimeout(() => router.push('/security?migrated=1'), 300);
+    return () => clearTimeout(t);
+  }, [status, migratedPending, needsConsent, needsGender, onboardingPending, router]);
+
   useEffect(() => {
     if (status !== 'ready' || !uid) return;
     return needsConsent ? startGateServices(uid) : startSessionServices(uid);
   }, [status, uid, needsConsent]);
 
   if (status === 'initializing') return null;
-  if (status !== 'ready') return <Redirect href={status === 'signedOut' ? '/phone' : '/name'} />;
+  if (status !== 'ready') return <Redirect href={status === 'signedOut' ? '/phone' : status === 'needsSecondFactor' ? '/second-factor' : '/name'} />;
   if (needsGender) return <GenderGate />;
   // Faz 8: onay kapısı (cinsiyet kapısından sonra; servisler onaydan sonra başlar).
   if (needsConsent) return <ConsentGate />;
@@ -72,6 +81,8 @@ export default function MainLayout() {
         {/* Faz 9 */}
         <Stack.Screen name="safe-return" />
         <Stack.Screen name="sms-fallback" />
+        {/* Faz 10 */}
+        <Stack.Screen name="security" />
       </Stack>
       <QuickShareSheet />
       <InvisibleRestoreSheet />

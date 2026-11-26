@@ -552,6 +552,18 @@
       "fieldPath": "purge_at",
       "ttl": true,
       "indexes": []
+    },
+    {
+      "collectionGroup": "device_sessions",
+      "fieldPath": "purge_at",
+      "ttl": true,
+      "indexes": []
+    },
+    {
+      "collectionGroup": "verification_challenges",
+      "fieldPath": "purge_at",
+      "ttl": true,
+      "indexes": []
     }
   ]
 }

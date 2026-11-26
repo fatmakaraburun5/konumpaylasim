@@ -8,6 +8,8 @@
 import {
   getAuth,
   onAuthStateChanged,
+  getIdTokenResult,
+  signInWithCustomToken as fbSignInWithCustomToken,
   signInWithPhoneNumber,
   signOut as fbSignOut,
 } from '@react-native-firebase/auth';
@@ -45,4 +47,23 @@ export async function startPhoneSignIn(e164: string): Promise<PhoneConfirmation>
 
 export function signOutAuth(): Promise<void> {
   return fbSignOut(getAuth());
+}
+
+/** Faz 10: `device_register` / ikinci aşamanın custom token'ı (`dsid` iddialı). Aynı uid: oturum el değiştirir. */
+export async function signInWithCustomToken(token: string): Promise<void> {
+  await ensureFirebase();
+  await fbSignInWithCustomToken(getAuth(), token);
+}
+
+/** Faz 10: mevcut ID token'ın cihaz oturumu (`dsid` iddiası). Telefonla yeni girişte null. */
+export async function currentDsid(): Promise<string | null> {
+  const u = getAuth().currentUser;
+  if (!u) return null;
+  try {
+    const r = await getIdTokenResult(u);
+    const v = (r.claims as Record<string, unknown>).dsid;
+    return typeof v === 'string' ? v : null;
+  } catch {
+    return null;
+  }
 }

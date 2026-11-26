@@ -2,6 +2,7 @@
  * Firestore okuyucuları: kendi profilim (`users/{uid}`, yalnızca sahibi okur) ve arkadaşlıklarım
  * (`friendships`, iki kısıtlı sorgu) ve giden isteklerim (`users/{uid}/outgoing_requests`). FCM token kaydı (`devices/{uid}/tokens`, sahibi yazar).
  */
+import { currentDsid } from './authClient';
 import { PATHS, SOS_LIMITS, type Friendship, type UserId, type UserProfile } from '@konum/core';
 import {
   collection,
@@ -126,12 +127,16 @@ export function listenOutgoingRequests(
  * [Varsayım: backend kuralıyla doğrulanmalı] Belge kimliği = token (FCM token'ları `/` içermez).
  * Belge şekli core'da tanımlı değil (core_requests).
  */
-export function saveDeviceToken(uid: UserId, token: string): Promise<void> {
+export async function saveDeviceToken(uid: UserId, token: string): Promise<void> {
+  // Faz 10: token cihaz oturumuna bağlanır (`dsid`; kural: belirteçteki iddiayla aynı) → "eski cihazı kapat"
+  // yalnızca o cihazın token'larına sessiz `session_revoked` gönderir.
+  const dsid = await currentDsid();
   return setDoc(doc(getFirestore(), PATHS.deviceTokens(uid), token), {
     token,
     platform: Platform.OS,
     // core kuralı: zaman damgaları epoch ms (Firestore Timestamp değil).
     updated_at: now(),
+    ...(dsid ? { dsid } : {}),
   });
 }
 

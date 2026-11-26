@@ -5,6 +5,16 @@
  * Burada YALNIZCA fonksiyon tanımları dışa aktarılır; saf mantık `handlers/*` içindedir.
  */
 import {
+  DeviceHeartbeatRequestSchema,
+  DeviceRegisterRequestSchema,
+  DeviceRevokeRequestSchema,
+  DeviceSecondFactorSendRequestSchema,
+  DeviceSecondFactorVerifyRequestSchema,
+  DeviceSignOutRequestSchema,
+  MigrationManifestRequestSchema,
+  RecoveryChannelRemoveRequestSchema,
+  RecoveryChannelStartRequestSchema,
+  RecoveryChannelVerifyRequestSchema,
   FriendRequestRespondSchema,
   FriendRequestSendSchema,
   GeocodeReverseRequestSchema,
@@ -139,6 +149,18 @@ import {
   UserBootstrapSchema,
   UserUnblockSchema,
 } from './schemas';
+import {
+  accountMigrationManifest,
+  deviceHeartbeat,
+  deviceRegister,
+  deviceRevoke,
+  deviceSecondFactorSend,
+  deviceSecondFactorVerify,
+  deviceSignOut,
+  recoveryChannelRemove,
+  recoveryChannelStart,
+  recoveryChannelVerify,
+} from './handlers/devices';
 import { reconcileLink } from './linkAcl';
 import type { ExpiryTaskPayload } from './tasks';
 
@@ -250,6 +272,18 @@ export const safe_return_update = callable('safe_return_update', SafeReturnUpdat
 export const safe_return_check_in = callable('safe_return_check_in', SafeReturnCheckInRequestSchema, (ctx, data) => safeReturnCheckIn(ctx, data));
 export const safe_return_extend = callable('safe_return_extend', SafeReturnIdRequestSchema, safeReturnExtend);
 export const safe_return_cancel = callable('safe_return_cancel', SafeReturnIdRequestSchema, (ctx, data) => safeReturnCancel(ctx, data));
+
+// --- Faz 10: cihaz oturumları + iki adımlı kurtarma ---
+export const device_register = callable('device_register', DeviceRegisterRequestSchema, (ctx, data) => deviceRegister(ctx, data));
+export const device_second_factor_send = callable('device_second_factor_send', DeviceSecondFactorSendRequestSchema, (ctx, data) => deviceSecondFactorSend(ctx, data));
+export const device_second_factor_verify = callable('device_second_factor_verify', DeviceSecondFactorVerifyRequestSchema, (ctx, data) => deviceSecondFactorVerify(ctx, data));
+export const device_heartbeat = callable('device_heartbeat', DeviceHeartbeatRequestSchema, deviceHeartbeat);
+export const device_revoke = callable('device_revoke', DeviceRevokeRequestSchema, (ctx, data) => deviceRevoke(ctx, data));
+export const device_sign_out = callable('device_sign_out', DeviceSignOutRequestSchema, (ctx, data) => deviceSignOut(ctx, data));
+export const recovery_channel_start = callable('recovery_channel_start', RecoveryChannelStartRequestSchema, (ctx, data) => recoveryChannelStart(ctx, data));
+export const recovery_channel_verify = callable('recovery_channel_verify', RecoveryChannelVerifyRequestSchema, recoveryChannelVerify);
+export const recovery_channel_remove = callable('recovery_channel_remove', RecoveryChannelRemoveRequestSchema, recoveryChannelRemove);
+export const account_migration_manifest = callable('account_migration_manifest', MigrationManifestRequestSchema, (ctx) => accountMigrationManifest(ctx));
 
 // --- arka plan ---
 

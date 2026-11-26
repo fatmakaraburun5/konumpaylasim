@@ -77,6 +77,8 @@ export const EVENT_LIMITS = {
 
 /** Hatırlatma saati: buluşma günü yerel 08:00. */
 export const EVENT_MORNING_REMINDER_MINUTE = 8 * 60;
+/** Faz 10: "Kim ne kadar uzakta?" şeridi başlangıçtan bu kadar önce açılır (core `ETA_BOARD_LIMITS.openBeforeMs`). */
+export const EVENT_ETA_WINDOW_BEFORE_MS = 45 * MINUTE;
 /** Kesinleşen buluşmadan 1 gün önce. */
 export const EVENT_DAY_BEFORE_MS = DAY;
 /** Sweeper bundan geç kalan hatırlatmayı göndermez (`stale`). [Varsayım] */
@@ -465,7 +467,8 @@ export function eventNextActionAt(
 
 // --- hatırlatıcılar ----------------------------------------------------------------------------
 
-export const EVENT_REMINDER_KINDS = ['day_before', 'morning'] as const;
+/** Faz 10: `eta_window` = başlangıçtan 45 dk önce, "Kim ne kadar uzakta?" şeridi açılırken (yalnızca katılanlara). */
+export const EVENT_REMINDER_KINDS = ['day_before', 'morning', 'eta_window'] as const;
 export type EventReminderKind = (typeof EVENT_REMINDER_KINDS)[number];
 
 export interface EventReminderPlanItem {
@@ -489,11 +492,17 @@ export function eventReminderPlan(doc: Pick<EventDoc, 'stage' | 'starts_at' | 'd
   if (dayBefore > now) out.push({ kind: 'day_before', due_at: dayBefore });
   const morning = localDateTimeToEpoch(doc.date, EVENT_MORNING_REMINDER_MINUTE, offsetAt);
   if (morning > now && morning < doc.starts_at) out.push({ kind: 'morning', due_at: morning });
+  const etaWindow = doc.starts_at - EVENT_ETA_WINDOW_BEFORE_MS;
+  if (etaWindow > now) out.push({ kind: 'eta_window', due_at: etaWindow });
   return out.sort((a, b) => a.due_at - b.due_at);
 }
 
-/** Hatırlatma alıcıları: sahip + "Katılamayacağım" DEMEYEN davetliler (yanıtsızlar da hatırlatılır). */
-export function eventReminderRecipients(doc: Pick<EventDoc, 'owner_id' | 'invitee_ids' | 'answers'>): UserId[] {
+/**
+ * Hatırlatma alıcıları: sahip + "Katılamayacağım" DEMEYEN davetliler (yanıtsızlar da hatırlatılır).
+ * Faz 10 `eta_window`: yalnızca sahip + "Katılacağım" diyenler (şerit yalnızca onları sıralar).
+ */
+export function eventReminderRecipients(doc: Pick<EventDoc, 'owner_id' | 'invitee_ids' | 'answers'>, kind?: EventReminderKind): UserId[] {
+  if (kind === 'eta_window') return [doc.owner_id, ...doc.invitee_ids.filter((u) => doc.answers[u]?.status === 'going')];
   return [doc.owner_id, ...doc.invitee_ids.filter((u) => doc.answers[u]?.status !== 'not_going')];
 }
 
@@ -1207,6 +1216,7 @@ export function eventReminderPushText(kind: EventReminderKind, doc: EventDoc): {
   const time = timeOptionOf(doc);
   const clock = time ? formatMinuteOfDay(time.minute_of_day) : '';
   if (kind === 'day_before') return { title: `Yarın: ${doc.title}`, body: [venue?.name, clock].filter(Boolean).join(' · ') };
+  if (kind === 'eta_window') return { title: `45 dk kaldı: ${doc.title}`, body: ['Kim ne kadar uzakta? Görmek için aç', venue?.name, clock].filter(Boolean).join(' · ') };
   return { title: `Bugün: ${doc.title}`, body: [clock ? `Saat ${clock}` : null, venue?.name].filter(Boolean).join(' · ') };
 }
 

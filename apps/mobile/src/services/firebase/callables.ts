@@ -9,6 +9,40 @@
  */
 import {
   CALLABLES,
+  // Faz 10
+  ChallengeResponseSchema,
+  DeviceActivatedResponseSchema,
+  DeviceHeartbeatRequestSchema,
+  DeviceHeartbeatResponseSchema,
+  DeviceRegisterRequestSchema,
+  DeviceRegisterResponseSchema,
+  DeviceRevokeRequestSchema,
+  DeviceRevokeResponseSchema,
+  DeviceSecondFactorSendRequestSchema,
+  DeviceSecondFactorVerifyRequestSchema,
+  DeviceSignOutRequestSchema,
+  MigrationManifestRequestSchema,
+  MigrationManifestResponseSchema,
+  RecoveryChannelRemoveRequestSchema,
+  RecoveryChannelStartRequestSchema,
+  RecoveryChannelVerifyRequestSchema,
+  RecoveryResponseSchema,
+  type ChallengeResponse,
+  type DeviceActivatedResponse,
+  type DeviceHeartbeatRequest,
+  type DeviceHeartbeatResponse,
+  type DeviceRegisterRequest,
+  type DeviceRegisterResponse,
+  type DeviceRevokeRequest,
+  type DeviceRevokeResponse,
+  type DeviceSecondFactorSendRequest,
+  type DeviceSecondFactorVerifyRequest,
+  type DeviceSignOutRequest,
+  type MigrationManifestResponse,
+  type RecoveryChannelRemoveRequest,
+  type RecoveryChannelStartRequest,
+  type RecoveryChannelVerifyRequest,
+  type RecoveryResponse,
   GeocodeReverseRequestSchema,
   GeocodeReverseResponseSchema,
   LinkShareCreateRequestSchema,
@@ -189,6 +223,7 @@ import {
   type SafeReturnUpdateRequest,
 } from '@konum/core';
 import { z } from 'zod';
+import { emitSessionEvent } from '../../lib/sessionEvents';
 import { KonumError, toKonumError } from '../../lib/errors';
 import {
   ConsentAcceptResponseSchema,
@@ -234,6 +269,9 @@ async function invoke<Out>(name: CallableName, requestSchema: z.ZodType, input: 
       data = await transport(name, req.data);
     } catch (e) {
       const err = toKonumError(e);
+      // Faz 10: bu cihazın oturumu başka cihazdan kapatıldı / cihaz kaydı gerekli.
+      if (err.code === 'session_revoked') emitSessionEvent({ kind: 'revoked', source: 'callable' });
+      else if (err.code === 'device_registration_required') emitSessionEvent({ kind: 'registration_required' });
       const backoff = RETRY_BACKOFF_MS[attempt];
       const transient = err.code === 'unavailable' || err.code === 'internal';
       if (!transient || backoff === undefined) throw err;
@@ -745,3 +783,61 @@ export interface SafeReturnApi {
   safeReturnCancel: typeof safeReturnCancel;
 }
 export const safeReturnApi: SafeReturnApi = { safeReturnStart, safeReturnUpdate, safeReturnCheckIn, safeReturnExtend, safeReturnCancel };
+
+// --- Faz 10: cihaz oturumları + hesap kurtarma -----------------------------------------------------
+
+export function deviceRegister(input: WithOp<DeviceRegisterRequest>): Promise<DeviceRegisterResponse> {
+  return invoke(CALLABLES.deviceRegister, DeviceRegisterRequestSchema, op(input), DeviceRegisterResponseSchema);
+}
+export function deviceSecondFactorSend(input: WithOp<DeviceSecondFactorSendRequest>): Promise<ChallengeResponse> {
+  return invoke(CALLABLES.deviceSecondFactorSend, DeviceSecondFactorSendRequestSchema, op(input), ChallengeResponseSchema);
+}
+export function deviceSecondFactorVerify(input: WithOp<DeviceSecondFactorVerifyRequest>): Promise<DeviceActivatedResponse> {
+  return invoke(CALLABLES.deviceSecondFactorVerify, DeviceSecondFactorVerifyRequestSchema, op(input), DeviceActivatedResponseSchema);
+}
+export function deviceHeartbeat(input: WithOp<DeviceHeartbeatRequest>): Promise<DeviceHeartbeatResponse> {
+  return invoke(CALLABLES.deviceHeartbeat, DeviceHeartbeatRequestSchema, op(input), DeviceHeartbeatResponseSchema);
+}
+export function deviceRevoke(input: WithOp<DeviceRevokeRequest>): Promise<DeviceRevokeResponse> {
+  return invoke(CALLABLES.deviceRevoke, DeviceRevokeRequestSchema, op(input), DeviceRevokeResponseSchema);
+}
+export function deviceSignOut(input: WithOp<DeviceSignOutRequest> = {}): Promise<unknown> {
+  return invoke(CALLABLES.deviceSignOut, DeviceSignOutRequestSchema, op(input), z.unknown());
+}
+export function recoveryChannelStart(input: WithOp<RecoveryChannelStartRequest>): Promise<ChallengeResponse> {
+  return invoke(CALLABLES.recoveryChannelStart, RecoveryChannelStartRequestSchema, op(input), ChallengeResponseSchema);
+}
+export function recoveryChannelVerify(input: WithOp<RecoveryChannelVerifyRequest>): Promise<RecoveryResponse> {
+  return invoke(CALLABLES.recoveryChannelVerify, RecoveryChannelVerifyRequestSchema, op(input), RecoveryResponseSchema);
+}
+export function recoveryChannelRemove(input: WithOp<RecoveryChannelRemoveRequest>): Promise<RecoveryResponse> {
+  return invoke(CALLABLES.recoveryChannelRemove, RecoveryChannelRemoveRequestSchema, op(input), RecoveryResponseSchema);
+}
+export function accountMigrationManifest(): Promise<MigrationManifestResponse> {
+  return invoke(CALLABLES.accountMigrationManifest, MigrationManifestRequestSchema, {}, MigrationManifestResponseSchema);
+}
+
+export interface SecurityApi {
+  deviceRegister: typeof deviceRegister;
+  deviceSecondFactorSend: typeof deviceSecondFactorSend;
+  deviceSecondFactorVerify: typeof deviceSecondFactorVerify;
+  deviceHeartbeat: typeof deviceHeartbeat;
+  deviceRevoke: typeof deviceRevoke;
+  deviceSignOut: typeof deviceSignOut;
+  recoveryChannelStart: typeof recoveryChannelStart;
+  recoveryChannelVerify: typeof recoveryChannelVerify;
+  recoveryChannelRemove: typeof recoveryChannelRemove;
+  accountMigrationManifest: typeof accountMigrationManifest;
+}
+export const securityApi: SecurityApi = {
+  deviceRegister,
+  deviceSecondFactorSend,
+  deviceSecondFactorVerify,
+  deviceHeartbeat,
+  deviceRevoke,
+  deviceSignOut,
+  recoveryChannelStart,
+  recoveryChannelVerify,
+  recoveryChannelRemove,
+  accountMigrationManifest,
+};

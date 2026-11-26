@@ -185,7 +185,7 @@ describe('tek seferde yanıt → sonuçlar düzenleyene → onay → hatırlatı
     expect(finals[0]?.msg.notification?.title).toBe('Kesinleşti: Piknik');
     const rems = await db().collection('event_reminders').where('event_id', '==', id).get();
     const plan = Object.fromEntries(rems.docs.map((d) => [d.get('kind'), d.get('due_at')]));
-    expect(plan).toEqual({ day_before: startsAt - 24 * HOUR, morning: localDateTimeToEpoch(date, 480, offsetAt) });
+    expect(plan).toEqual({ day_before: startsAt - 24 * HOUR, morning: localDateTimeToEpoch(date, 480, offsetAt), eta_window: startsAt - 45 * 60_000 });
     fcm.clear();
 
     // final: B katılımını değiştirir (oylar donar) → sahibe event_rsvp

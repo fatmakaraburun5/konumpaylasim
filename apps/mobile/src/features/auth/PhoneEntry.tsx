@@ -2,13 +2,14 @@
  * Telefon girişi: core `normalizePhone` (E.164, Faz 1'de yalnızca TR cep numaraları) → SMS kodu.
  * Geçersiz numara sunucuya hiç gitmez (SMS pompalama savunmasının istemci adımı).
  */
-import { normalizePhone } from '@konum/core';
+import { normalizePhone, SECURITY_TEXT } from '@konum/core';
 import { useRouter } from 'expo-router';
 import { useState } from 'react';
 import { StyleSheet, TextInput, View } from 'react-native';
 import { useAuthStore } from '../../state/authStore';
 import { Button, MIN_TOUCH, Text, useTheme } from '../../ui';
 import { AuthScaffold } from './AuthScaffold';
+import { useSecurityStore } from '../../state/securityStore';
 
 const REASON_TEXT = {
   invalid: 'Geçerli bir telefon numarası girin',
@@ -21,6 +22,8 @@ export function PhoneEntry() {
   const sendCode = useAuthStore((s) => s.sendCode);
   const busy = useAuthStore((s) => s.busy);
   const serverError = useAuthStore((s) => s.error);
+  // Faz 10: bu cihazın oturumu başka cihazdan kapatıldı (yayın durdu, yerel veri silindi).
+  const revokedHere = useSecurityStore((s) => s.revokedHere);
   const [value, setValue] = useState('');
   const [touched, setTouched] = useState(false);
 
@@ -39,6 +42,13 @@ export function PhoneEntry() {
       subtitle="Sana bir doğrulama kodu göndereceğiz. Numaran arkadaşlarına gösterilmez."
       footer={<Button title="Kod gönder" size="lg" onPress={submit} loading={busy} disabled={!value.trim()} />}
     >
+      {revokedHere ? (
+        <View style={{ backgroundColor: colors.warningSoft, borderRadius: radius.md, padding: spacing.sm }} testID="revoked-here">
+          <Text variant="label" style={{ color: colors.warning }}>
+            {SECURITY_TEXT.revokedHere}
+          </Text>
+        </View>
+      ) : null}
       <View style={[styles.field, { backgroundColor: colors.surface, borderColor: localError ? colors.danger : colors.border, borderRadius: radius.md, paddingHorizontal: spacing.md }]}>
         <Text variant="body" color="textSecondary">
           +90

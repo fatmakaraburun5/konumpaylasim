@@ -3,7 +3,7 @@
  * SMS kodu her zaman 123456; oturum demo kullanıcısına (Deniz Kaya) açılır ve sayfa yenilense de kalır.
  * Native `authClient.ts` ile aynı dışa aktarımlar ve tipler.
  */
-import { demoCurrentUser, demoSendCode, demoSignOut, onDemoAuthChanged } from '../../demo/web/session';
+import { demoCurrentDsid, demoCurrentUser, demoSendCode, demoSignInWithCustomToken, demoSignOut, onDemoAuthChanged } from '../../demo/web/session';
 import { ensureFirebase } from './init';
 
 export interface AuthUser {
@@ -30,4 +30,14 @@ export async function startPhoneSignIn(e164: string): Promise<PhoneConfirmation>
 
 export function signOutAuth(): Promise<void> {
   return demoSignOut();
+}
+
+/** Faz 10 (demo): sahte custom token `demo:{uid}:{dsid}` → oturum aynı kullanıcıda, cihaz oturumu `dsid`. */
+export async function signInWithCustomToken(token: string): Promise<void> {
+  await ensureFirebase();
+  return demoSignInWithCustomToken(token);
+}
+
+export async function currentDsid(): Promise<string | null> {
+  return demoCurrentDsid();
 }

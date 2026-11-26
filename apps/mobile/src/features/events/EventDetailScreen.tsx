@@ -48,6 +48,8 @@ import { Button, cardShadow, Chip, CheckRow, Icon, MIN_TOUCH, Text, IconButton, 
 import { deadlineLabel, memberName, stageSteps } from './eventModel';
 import { optionsProblem, TimeFields, VenueFields, venueDraftsFrom, venueInputs, type VenueDraft } from './EventOptionsFields';
 import { useNow } from './useNow';
+import { AddToCalendar, CalendarSheets } from './AddToCalendar';
+import { EventEtaStrip } from './EventEtaStrip';
 
 type Act = (p: Promise<EventResult>) => Promise<boolean>;
 
@@ -168,6 +170,9 @@ export function EventDetailScreen({ eventId }: { eventId: string }) {
           )
         ) : null}
 
+        {/* Faz 10: "Kim ne kadar uzakta?" (buluşmadan 45 dk önce, katılan ve canlı konum paylaşanlar). */}
+        {doc.stage === 'final' ? <EventEtaStrip doc={doc} now={now} /> : null}
+
         {doc.stage === 'final' || doc.stage === 'completed' ? (
           <View style={card} testID="event-final">
             <Text variant="heading">{`Kesinleşti: ${eventSummaryLine(doc)}`}</Text>
@@ -176,8 +181,11 @@ export function EventDetailScreen({ eventId }: { eventId: string }) {
                 {EVENT_TEXT.remindersNote}
               </Text>
             ) : null}
+            {/* Faz 10: Takvime Ekle (yalnızca katılan; başlamadan önce). */}
+            {me ? <AddToCalendar doc={doc} me={me} now={now} /> : null}
           </View>
         ) : null}
+        {me ? <CalendarSheets doc={doc} me={me} /> : null}
 
         {doc.stage === 'final' && !isOwner ? <AttendanceCard doc={doc} me={me} busy={busy} disabled={started} act={act} /> : null}
 

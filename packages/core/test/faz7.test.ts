@@ -233,6 +233,7 @@ describe('Faz 7 · düzenleyenin onayı ve sonrası', () => {
       items: [
         { kind: 'day_before', due_at: startsAt10 - 24 * HOUR },
         { kind: 'morning', due_at: localDateTimeToEpoch('2026-11-29', 480, offsetAt) },
+        { kind: 'eta_window', due_at: startsAt10 - 45 * 60_000 },
       ],
     });
     expect(eventStagePushText('final', r.doc).title).toBe('Kesinleşti: Kahvaltı');
@@ -257,9 +258,10 @@ describe('Faz 7 · düzenleyenin onayı ve sonrası', () => {
 
   it('08:00 veya öncesi başlayan buluşmada sabah hatırlatması yok; geçmiş hatırlatma planlanmaz', () => {
     const doc = { stage: 'final' as const, date: '2026-11-27', starts_at: localDateTimeToEpoch('2026-11-27', 480, offsetAt) };
-    expect(eventReminderPlan(doc, T0, offsetAt)).toEqual([]);
+    // Faz 10: 45 dk kala "Kim ne kadar uzakta?" hatırlatması her zaman (geçmişte değilse) planlanır.
+    expect(eventReminderPlan(doc, T0, offsetAt).map((i) => i.kind)).toEqual(['eta_window']);
     const doc2 = { ...doc, starts_at: localDateTimeToEpoch('2026-11-27', 1200, offsetAt) };
-    expect(eventReminderPlan(doc2, T0, offsetAt).map((i) => i.kind)).toEqual(['day_before', 'morning']);
+    expect(eventReminderPlan(doc2, T0, offsetAt).map((i) => i.kind)).toEqual(['day_before', 'morning', 'eta_window']);
   });
 });
 

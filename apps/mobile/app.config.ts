@@ -102,6 +102,12 @@ const CAMERA_USAGE =
 const CONTACTS_USAGE =
   'İnternet yokken SOS mesajını SMS ile gönderebilmen için acil durum numaralarını rehberinden seçmene izin veriyoruz. Rehberin sunucuya yüklenmez ve taranmaz; yalnızca seçtiğin numaralar bu telefonda saklanır.';
 
+/** Faz 10: Ortak Takvim. iOS 17+ yalnızca ekleme (write-only); eski iOS / Android tam erişim metni. */
+const CALENDAR_WRITE_ONLY_USAGE =
+  'Kesinleşen buluşmaları (başlık, saat, mekan, harita bağlantısı) takvimine eklemek için. Takvimindeki diğer etkinlikler okunmaz ve sunucuya gönderilmez.';
+const CALENDAR_USAGE =
+  'Kesinleşen buluşmaları takvimine eklemek ve etkinlik değişince takvimdeki kaydı güncellemek için. Takvimin sunucuya gönderilmez.';
+
 const LOCATION_WHEN_IN_USE =
   'Konumunu yalnızca sen paylaşım başlattığında, seçtiğin arkadaşlarına ve seçtiğin süre boyunca göstermek için kullanıyoruz.';
 const LOCATION_ALWAYS =
@@ -129,6 +135,10 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       NSLocationWhenInUseUsageDescription: LOCATION_WHEN_IN_USE,
       NSLocationAlwaysAndWhenInUseUsageDescription: LOCATION_ALWAYS,
       ...(ACTIVITY_RECOGNITION ? { NSMotionUsageDescription: MOTION_USAGE } : {}),
+      // Faz 10: expo-calendar eklentisi write-only modda tam erişim anahtarını yazmaz; iOS 17+ kullanıcı Ayarlar'dan
+      // tam erişim verirse (etkinlik değişince takvim kaydını güncellemek için) metin hazır olsun.
+      NSCalendarsWriteOnlyAccessUsageDescription: CALENDAR_WRITE_ONLY_USAGE,
+      NSCalendarsFullAccessUsageDescription: CALENDAR_USAGE,
       // location: arka plan konum oturumu (mavi gösterge); remote-notification: `resume_tracking` sessiz push.
       UIBackgroundModes: ['location', 'remote-notification'],
       ITSAppUsesNonExemptEncryption: false,
@@ -154,6 +164,9 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       // Faz 9: anlık fotoğraf (uygulama içi kamera) ve SMS acil numarasını rehberden seçme (yalnızca okuma).
       'android.permission.CAMERA',
       'android.permission.READ_CONTACTS',
+      // Faz 10: Ortak Takvim (CalendarContract; yazılabilir Google Takvim hesabını bulmak için okuma da gerekir).
+      'android.permission.READ_CALENDAR',
+      'android.permission.WRITE_CALENDAR',
       // NOT: REQUEST_IGNORE_BATTERY_OPTIMIZATIONS BİLEREK YOK (Play politikası: konum paylaşımı izinli istisna
       // kategorisinde değil [Varsayım]); haftalık/süresiz paylaşımda kullanıcı pil ayarlarına yönlendirilir.
     ],
@@ -269,6 +282,11 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     ],
     /** Faz 9: rehber (iOS 18 "seçili kişiler" de yeterli). Yalnızca seçilen numara cihazda saklanır. */
     ['expo-contacts', { contactsPermission: CONTACTS_USAGE }],
+    /** Faz 10: Ortak Takvim. iOS'ta yalnızca ekleme izni istenir; hatırlatıcılar (Reminders) kullanılmaz. */
+    [
+      'expo-calendar',
+      { calendarPermission: CALENDAR_USAGE, writeOnlyCalendarPermission: CALENDAR_WRITE_ONLY_USAGE, writeOnlyAccess: true, remindersPermission: false },
+    ],
     /**
      * Faz 6: ana ekran / kilit ekranı widget'ları (modules/konum-widgets + targets/widgets). SIRA ÖNEMLİ:
      * konum-widgets eklentisi App Group'u (`group.${BUNDLE_ID}`) ios.entitlements'a zamanuyumlu yazar ve Android

@@ -66,6 +66,19 @@ const HTTPS_CODE: Record<ErrorCode, FunctionsErrorCode> = {
   safe_return_active: 'failed-precondition',
   safe_return_not_active: 'failed-precondition',
   safe_return_extend_limit: 'failed-precondition',
+  // Faz 10
+  session_revoked: 'unauthenticated',
+  device_registration_required: 'failed-precondition',
+  device_not_found: 'not-found',
+  device_is_current: 'failed-precondition',
+  second_factor_required: 'failed-precondition',
+  otp_invalid: 'invalid-argument',
+  otp_expired: 'failed-precondition',
+  otp_locked: 'resource-exhausted',
+  otp_resend_wait: 'resource-exhausted',
+  email_invalid: 'invalid-argument',
+  email_in_use: 'already-exists',
+  verification_unavailable: 'unavailable',
 };
 
 export interface ErrorDetails {

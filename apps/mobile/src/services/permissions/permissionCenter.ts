@@ -8,7 +8,7 @@
  * Web demo bir iPhone'u taklit eder (platform `ios`).
  *
  * Faz 9: Rehber (`contactsPermissions`, iOS 18 `limited`) ve SMS kullanılabilirliği (`smsComposer`; izin YOK) da
- * okunur. `requestPermission('contacts')` sistem istemini açar; `sms` uygulama içi açık onaydır (smsFallbackStore),
+ * okunur. Faz 10: takvim (`calendarProvider`). `requestPermission('contacts')` sistem istemini açar; `sms` uygulama içi açık onaydır (smsFallbackStore),
  * burada istem yok.
  */
 import type { CenterRowId, OnboardingStep, PermissionSnapshot, PermState } from '@konum/core';
@@ -20,6 +20,8 @@ import { openBatteryOptimizationSettings } from '../location/batteryOptimization
 import * as Notifications from '../notifications/expoNotifications';
 import { isSmsAvailable } from '../sms/smsComposer';
 import { readContactsPermission, requestContactsPermission } from './contactsPermissions';
+import { getCalendarPermission, requestCalendarPermission } from '../calendar/calendarProvider';
+import { calendarStore } from '../../state/calendarStore';
 import { readMediaPermissions, requestCameraPermission, requestPhotosPermission } from './mediaPermissions';
 
 const core = (s: string): PermState => (s === 'granted' || s === 'denied' || s === 'restricted' ? s : 'undetermined');
@@ -51,12 +53,13 @@ async function iosNotificationDetails(): Promise<{ timeSensitive: boolean | null
 export async function readPermissionSnapshot(): Promise<PermissionSnapshot> {
   await permissionsStore.getState().refresh().catch(() => undefined);
   const p = permissionsStore.getState();
-  const [media, motion, ios, contacts, smsAvailable] = await Promise.all([
+  const [media, motion, ios, contacts, smsAvailable, calendar] = await Promise.all([
     readMediaPermissions(),
     activityPermission().catch(() => 'restricted' as const),
     iosNotificationDetails(),
     readContactsPermission(),
     isSmsAvailable().catch(() => null),
+    getCalendarPermission(),
   ]);
   return {
     ...platformInfo(),
@@ -78,6 +81,9 @@ export async function readPermissionSnapshot(): Promise<PermissionSnapshot> {
     contacts: contacts.contacts,
     contactsCanAskAgain: contacts.contactsCanAskAgain,
     smsAvailable,
+    // Faz 10: takvim (iOS 17+ yalnızca ekleme)
+    calendar: calendar.state,
+    calendarCanAskAgain: calendar.canAskAgain,
   };
 }
 
@@ -112,6 +118,11 @@ export async function requestPermission(id: CenterRowId | OnboardingStep): Promi
     case 'contacts': {
       const r = await requestContactsPermission();
       return r === 'granted' || r === 'limited';
+    }
+    case 'calendar': {
+      const r = await requestCalendarPermission();
+      void calendarStore.getState().refreshPerm();
+      return r.state === 'write_only' || r.state === 'full' || r.state === 'granted';
     }
     case 'sms':
       // İzin yok: SMS yedeği uygulama içi açık onaydır (smsFallbackStore.enable).

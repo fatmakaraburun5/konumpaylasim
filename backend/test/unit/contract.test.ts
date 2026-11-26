@@ -358,7 +358,7 @@ describe('Faz 3: database.rules.json ↔ core outbox sözleşmesi', () => {
     for (const part of ["child('status').val() === 'active'", "child('sender_id').val() === auth.uid", "child('receiver_id').val() === $receiver_id", "child('expires_at').val() > now"]) {
       expect(w).toContain(part);
     }
-    expect(rules.rules.live_trail.$receiver_id['.read']).toBe('auth != null && auth.uid === $receiver_id');
+    expect(rules.rules.live_trail.$receiver_id['.read']).toBe("auth != null && !root.child('revoked_devices').child(auth.uid).child(auth.token.dsid != null ? auth.token.dsid : 'legacy').exists() && auth.uid === $receiver_id");
   });
 
   it('bağlantılara iz yok (core LINK_TRAIL_ENABLED = false): link_trail düğümü tanımlı değil', () => {
@@ -465,8 +465,8 @@ describe('Faz 4: push yükleri ve RTDB düğümleri', () => {
   it('canlı pakette not alanları; ping_inbox yalnızca alıcı okur/siler; ping_expiry kapalı', () => {
     for (const f of DELIVERED_OPTIONAL_F4_FIELDS) expect(Object.keys(liveNode)).toContain(f);
     expect(String((liveNode.note as Record<string, string>)['.validate'])).toContain(`<= ${PACKET_NOTE_MAX_CHARS}`);
-    expect(rules.rules.ping_inbox.$uid['.read']).toBe('auth != null && auth.uid === $uid');
-    expect(rules.rules.ping_inbox.$uid.$ping_id['.write']).toBe('auth != null && auth.uid === $uid && !newData.exists()');
+    expect(rules.rules.ping_inbox.$uid['.read']).toBe("auth != null && !root.child('revoked_devices').child(auth.uid).child(auth.token.dsid != null ? auth.token.dsid : 'legacy').exists() && auth.uid === $uid");
+    expect(rules.rules.ping_inbox.$uid.$ping_id['.write']).toBe("auth != null && !root.child('revoked_devices').child(auth.uid).child(auth.token.dsid != null ? auth.token.dsid : 'legacy').exists() && auth.uid === $uid && !newData.exists()");
     expect(rules.rules.ping_expiry).toMatchObject({ '.read': false, '.write': false });
     expect(Object.keys(rules.rules.link_live.$token_hash)).not.toContain('note');
   });

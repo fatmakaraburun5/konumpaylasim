@@ -312,8 +312,8 @@ describe('Faz 8 görünmez mod', () => {
 
 describe('Faz 8 Güvenlik Sözleşmesi ve KVKK onayı', () => {
   it('metin özeti sabit ve Node crypto ile aynı (metin değişirse CONSENT_VERSION artırılmalı)', () => {
-    expect(CONSENT_VERSION).toBe('2026-11-26');
-    expect(CONSENT_TEXT_SHA256).toBe('8f091ad4167744183e5595bb054596ed498a609704c723ce1b74226804eecff9');
+    expect(CONSENT_VERSION).toBe('2026-11-27');
+    expect(CONSENT_TEXT_SHA256).toBe('244c9fb46984be02c8e32763857e1926bfbeab0620d17f1126ccfe2ce43b8c42');
     expect(createHash('sha256').update(CONSENT_TEXT).digest('hex')).toBe(CONSENT_TEXT_SHA256);
     expect(CONSENT_TEXT.startsWith(`${CONSENT_TITLE}\nSürüm: ${CONSENT_VERSION}`)).toBe(true);
     for (const p of CONSENT_PLACEHOLDERS) expect(CONSENT_TEXT).toContain(p);

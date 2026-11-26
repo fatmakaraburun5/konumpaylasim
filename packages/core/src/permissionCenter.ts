@@ -14,24 +14,34 @@
  * yeniden istenir ve Gizlilik Merkezi'nden her an yönetilir. Sistem istemi bir kez reddedilince (canAskAgain =
  * false) yalnızca ayarlar açılır. Android 11+ "Her zaman" yalnızca sistem ayarlarından verilir.
  */
+import type { CalendarPermState } from './calendar';
 import type { PermState } from './permissionFlow';
 
-export const ONBOARDING_VERSION = 2;
+export const ONBOARDING_VERSION = 3;
 /** Anahtar v1'de kaldı: kayıt `version` alanı taşır (v1 bitirenlere yalnızca yeni adımlar). */
 export const ONBOARDING_STORAGE_KEY = 'konum.onboarding.v1';
 
-export const ONBOARDING_STEPS = ['welcome', 'location', 'location_always', 'notifications', 'contacts', 'sms', 'battery_share', 'camera_photos', 'done'] as const;
+export const ONBOARDING_STEPS = ['welcome', 'location', 'location_always', 'notifications', 'contacts', 'sms', 'battery_share', 'camera_photos', 'calendar', 'done'] as const;
 export type OnboardingStep = (typeof ONBOARDING_STEPS)[number];
 
 /** Faz 9'da eklenen adımlar (v1'i bitirmiş kullanıcılara bir kez). */
 export const ONBOARDING_V2_STEPS = ['contacts', 'sms'] as const satisfies readonly OnboardingStep[];
+/** Faz 10'da eklenen adım (v2'yi bitirmiş kullanıcılara bir kez). */
+export const ONBOARDING_V3_STEPS = ['calendar'] as const satisfies readonly OnboardingStep[];
 
-/** v1'i bitirmiş kullanıcının v2 akışına `done` olarak taşınacak adımlar (yalnızca yeni adımlar kalır). */
+/** Sürüm → o sürümde eklenen adımlar. */
+const ADDED_IN: Record<number, readonly OnboardingStep[]> = { 2: ONBOARDING_V2_STEPS, 3: ONBOARDING_V3_STEPS };
+
+/**
+ * Eski sürümü bitirmiş kullanıcının güncel akışa `done` olarak taşınacak adımları: yalnızca `prevVersion`'dan SONRA
+ * eklenen adımlar kalır (v1 → contacts, sms, calendar; v2 → calendar).
+ */
 export function onboardingDoneForUpgrade(prevVersion: number, prevDone: readonly OnboardingStep[]): OnboardingStep[] {
   // Yarıda kalmış akış olduğu gibi sürer (yeni adımlar sırası gelince sorulur).
   if (prevVersion >= ONBOARDING_VERSION || !prevDone.includes('done')) return [...prevDone];
-  const v2 = ONBOARDING_V2_STEPS as readonly string[];
-  return ONBOARDING_STEPS.filter((s) => s !== 'done' && !v2.includes(s));
+  const added = new Set<string>();
+  for (let v = prevVersion + 1; v <= ONBOARDING_VERSION; v++) for (const s of ADDED_IN[v] ?? []) added.add(s);
+  return ONBOARDING_STEPS.filter((s) => s !== 'done' && !added.has(s));
 }
 
 /** `limited` = iOS "Seçili fotoğraflar". */
@@ -67,6 +77,9 @@ export interface PermissionSnapshot {
   contactsCanAskAgain: boolean;
   /** Faz 9: cihaz SMS oluşturabiliyor mu (expo-sms `isAvailableAsync`); null = bilinmiyor. */
   smsAvailable: boolean | null;
+  /** Faz 10: takvim (iOS 17+ `write_only` = yalnızca ekleme). Yoksa 'unavailable' sayılır. */
+  calendar?: CalendarPermState;
+  calendarCanAskAgain?: boolean;
 }
 
 /** Faz 9: uygulama içi SMS yedeği tercihi (cihazda; `smsFallback.ts`). */
@@ -128,6 +141,12 @@ export function nextOnboardingStep(input: OnboardingInput): OnboardingStepPlan {
     return { step: 'camera_photos', action: 'system_prompt' };
   }
 
+  // Faz 10: takvim (yalnızca sorulmadıysa; reddedildiyse "Takvime Ekle" izinsiz sistem formuna düşer).
+  const cal = p.calendar ?? 'unavailable';
+  if (pending('calendar') && p.platform !== 'web' && cal === 'undetermined') {
+    return { step: 'calendar', action: 'system_prompt' };
+  }
+
   return { step: 'done', action: 'none' };
 }
 
@@ -179,6 +198,12 @@ export const ONBOARDING_TEXT: Record<Exclude<OnboardingStep, 'done'>, { title: s
     primary: 'Onaylıyorum, aç',
     settingsPrimary: 'Kapalı kalsın',
   },
+  calendar: {
+    title: 'Takvim',
+    body: 'Kesinleşen buluşmaları tek dokunuşla telefonunun takvimine eklemek için: başlık, başlangıç–bitiş saati, mekan adı ve adresi, harita bağlantısı ve katılımcı özeti yazılır. iPhone’da yalnızca ekleme izni istenir; takvimin okunmaz ve sunucuya gönderilmez.',
+    primary: 'Takvim iznini ver',
+    settingsPrimary: 'Ayarlarda aç',
+  },
   camera_photos: {
     title: 'Kamera ve fotoğraflar',
     body: 'Profil fotoğrafı ve paylaşım sırasında anlık fotoğraf çekmek için kamera; profil fotoğrafını galeriden seçmek için fotoğraflar. Anlık fotoğraf galeriden seçilemez. Yalnızca seçtiğin ya da çektiğin fotoğraf yüklenir.',
@@ -188,7 +213,7 @@ export const ONBOARDING_TEXT: Record<Exclude<OnboardingStep, 'done'>, { title: s
 
 // --- İzin & Gizlilik Merkezi satırları -----------------------------------------------------------
 
-export type CenterRowId = 'location' | 'precise' | 'notifications' | 'sos_alerts' | 'camera' | 'photos' | 'contacts' | 'sms' | 'motion' | 'battery_optimization';
+export type CenterRowId = 'location' | 'precise' | 'notifications' | 'sos_alerts' | 'camera' | 'photos' | 'contacts' | 'calendar' | 'sms' | 'motion' | 'battery_optimization';
 export type CenterTone = 'ok' | 'warn' | 'off';
 /** Faz 9: `in_app` = uygulama içi ayar (SMS yedeği sayfası). */
 export type CenterAction = 'request' | 'settings' | 'in_app' | null;
@@ -307,6 +332,24 @@ export function permissionCenterRows(p: PermissionSnapshot, sms?: SmsFallbackSum
         actionLabel: cAction === null ? null : cAction === 'request' ? 'İzin ver' : 'Ayarları aç',
       });
     }
+    // Faz 10: Takvim ("Takvime Ekle"; iOS'ta yalnızca ekleme izni yeterli).
+    const cal = p.calendar ?? 'unavailable';
+    if (cal !== 'unavailable') {
+      const ok = cal === 'write_only' || cal === 'full' || cal === 'granted';
+      const calAction: CenterAction = ok ? null : cal === 'undetermined' || p.calendarCanAskAgain ? 'request' : 'settings';
+      rows.push({
+        id: 'calendar',
+        title: 'Takvim',
+        status: cal === 'write_only' ? 'Yalnızca ekleme' : cal === 'full' ? 'Tam erişim' : cal === 'granted' ? 'Açık' : cal === 'undetermined' ? 'Sorulmadı' : 'Kapalı',
+        tone: ok ? 'ok' : 'off',
+        detail:
+          p.platform === 'ios'
+            ? 'Kesinleşen buluşmayı takvimine eklemek için. Yalnızca ekleme izni yeterli; takvimin okunmaz, sunucuya gitmez. Kapalıyken de sistemin “Etkinlik ekle” ekranıyla ekleyebilirsin.'
+            : 'Kesinleşen buluşmayı takvimine (ör. Google Takvim) eklemek için; yazılabilir takvimi bulmak için okuma izni de gerekir. Etkinliklerin okunmaz, sunucuya gitmez.',
+        action: calAction,
+        actionLabel: calAction === null ? null : calAction === 'request' ? 'İzin ver' : 'Ayarları aç',
+      });
+    }
   }
 
   // Faz 9: SMS yedeği (uygulama içi açık onay; iOS/Android SMS uygulaması, izin gerekmez).
@@ -357,7 +400,7 @@ export function permissionCenterRows(p: PermissionSnapshot, sms?: SmsFallbackSum
 
 /** Merkezin üstündeki özet: "2 izin eksik" ya da "Tüm izinler tamam". */
 /** Faz 9: isteğe bağlı satırlar kapalıyken "dikkat istiyor" sayılmaz (SMS açık ama numara yoksa 'warn' sayılır). */
-export const OPTIONAL_CENTER_ROWS: readonly CenterRowId[] = ['contacts', 'sms'];
+export const OPTIONAL_CENTER_ROWS: readonly CenterRowId[] = ['contacts', 'sms', 'calendar'];
 
 export function permissionCenterSummary(rows: readonly CenterRow[]): { missing: number; text: string } {
   const missing = rows.filter((r) => r.tone === 'warn' || (r.tone !== 'ok' && !OPTIONAL_CENTER_ROWS.includes(r.id))).length;

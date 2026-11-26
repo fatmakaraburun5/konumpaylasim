@@ -2,11 +2,12 @@
  * Callable sarmalayıcısı: kimlik kontrolü → zod doğrulaması → Faz 8 onay ön kapısı → işleyici → hata eşleme.
  * İşleyiciler (handlers/*) saf `(ctx, data)` fonksiyonlarıdır; testler onları doğrudan da çağırabilir.
  */
-import { type EpochMs, type UserId, consentExemptCall } from '@konum/core';
+import { DEVICE_GATE_EXEMPT, DSID_RE, type EpochMs, PATHS, type UserId, consentExemptCall, revokedDeviceKey } from '@konum/core';
 import { onCall, type CallableRequest } from 'firebase-functions/https';
 import type { SecretParam } from 'firebase-functions/params';
 import type { z } from 'zod';
 import { CALLABLE_SECRETS, ENFORCE_APP_CHECK, MAX_INSTANCES, REGION } from './config';
+import { db } from './admin';
 import { type UserDoc, isUsableProfile, refs } from './docs';
 import { fail, toHttpsError } from './errors';
 import { assertConsent, needsProfile } from './graph';
@@ -20,6 +21,8 @@ export interface CallCtx {
   now: EpochMs;
   /** Belirtecin `auth_time` değeri (epoch ms): son SMS doğrulaması. Doğrudan çağrılan testlerde yok. */
   auth_time?: EpochMs | null;
+  /** Faz 10: cihaz oturumu (custom token iddiası `dsid`); telefonla yeni girişte / eski belirteçte null. */
+  dsid?: string | null;
 }
 
 /** Kimliksiz çağrıyı reddeder. Sunucu uid biçimine (`_` yok) uymayan kimlikler de reddedilir. */
@@ -29,11 +32,13 @@ export function requireAuth(req: Pick<CallableRequest<unknown>, 'auth'>, now: Ep
   if (!isServerUid(auth.uid)) throw fail('unauthenticated', { message: 'Desteklenmeyen hesap kimliği' });
   const phone = auth.token?.phone_number;
   const authTime = auth.token?.auth_time;
+  const dsid = (auth.token as Record<string, unknown> | undefined)?.dsid;
   return {
     uid: auth.uid,
     phone_e164: typeof phone === 'string' ? phone : null,
     now,
     auth_time: typeof authTime === 'number' ? authTime * 1000 : null,
+    dsid: typeof dsid === 'string' && DSID_RE.test(dsid) ? dsid : null,
   };
 }
 
@@ -61,6 +66,17 @@ export async function consentGate(name: string, ctx: Pick<CallCtx, 'uid'>, data:
   assertConsent(u);
 }
 
+/**
+ * Faz 10 cihaz kapısı: iptal edilen cihazın (`revoked_devices/{uid}_{dsid}`) ya da ilk cihaz kaydından sonra
+ * `dsid`'siz belirtecin (`{uid}_legacy`) çağrısı reddedilir. Yeni cihazın kayıt / ikinci aşama çağrıları muaftır.
+ * Tek nokta okuma; önbellek YOK (iptal anında geçerli olmalı).
+ */
+export async function deviceGate(name: string, ctx: Pick<CallCtx, 'uid' | 'dsid'>): Promise<void> {
+  if ((DEVICE_GATE_EXEMPT as readonly string[]).includes(name)) return;
+  const snap = await db().doc(PATHS.revokedDevice(revokedDeviceKey(ctx.uid, ctx.dsid))).get();
+  if (snap.exists) throw fail(ctx.dsid ? 'session_revoked' : 'device_registration_required');
+}
+
 export type Handler<I, R> = (ctx: CallCtx, data: I) => Promise<R>;
 
 export interface CallableOptions {
@@ -80,6 +96,7 @@ export function callable<S extends z.ZodType, R>(name: string, schema: S, handle
       try {
         const ctx = requireAuth(req);
         const data = parseInput(schema, req.data);
+        await deviceGate(name, ctx);
         await consentGate(name, ctx, data);
         return await handler(ctx, data);
       } catch (err) {

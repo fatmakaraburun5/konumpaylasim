@@ -33,6 +33,7 @@ const STEP_ICON: Record<Exclude<OnboardingStep, 'done'>, IconName> = {
   sms: 'message',
   battery_share: 'battery',
   camera_photos: 'camera',
+  calendar: 'calendar',
 };
 
 export function OnboardingFlow() {

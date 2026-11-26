@@ -53,6 +53,7 @@ import {
   type PlaceNote,
   type SosAlert,
   type TravelMode,
+  pickMapEtaEvent,
 } from '@konum/core';
 import { useNavigation, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -99,6 +100,7 @@ import { IncomingLocationRequests } from '../locationRequest/IncomingLocationReq
 import { EtaCard } from './EtaCard';
 import { ExpiryBanner } from './ExpiryBanner';
 import { IncomingStrip } from './IncomingStrip';
+import { EventEtaStrip } from '../events/EventEtaStrip';
 import { MapCanvas, type MapCanvasHandle } from './MapCanvas';
 import { RecenterButton } from './RecenterButton';
 import { MapThemeButton } from './MapThemeButton';
@@ -187,6 +189,9 @@ export function MapHome() {
 
   // --- Faz 4: ping, notlar, SOS ----------------------------------------------------------
   const myUid = useAuthStore((s) => s.uid);
+  // Faz 10: 45 dk penceresi açık en yakın kesin buluşma (harita şeridi).
+  const eventsMap = useEventsStore((s) => s.events);
+  const etaEvent = useMemo(() => (myUid ? pickMapEtaEvent(Object.values(eventsMap), myUid, incomingNow) : null), [eventsMap, myUid, incomingNow]);
   const pingInbox = usePingStore((s) => s.inbox);
   const pingHighlightFrom = usePingStore((s) => s.highlight?.from ?? null);
   const placeNotesMap = useNotesStore((s) => s.placeNotes);
@@ -526,12 +531,12 @@ export function MapHome() {
   const padding = useMemo(
     // Faz 8: görünmezken şerit (44 pt + boşluk) üstteki alanı uzatır. Faz 9: Güvenli Dönüş bandı da (44 pt).
     () => ({
-      top: insets.top + 140 + (invisible ? 52 : 0) + (safeReturnBanner ? 52 : 0),
+      top: insets.top + 140 + (invisible ? 52 : 0) + (safeReturnBanner ? 52 : 0) + (etaEvent ? 72 : 0),
       right: 0,
       bottom: meetupOpen ? Math.round(windowH * 0.52) + 8 : bottomH + 8,
       left: 0,
     }),
-    [insets.top, bottomH, meetupOpen, windowH, invisible, safeReturnBanner],
+    [insets.top, bottomH, meetupOpen, windowH, invisible, safeReturnBanner, etaEvent],
   );
   const onBottomLayout = (e: LayoutChangeEvent) => setBottomH(e.nativeEvent.layout.height);
 
@@ -589,6 +594,21 @@ export function MapHome() {
         <View style={{ paddingHorizontal: spacing.md }} pointerEvents="box-none">
           <IncomingLocationRequests max={2} />
         </View>
+        {/* Faz 10: yaklaşan kesin buluşma (45 dk penceresi): "Kim ne kadar uzakta?" */}
+        {etaEvent ? (
+          <View style={{ paddingHorizontal: spacing.md }} pointerEvents="box-none">
+            <EventEtaStrip
+              doc={etaEvent}
+              now={incomingNow}
+              compact
+              onPress={() => router.push(`/events/${etaEvent.event_id}`)}
+              onFocus={(uid) => {
+                const f = incoming.find((x) => x.senderId === uid);
+                if (f) focusFriend(f);
+              }}
+            />
+          </View>
+        ) : null}
         <IncomingStrip items={incoming} names={names} now={incomingNow} onFocus={focusFriend} />
         {syncFailing ? (
           <View

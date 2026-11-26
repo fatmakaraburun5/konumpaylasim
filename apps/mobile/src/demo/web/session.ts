@@ -12,6 +12,8 @@ export const DEMO_AUTH_KEY = 'konum.demo.auth.v1';
 export interface DemoAuthUser {
   uid: string;
   phoneNumber: string | null;
+  /** Faz 10: cihaz oturumu (custom token iddiası); telefonla yeni girişte yok. */
+  dsid?: string | null;
 }
 
 type Listener = (u: DemoAuthUser | null) => void;
@@ -22,7 +24,9 @@ function load(): DemoAuthUser | null {
   if (!raw) return null;
   try {
     const v = JSON.parse(raw) as Partial<DemoAuthUser>;
-    return typeof v.uid === 'string' && v.uid ? { uid: v.uid, phoneNumber: typeof v.phoneNumber === 'string' ? v.phoneNumber : null } : null;
+    return typeof v.uid === 'string' && v.uid
+      ? { uid: v.uid, phoneNumber: typeof v.phoneNumber === 'string' ? v.phoneNumber : null, dsid: typeof v.dsid === 'string' ? v.dsid : null }
+      : null;
   } catch {
     return null;
   }
@@ -38,7 +42,61 @@ function setCurrent(next: DemoAuthUser | null): void {
 }
 
 export function demoCurrentUser(): DemoAuthUser | null {
-  return current ? { ...current } : null;
+  return current ? { uid: current.uid, phoneNumber: current.phoneNumber } : null;
+}
+
+/** Faz 10: oturumun cihaz kimliği (`dsid`). */
+export function demoCurrentDsid(): string | null {
+  return current?.dsid ?? null;
+}
+
+/**
+ * Faz 10: sahte custom token ile oturum el değiştirir (aynı kullanıcı, yeni `dsid`). Firebase gibi aynı uid için
+ * dinleyiciye yeniden bildirilir; authStore aynı hesabı tekrar işlemez.
+ */
+export async function demoSignInWithCustomToken(token: string): Promise<void> {
+  await delay(120, 260);
+  const m = /^demo:([^:]+):([A-Za-z0-9_-]{20})$/.exec(token);
+  if (!m) throw new DemoAuthError('auth/invalid-custom-token');
+  setCurrent({ uid: m[1]!, phoneNumber: current?.phoneNumber ?? null, dsid: m[2]! });
+}
+
+// --- Faz 10: kurulum kimliği ("Yeni telefona geç" simülasyonu) ------------------------------------
+
+export const DEMO_INSTALL_KEY = 'konum.demo.install.v1';
+
+function randomInstall(): string {
+  const a = 'abcdefghijklmnopqrstuvwxyz0123456789';
+  let s = 'web-';
+  for (let i = 0; i < 16; i++) s += a[Math.floor(Math.random() * a.length)];
+  return s;
+}
+
+interface DemoInstall {
+  id: string;
+  model: string;
+}
+
+/** Bu "telefonun" kurulum kimliği ve adı (tarayıcı başına kalıcı; "Yeni telefona geç" yeniler). */
+export function demoInstall(): DemoInstall {
+  const raw = safeStorage.get(DEMO_INSTALL_KEY);
+  if (raw) {
+    try {
+      const v = JSON.parse(raw) as Partial<DemoInstall>;
+      if (typeof v.id === 'string' && typeof v.model === 'string') return { id: v.id, model: v.model };
+    } catch {
+      // bozuk kayıt: yeniden üret
+    }
+  }
+  const v = { id: randomInstall(), model: 'iPhone 13' };
+  safeStorage.set(DEMO_INSTALL_KEY, JSON.stringify(v));
+  return v;
+}
+
+/** "Yeni telefona geç": yeni kurulum kimliği + model; oturum kapanır (yeni telefonda SMS ile giriş). */
+export async function demoSwitchToNewPhone(model = 'iPhone 16'): Promise<void> {
+  safeStorage.set(DEMO_INSTALL_KEY, JSON.stringify({ id: randomInstall(), model }));
+  await demoSignOut();
 }
 
 export function demoCurrentUid(): string | null {

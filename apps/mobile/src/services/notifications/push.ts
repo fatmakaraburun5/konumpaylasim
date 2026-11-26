@@ -22,7 +22,7 @@
  * Faz 9: yaklaşma ve Güvenli Dönüş başladı / bitti önde yerel bildirimle (f9Push); "Güvende misin?" önde sistem
  * bildirimi olmadan (f9Services → safeReturnStore). Dokununca harita / Güvenli Dönüş ekranı (f9Services).
  */
-import { QUICK_SHARE_NOTIFICATION, lowBatteryPushText, type PushData, type UserId } from '@konum/core';
+import { QUICK_SHARE_NOTIFICATION, lowBatteryPushText, newDevicePushText, type PushData, type UserId } from '@konum/core';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   deleteToken,
@@ -154,11 +154,27 @@ async function showLocationRequestNotification(m: PushLike): Promise<void> {
   });
 }
 
+/** Faz 10: bu cihazın oturumu başka cihazdan kapatıldı (sessiz push): yayını durdur, yerel durumu sil, çıkış. */
+async function handleSessionRevokedPush(): Promise<void> {
+  const { handleSessionRevoked } = await import('../f10Services');
+  await handleSessionRevoked();
+}
+
 async function handleForegroundMessage(msg: RemoteMessage): Promise<void> {
   const m = msg as unknown as PushLike;
   const type = pushType(m);
   if (type === 'resume_tracking') {
     await resumeTracking('push');
+    return;
+  }
+  if (type === 'session_revoked') {
+    await handleSessionRevokedPush().catch(() => undefined);
+    return;
+  }
+  if (type === 'device_new_signin') {
+    const model = typeof m.data?.model === 'string' ? m.data.model : 'Yeni cihaz';
+    const t = newDevicePushText(model);
+    await Notifications.scheduleNotificationAsync({ content: { title: t.title, body: t.body, data: { type: 'device_new_signin' } }, trigger: null });
     return;
   }
   const content = batteryLowContent(m);
@@ -277,6 +293,11 @@ export function registerBackgroundMessageHandler(): void {
       if (type === 'resume_tracking') {
         await handleWidgetBackgroundPush(p.data).catch(() => undefined);
         await resumeTracking('push').catch(() => undefined);
+        return;
+      }
+      // Faz 10: eski cihaz kapatıldı → arka plan konum görevi durur, yerel veri silinir, oturum kapanır (başsız).
+      if (type === 'session_revoked') {
+        await handleSessionRevokedPush().catch(() => undefined);
         return;
       }
       if (isF6PushType(type)) await handleWidgetBackgroundPush(p.data).catch(() => undefined);

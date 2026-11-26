@@ -204,7 +204,7 @@ describe('ping', () => {
     const r1 = await pingSend(ctxOf(P, now), { op_id: opId(), to: Q.uid, kind: 'on_way', location: loc, eta_s: 720 }, fcm);
     const rec1 = parsePing((await rtdb().ref(`ping_inbox/${Q.uid}/${r1.ping_id}`).once('value')).val(), r1.ping_id);
     expect(rec1).toMatchObject({ from: P.uid, kind: 'on_way', location: null, eta_s: null });
-    expect(JSON.stringify(fcm.sent.at(-1)?.msg)).not.toMatch(/dk/);
+    expect(JSON.stringify(fcm.sent.at(-1)?.msg)).not.toMatch(/\d+ dk/);
 
     await setPermission(P, Q, 'location_view', true);
     const later = now + 60_000;

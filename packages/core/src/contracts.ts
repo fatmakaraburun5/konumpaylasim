@@ -93,6 +93,17 @@ export const CALLABLES = {
   safeReturnCheckIn: 'safe_return_check_in',
   safeReturnExtend: 'safe_return_extend',
   safeReturnCancel: 'safe_return_cancel',
+  // Faz 10 (bkz. `accountSecurity.ts`; takvim ve ETA şeridi callable gerektirmez)
+  deviceRegister: 'device_register',
+  deviceSecondFactorSend: 'device_second_factor_send',
+  deviceSecondFactorVerify: 'device_second_factor_verify',
+  deviceHeartbeat: 'device_heartbeat',
+  deviceRevoke: 'device_revoke',
+  deviceSignOut: 'device_sign_out',
+  recoveryChannelStart: 'recovery_channel_start',
+  recoveryChannelVerify: 'recovery_channel_verify',
+  recoveryChannelRemove: 'recovery_channel_remove',
+  accountMigrationManifest: 'account_migration_manifest',
 } as const;
 
 export type CallableName = (typeof CALLABLES)[keyof typeof CALLABLES];
@@ -195,6 +206,24 @@ export const PATHS = {
   /** Firestore: Güvenli Dönüş zamanlayıcıları (YALNIZCA sahibi okur, callable / sunucu yazar), TTL `purge_at`. */
   safeReturns: 'safe_returns',
   safeReturn: (id: string) => `safe_returns/${id}`,
+  // --- Faz 10 ---
+  /** Firestore: cihaz oturumları (sahibi okur: `owner_id == ben`; YALNIZCA sunucu yazar), TTL `purge_at` (iptal + 30 gün). */
+  deviceSessions: 'device_sessions',
+  deviceSession: (dsid: string) => `device_sessions/${dsid}`,
+  /** Firestore: iptal kara listesi `revoked_devices/{uid}_{dsid|legacy}` (istemciye kapalı; KURALLAR `exists()` ile bakar). */
+  revokedDevices: 'revoked_devices',
+  revokedDevice: (key: string) => `revoked_devices/${key}`,
+  /** RTDB: aynı kara liste `revoked_devices/{uid}/{dsid|legacy}: true` (istemciye kapalı; canlı konum kuralları bakar). */
+  revokedDeviceMirror: (uid: UserId, dsid: string) => `revoked_devices/${uid}/${dsid}`,
+  /** Firestore: maskeli kurtarma özeti (sahibi okur, sunucu yazar). */
+  recoverySummary: (uid: UserId) => `users/${uid}/security/recovery`,
+  /** Firestore: kurtarma kanalları, düz e-posta / telefon (istemciye kapalı). */
+  recoveryChannels: (uid: UserId) => `recovery_channels/${uid}`,
+  /** Firestore: e-posta tekilliği `recovery_emails/{sha256(email)}` → uid (istemciye kapalı). */
+  recoveryEmail: (emailHash: string) => `recovery_emails/${emailHash}`,
+  /** Firestore: doğrulama kodları (istemciye kapalı; yalnızca HMAC özeti), TTL `purge_at`. */
+  verificationChallenges: 'verification_challenges',
+  verificationChallenge: (id: string) => `verification_challenges/${id}`,
 } as const;
 
 const opId = z.uuid();
@@ -579,6 +608,19 @@ export const ERROR_CODES = {
   safe_return_active: { retryable: false, message: 'Zaten süren bir Güvenli Dönüş zamanlayıcın var' },
   safe_return_not_active: { retryable: false, message: 'Güvenli Dönüş zamanlayıcısı artık aktif değil' },
   safe_return_extend_limit: { retryable: false, message: 'Güvenli Dönüş en çok 3 saate kadar uzatılabilir' },
+  // Faz 10
+  session_revoked: { retryable: false, message: 'Bu cihazdaki oturum kapatıldı. Yeniden giriş yap.' },
+  device_registration_required: { retryable: true, message: 'Bu cihaz henüz doğrulanmadı. Girişi tamamla.' },
+  device_not_found: { retryable: false, message: 'Cihaz bulunamadı ya da oturumu zaten kapalı' },
+  device_is_current: { retryable: false, message: 'Bu cihazı buradan kapatamazsın; Çıkış yap’ı kullan' },
+  second_factor_required: { retryable: false, message: 'Yeni cihaz için e-posta doğrulaması gerekli' },
+  otp_invalid: { retryable: false, message: 'Kod hatalı. Lütfen tekrar dene.' },
+  otp_expired: { retryable: false, message: 'Kodun süresi doldu. Yeni kod iste.' },
+  otp_locked: { retryable: false, message: 'Çok fazla hatalı deneme. Yeni kod iste.' },
+  otp_resend_wait: { retryable: true, message: 'Yeni kod için biraz bekle' },
+  email_invalid: { retryable: false, message: 'Geçerli bir e-posta adresi gir' },
+  email_in_use: { retryable: false, message: 'Bu e-posta başka bir hesapta kurtarma adresi' },
+  verification_unavailable: { retryable: true, message: 'Doğrulama kodu şu an gönderilemedi. Biraz sonra dene.' },
 } as const;
 export type ErrorCode = keyof typeof ERROR_CODES;
 
@@ -681,7 +723,15 @@ export type PushData =
   /** Acil kişilere: `reason` = arrived | checked_in | cancelled. */
   | { type: 'safe_return_ended'; safe_return_id: string; from: string; reason: string }
   /** Sahibin KENDİ cihazlarına, görünür + eylemli (kategori `SAFE_RETURN`): "Güvende misin?". */
-  | { type: 'safe_return_due'; safe_return_id: string; grace_until: string };
+  | { type: 'safe_return_due'; safe_return_id: string; grace_until: string }
+  // Faz 10 (koordinat YOK)
+  /**
+   * YALNIZCA iptal edilen cihazın token'larına, SESSİZ (data-only, yüksek öncelik): arka plan konum görevini durdur,
+   * yerel veriyi sil, çıkış yap. `dsid` = iptal edilen cihaz (başka cihaza düşerse yok sayılır).
+   */
+  | { type: 'session_revoked'; dsid: string }
+  /** Diğer etkin cihazlara, görünür: "Hesabına yeni cihazdan girildi · iPhone 15". */
+  | { type: 'device_new_signin'; dsid: string; model: string };
 
 /** Faz 3 FCM veri türleri (istemci işleyicileri ve sözleşme testi için). */
 export const PUSH_TYPES_F3 = ['battery_low', 'resume_tracking', 'tracking_stalled'] as const satisfies readonly PushData['type'][];
@@ -726,6 +776,12 @@ export const NOTIFICATION_CHANNELS_F7 = { sosAlarm: 'sos_alarm', movement: 'move
 
 /** Faz 9 FCM veri türleri. Güvenli Dönüş alarmı Faz 4 `sos` türüyle (`origin: 'safe_return'`) gider. */
 export const PUSH_TYPES_F9 = ['approach', 'safe_return_started', 'safe_return_ended', 'safe_return_due'] as const satisfies readonly PushData['type'][];
+
+/** Faz 10 FCM veri türleri. */
+export const PUSH_TYPES_F10 = ['session_revoked', 'device_new_signin'] as const satisfies readonly PushData['type'][];
+
+/** Faz 10 bildirim kanalı: hesap güvenliği (yeni cihaz girişi). Android IMPORTANCE_HIGH; iOS `time-sensitive`. */
+export const NOTIFICATION_CHANNELS_F10 = { security: 'security' } as const;
 
 /**
  * Faz 9 bildirim kanalları / kategorileri.

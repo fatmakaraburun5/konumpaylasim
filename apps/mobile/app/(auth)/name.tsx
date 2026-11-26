@@ -5,5 +5,6 @@ import { useAuthStore } from '../../src/state/authStore';
 export default function NameRoute() {
   const status = useAuthStore((s) => s.status);
   if (status === 'signedOut') return <Redirect href="/phone" />;
+  if (status === 'needsSecondFactor') return <Redirect href="/second-factor" />;
   return <ProfileNameScreen />;
 }

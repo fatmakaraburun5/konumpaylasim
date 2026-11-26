@@ -454,11 +454,49 @@ import {
   type SafeReturnStatus,
   type SosSafeReturnInfo,
 } from '@konum/core';
+import {
+  type ChallengeResponse,
+  type DeviceActivatedResponse,
+  DeviceHeartbeatRequestSchema,
+  type DeviceHeartbeatResponse,
+  DeviceRegisterRequestSchema,
+  type DeviceRegisterResponse,
+  DeviceRevokeRequestSchema,
+  type DeviceRevokeResponse,
+  DeviceSecondFactorSendRequestSchema,
+  DeviceSecondFactorVerifyRequestSchema,
+  DEVICE_GATE_EXEMPT,
+  EMPTY_RECOVERY,
+  type MigrationManifestResponse,
+  RecoveryChannelStartRequestSchema,
+  RecoveryChannelVerifyRequestSchema,
+  type RecoveryResponse,
+  SECURITY_LIMITS,
+  challengeView,
+  checkOtp,
+  cleanDeviceModel,
+  deviceView,
+  formatOtp,
+  isGmail,
+  localDateTimeToEpoch,
+  maskEmail,
+  migrationDigest,
+  migrationKeys,
+  needsSecondFactor,
+  normalizeEmail,
+  orderedDigest,
+  revokedDeviceKey,
+  type ChallengeRecord,
+  type DeviceSessionDoc,
+  type RecoverySummary,
+  type VerificationChannel,
+  type VerificationPurpose,
+} from '@konum/core';
 import { z } from 'zod';
 import { botAvatarUrls, DEMO_STORAGE_BUCKET, DEMO_STORAGE_HOST, DemoAvatarStore, DemoStorageError, uriToDataUrl } from './avatars';
 import { fakeComputeRoutes, fakeReverseGeocode } from './fakeGoogle';
 import { fakePlacesNearby, fakeRouteMatrix } from './fakePlaces';
-import { demoCurrentUid } from '../web/session';
+import { demoCurrentDsid, demoCurrentUid } from '../web/session';
 import { safeStorage } from './storage';
 import { DEMO_PROOF_FALLBACK } from './proofFallback';
 import { DemoProofObjects } from './proofObjects';
@@ -793,7 +831,46 @@ interface Db {
   approach_last: { at: EpochMs; status: ApproachReportStatus; notified: number; dest_name: string } | null;
   /** Demo paneli: simüle Mesajlar ekranında hazırlanan SMS'ler (en yeni önde, en çok 10). */
   sms_log: DemoSmsLogEntry[];
+  // --- Faz 10 (eski kayıtlarda yok: `withPhase10` tamamlar) ---
+  phase10: boolean;
+  /** Firestore `device_sessions/{dsid}`. */
+  devices: Record<string, DeviceSessionDoc>;
+  /** Firestore `revoked_devices/{uid}_{dsid|legacy}` (+ RTDB aynası). */
+  revoked_devices: Record<string, { reason: string; at: EpochMs }>;
+  /** `recovery_channels/{uid}` (düz e-posta / telefon yalnızca sunucuda). */
+  recovery: Record<UserId, DemoRecoveryRec>;
+  /** `verification_challenges/{id}`. */
+  challenges: Record<string, ChallengeRecord>;
+  f10_rate: Record<string, number>;
+  /** Demo paneli: "gönderilen" son kodlar (gerçekte SMS / e-postada). */
+  f10_outbox: { at: EpochMs; channel: VerificationChannel; to_masked: string; code: string; purpose: VerificationPurpose }[];
+  /** Simüle eski telefon (konum yayınlayan diğer cihaz). */
+  old_device: DemoOldDevice | null;
 }
+
+interface DemoRecoveryRec {
+  email: string | null;
+  email_verified_at: EpochMs | null;
+  phone_e164: string | null;
+  sms_verified_at: EpochMs | null;
+  updated_at: EpochMs;
+}
+
+interface DemoOldDevice {
+  dsid: string;
+  model: string;
+  writes_ok: number;
+  last_write_at: EpochMs;
+  denied: number;
+  revoked_at: EpochMs | null;
+  /** Sessiz `session_revoked` push'unun eski telefona ulaştığı an (arka plan görevi durur). */
+  push_at: EpochMs | null;
+  stopped_at: EpochMs | null;
+  new_signin_push_at: EpochMs | null;
+}
+
+/** Faz 10: demo hesabının giriş numarası (sunucu tarafı; gerçekte Firebase Auth). */
+const DEMO_PHONE = '+905321234567';
 
 /** Faz 9: `photo_proofs` kaydı (+ TTL). */
 type ProofRec = PhotoProofDoc & { purge_at: EpochMs };
@@ -1026,6 +1103,19 @@ function withPhase7(db: Db): Db {
   return db;
 }
 
+/** Faz 9 kaydına Faz 10 alanlarını ekler (demo verisi silinmeden; DB_VERSION değişmez). */
+function withPhase10(db: Db): Db {
+  db.devices ??= {};
+  db.revoked_devices ??= {};
+  db.recovery ??= {};
+  db.challenges ??= {};
+  db.f10_rate ??= {};
+  db.f10_outbox ??= [];
+  db.old_device ??= null;
+  db.phase10 ??= true;
+  return db;
+}
+
 /** Faz 7 kaydına Faz 9 alanlarını ekler (demo verisi silinmeden; DB_VERSION değişmez). */
 function withPhase9(db: Db): Db {
   db.proofs ??= {};
@@ -1111,6 +1201,19 @@ const TRANSPORT: Record<ErrorCode, string> = {
   safe_return_active: 'failed-precondition',
   safe_return_not_active: 'failed-precondition',
   safe_return_extend_limit: 'failed-precondition',
+  // Faz 10 (backend `errors.ts` ile aynı)
+  session_revoked: 'unauthenticated',
+  device_registration_required: 'failed-precondition',
+  device_not_found: 'not-found',
+  device_is_current: 'failed-precondition',
+  second_factor_required: 'failed-precondition',
+  otp_invalid: 'invalid-argument',
+  otp_expired: 'failed-precondition',
+  otp_locked: 'resource-exhausted',
+  otp_resend_wait: 'resource-exhausted',
+  email_invalid: 'invalid-argument',
+  email_in_use: 'already-exists',
+  verification_unavailable: 'unavailable',
 };
 
 /** RTDB kural reddi (RNFB `database/permission-denied` ile aynı biçim). */
@@ -1308,6 +1411,15 @@ export interface DemoSnapshot {
     ayseSafeReturn: { status: SafeReturnStatus; destination: string; due_at: EpochMs; grace_until: EpochMs; sos_id: string | null } | null;
     lastSms: DemoSmsLogEntry | null;
   };
+  /** Faz 10: cihaz oturumları, eski telefon simülasyonu, kurtarma, yakın buluşma. */
+  f10: {
+    devices: number;
+    activeDevices: number;
+    oldPhone: { model: string; status: DeviceSessionDoc['status']; writesOk: number; lastWriteAgoS: number; denied: number; stopped: boolean; newSigninPush: boolean } | null;
+    recovery: RecoverySummary;
+    lastCode: { at: EpochMs; channel: VerificationChannel; to_masked: string; code: string; purpose: VerificationPurpose } | null;
+    soonEvent: { title: string; starts_at: EpochMs | null; venue: string } | null;
+  };
 }
 
 /** Faz 6: widget önizlemesinin ham kaynağı (`widgetSource`). Avatar adresi yerel (gösterilebilir) adrestir. */
@@ -1335,6 +1447,8 @@ export class DemoServer {
   /** `reset()` sonrası: hiçbir şey diske yazılmaz (sayfa yenilenirken `pagehide` eski durumu geri yazmasın). */
   private disposed = false;
   private lastPrune = 0;
+  /** Faz 10: işlenen çağrının cihaz oturumu (`dsid` iddiası). */
+  private callDsid: string | null = null;
   private lastF9Prune = 0;
   /** Açık `link_live` dinleyicileri (demo paneli: "izleyici açık"). */
   private linkListeners = 0;
@@ -1365,7 +1479,7 @@ export class DemoServer {
       if (!db || db.v !== DB_VERSION || !db.users || !db.users[DEMO_ME]) return null;
       const cutoff = Date.now() - DAY;
       for (const [k, op] of Object.entries(db.ops)) if (op.at < cutoff) delete db.ops[k];
-      return withPhase9(withPhase7(withPhase8(withPhase6(withPhase5(withPhase4(withPhase3(withPhase2(db))))))));
+      return withPhase10(withPhase9(withPhase7(withPhase8(withPhase6(withPhase5(withPhase4(withPhase3(withPhase2(db)))))))));
     } catch {
       return null;
     }
@@ -1489,6 +1603,14 @@ export class DemoServer {
       bot_dest: {},
       approach_last: null,
       sms_log: [],
+      phase10: true,
+      devices: {},
+      revoked_devices: {},
+      recovery: {},
+      challenges: {},
+      f10_rate: {},
+      f10_outbox: [],
+      old_device: null,
     };
     this.db = db;
     withPhase4(db);
@@ -1517,6 +1639,7 @@ export class DemoServer {
     // Faz 7: botlar pil paylaşır, Ayşe / Mehmet / Zeynep bana etkinlik daveti izni vermiş.
     withPhase7(db);
     withPhase9(db);
+    withPhase10(db);
     this.seedBotShares(now);
     return db;
   }
@@ -2024,6 +2147,7 @@ export class DemoServer {
     if (this.sweepLocationRequests(now)) changed = true;
     if (this.sweepPhase7(now)) changed = true;
     if (this.sweepPhase9(now)) changed = true;
+    if (this.sweepPhase10(now)) changed = true;
     if (now - this.lastPrune > MINUTE) {
       this.lastPrune = now;
       if (this.prunePhase2(now)) changed = true;
@@ -2096,6 +2220,8 @@ export class DemoServer {
 
   private applyFanoutNow(map: Record<string, unknown>, authUid: UserId | null, now: EpochMs): void {
     if (!authUid) throw new DemoPermissionDenied('auth == null');
+    // Faz 10: kapatılan cihazın (ya da kayıttan sonra dsid'siz belirtecin) yazımı kurallarca reddedilir.
+    if (this.f10Revoked(authUid, demoCurrentDsid())) throw new DemoPermissionDenied('revoked_devices: cihaz oturumu kapatıldı');
     // Faz 8: görünmez kullanıcının konum yazısı kurallarca reddedilir (silme serbest).
     if (isInvisible(this.db.users[authUid]) && Object.values(map).some((v) => v !== null && v !== undefined)) {
       throw new DemoPermissionDenied('görünmez mod: konum yazılamaz');
@@ -2471,7 +2597,7 @@ export class DemoServer {
 
   // --- callable'lar ----------------------------------------------------------------------------
 
-  async call(name: string, payload: unknown, authUid: UserId | null): Promise<unknown> {
+  async call(name: string, payload: unknown, authUid: UserId | null, authDsid: string | null = null): Promise<unknown> {
     await new Promise((r) => setTimeout(r, randomBetween(150, 400)));
     // Faz 6: widget uzantısı / AppWidget alıcısı oturumsuz çağırır; yetki = token (op_id token başına).
     if (name === 'widget_quick_share') {
@@ -2481,6 +2607,9 @@ export class DemoServer {
     }
     if (!authUid) fail('unauthenticated');
     const uid = authUid as UserId;
+    // Faz 10 cihaz kapısı (backend `deviceGate`): kapatılan cihaz / ilk kayıttan sonra dsid'siz belirteç; onaydan ÖNCE.
+    if (!(DEVICE_GATE_EXEMPT as readonly string[]).includes(name) && this.f10Revoked(uid, authDsid)) fail(authDsid ? 'session_revoked' : 'device_registration_required');
+    this.callDsid = authDsid;
     // Faz 8 onay ön kapısı (backend `consentGate`): koruyucu işlemler ve user_bootstrap muaf; op tekrarından ÖNCE.
     if (!consentExemptCall(name, payload) && consentRequired(this.db.users[uid]?.consent)) fail('consent_required');
     const opId = (payload as { op_id?: unknown } | null)?.op_id;
@@ -2660,6 +2789,27 @@ export class DemoServer {
         const d = this.parse(SafeReturnIdRequestSchema, payload);
         return this.mutateSafeReturn(d.safe_return_id, uid, now, { type: 'cancel' });
       }
+      // Faz 10
+      case 'device_register':
+        return this.deviceRegisterCall(payload, uid, now);
+      case 'device_second_factor_send':
+        return this.deviceSecondFactorSendCall(payload, uid, now);
+      case 'device_second_factor_verify':
+        return this.deviceSecondFactorVerifyCall(payload, uid, now);
+      case 'device_heartbeat':
+        return this.deviceHeartbeatCall(payload, uid, this.callDsid, now);
+      case 'device_revoke':
+        return this.deviceRevokeCall(payload, uid, this.callDsid, now);
+      case 'device_sign_out':
+        return this.deviceSignOutCall(uid, this.callDsid, now);
+      case 'recovery_channel_start':
+        return this.recoveryStartCall(payload, uid, now);
+      case 'recovery_channel_verify':
+        return this.recoveryVerifyCall(payload, uid, now);
+      case 'recovery_channel_remove':
+        return this.recoveryRemoveCall(uid, now);
+      case 'account_migration_manifest':
+        return this.migrationManifestCall(uid, now);
       default:
         return fail('invalid_argument', `Demo sunucusunda yok: ${name}`);
     }
@@ -5369,7 +5519,7 @@ export class DemoServer {
     }
     this.deliverEventNotice(
       {
-        to: eventReminderRecipients(doc),
+        to: eventReminderRecipients(doc, rem.kind),
         type: 'event_reminder',
         text: eventReminderPushText(rem.kind, doc),
         data: { type: 'event_reminder', event_id: doc.event_id, kind: rem.kind },
@@ -6193,6 +6343,422 @@ export class DemoServer {
     };
   }
 
+  // --- Faz 10: cihaz oturumları + iki adımlı kurtarma (backend `handlers/devices.ts` ile aynı karar) ------------------
+
+  private f10Revoked(uid: UserId, dsid: string | null): boolean {
+    return !!this.db.revoked_devices[revokedDeviceKey(uid, dsid)];
+  }
+
+  private f10RateOk(uid: UserId, key: string, limit: number, windowMs: number, now: EpochMs): void {
+    const k = `${uid}|${key}|${Math.floor(now / windowMs)}`;
+    const n = this.db.f10_rate[k] ?? 0;
+    if (n >= limit) fail('rate_limited', undefined, { retry_after_ms: windowMs - (now % windowMs) });
+    this.db.f10_rate[k] = n + 1;
+  }
+
+  private f10NewId(): string {
+    return newProofId();
+  }
+
+  private f10Recovery(uid: UserId): DemoRecoveryRec {
+    return (this.db.recovery[uid] ??= { email: null, email_verified_at: null, phone_e164: DEMO_PHONE, sms_verified_at: null, updated_at: 0 });
+  }
+
+  private f10Summary(uid: UserId): RecoverySummary {
+    const c = this.db.recovery[uid];
+    if (!c) return { ...EMPTY_RECOVERY };
+    const sms = c.phone_e164 ? { masked: maskPhone(c.phone_e164), verified_at: c.sms_verified_at } : null;
+    const email = c.email ? { masked: maskEmail(c.email), verified_at: c.email_verified_at, gmail: isGmail(c.email) } : null;
+    return { sms, email, two_step: !!(sms?.verified_at && email?.verified_at), updated_at: c.updated_at };
+  }
+
+  private f10Challenge(uid: UserId, channel: VerificationChannel, purpose: VerificationPurpose, to: string, dsid: string | null, now: EpochMs): { rec: ChallengeRecord; code: string } {
+    const code = formatOtp(Math.floor(Math.random() * 10 ** SECURITY_LIMITS.otpDigits));
+    const rec: ChallengeRecord = {
+      challenge_id: this.f10NewId(),
+      owner_id: uid,
+      channel,
+      purpose,
+      to,
+      to_masked: channel === 'sms' ? maskPhone(to) : maskEmail(to),
+      code_hash: `demo:${code}`,
+      attempts: 0,
+      sends: 1,
+      state: 'pending',
+      created_at: now,
+      expires_at: now + SECURITY_LIMITS.otpTtlMs,
+      resend_at: now + SECURITY_LIMITS.otpResendMs,
+      dsid,
+    };
+    this.db.challenges[rec.challenge_id] = rec;
+    this.db.f10_outbox = [{ at: now, channel, to_masked: rec.to_masked, code, purpose }, ...this.db.f10_outbox].slice(0, 10);
+    return { rec, code };
+  }
+
+  /** Kod denetimi: yanlış deneme kayda işlenir; hata denetimden SONRA fırlatılır (backend ile aynı). */
+  private f10Verify(uid: UserId, challengeId: string, code: string, purposes: readonly VerificationPurpose[], now: EpochMs): ChallengeRecord {
+    const rec = this.db.challenges[challengeId];
+    if (!rec || rec.owner_id !== uid || !purposes.includes(rec.purpose)) return fail('otp_expired');
+    const r = checkOtp(rec, code, (c) => `demo:${c}`, now);
+    this.db.challenges[challengeId] = r.record;
+    if (!r.ok) {
+      this.commit();
+      return fail(r.code);
+    }
+    return r.record;
+  }
+
+  private f10Activate(d: DeviceSessionDoc, via: VerificationChannel[], now: EpochMs): void {
+    this.db.devices[d.dsid] = { ...d, status: 'active', activated_at: now, last_seen_at: now, verified_by: via };
+    this.db.revoked_devices[revokedDeviceKey(d.owner_id, null)] = { reason: 'enforced', at: now };
+    const active = Object.values(this.db.devices)
+      .filter((x) => x.owner_id === d.owner_id && x.status === 'active' && x.dsid !== d.dsid)
+      .sort((a, b) => b.last_seen_at - a.last_seen_at);
+    for (const o of active.slice(SECURITY_LIMITS.maxActiveDevices - 1)) this.f10Kill(o, 'limit', d.dsid, now);
+  }
+
+  private f10Kill(d: DeviceSessionDoc, reason: DeviceSessionDoc['revoke_reason'], by: string, now: EpochMs): void {
+    this.db.devices[d.dsid] = { ...d, status: 'revoked', publishing: false, revoked_at: now, revoke_reason: reason, revoked_by: by };
+    this.db.revoked_devices[revokedDeviceKey(d.owner_id, d.dsid)] = { reason: reason ?? 'remote', at: now };
+    const old = this.db.old_device;
+    if (old && old.dsid === d.dsid) this.db.old_device = { ...old, revoked_at: now, push_at: now + 1_500 };
+  }
+
+  private f10Token(uid: UserId, dsid: string): string {
+    return `demo:${uid}:${dsid}`;
+  }
+
+  private deviceRegisterCall(payload: unknown, uid: UserId, now: EpochMs): DeviceRegisterResponse {
+    const d = this.parse(DeviceRegisterRequestSchema, payload);
+    this.f10RateOk(uid, 'device_register', 30, DAY, now);
+    const ih = `install:${d.device.install_id}`;
+    const model = cleanDeviceModel(d.device.model);
+    const mine = Object.values(this.db.devices).filter((x) => x.owner_id === uid);
+    const same = mine.filter((x) => x.install_hash === ih && x.status !== 'revoked').sort((a, b) => b.created_at - a.created_at)[0];
+    const migrated = mine.some((x) => x.install_hash !== ih);
+    // SMS ile giriş numaranın sahipliğini kanıtlar (sunucudaki device_register ile aynı).
+    const rc = this.f10Recovery(uid);
+    if (!rc.sms_verified_at) this.db.recovery[uid] = { ...rc, phone_e164: rc.phone_e164 ?? DEMO_PHONE, sms_verified_at: now, updated_at: now };
+    if (same?.status === 'active') {
+      const next = { ...same, last_seen_at: now, model, app_version: d.device.app_version };
+      this.db.devices[same.dsid] = next;
+      return { status: 'active', device: deviceView(next), custom_token: this.f10Token(uid, same.dsid), challenge: null, migrated, server_now: now };
+    }
+    const base: DeviceSessionDoc = same ?? {
+      dsid: this.f10NewId(),
+      owner_id: uid,
+      install_hash: ih,
+      platform: d.device.platform,
+      model,
+      os_version: d.device.os_version,
+      app_version: d.device.app_version,
+      status: 'pending',
+      created_at: now,
+      activated_at: null,
+      last_seen_at: now,
+      publishing: false,
+      publishing_at: null,
+      verified_by: [],
+      revoked_at: null,
+      revoke_reason: null,
+      revoked_by: null,
+    };
+    const ch = this.db.recovery[uid];
+    if (needsSecondFactor({ emailVerified: !!(ch?.email && ch.email_verified_at), knownInstall: false }) === 'none') {
+      this.f10Activate(base, ['sms'], now);
+      return { status: 'active', device: deviceView(this.db.devices[base.dsid]!), custom_token: this.f10Token(uid, base.dsid), challenge: null, migrated, server_now: now };
+    }
+    this.db.devices[base.dsid] = { ...base, last_seen_at: now };
+    const c = this.f10Challenge(uid, 'email', 'device_second_factor', ch!.email!, base.dsid, now);
+    return { status: 'needs_second_factor', device: deviceView(base), custom_token: null, challenge: challengeView(c.rec, c.code), migrated, server_now: now };
+  }
+
+  private deviceSecondFactorSendCall(payload: unknown, uid: UserId, now: EpochMs): ChallengeResponse {
+    const d = this.parse(DeviceSecondFactorSendRequestSchema, payload);
+    const dev = this.db.devices[d.dsid];
+    const ch = this.db.recovery[uid];
+    if (!dev || dev.owner_id !== uid || dev.status !== 'pending' || !ch?.email || !ch.email_verified_at) return fail('device_not_found');
+    const latest = Object.values(this.db.challenges)
+      .filter((c) => c.owner_id === uid && c.dsid === d.dsid)
+      .sort((a, b) => b.created_at - a.created_at)[0];
+    if (latest && latest.state === 'pending' && now < latest.resend_at) return fail('otp_resend_wait', undefined, { retry_after_ms: latest.resend_at - now });
+    this.f10RateOk(uid, 'otp_send', SECURITY_LIMITS.otpSendsPerDay, DAY, now);
+    if (latest?.state === 'pending') this.db.challenges[latest.challenge_id] = { ...latest, state: 'expired' };
+    const c = this.f10Challenge(uid, 'email', 'device_second_factor', ch.email, d.dsid, now);
+    return { challenge: challengeView(c.rec, c.code), server_now: now };
+  }
+
+  private deviceSecondFactorVerifyCall(payload: unknown, uid: UserId, now: EpochMs): DeviceActivatedResponse {
+    const d = this.parse(DeviceSecondFactorVerifyRequestSchema, payload);
+    const rec = this.f10Verify(uid, d.challenge_id, d.code, ['device_second_factor'], now);
+    const dev = this.db.devices[d.dsid];
+    if (!dev || dev.owner_id !== uid || dev.status !== 'pending' || rec.dsid !== dev.dsid) return fail('device_not_found');
+    this.f10Activate(dev, ['sms', 'email'], now);
+    const migrated = Object.values(this.db.devices).some((x) => x.owner_id === uid && x.dsid !== dev.dsid);
+    const old = this.db.old_device;
+    if (old && this.db.devices[old.dsid]?.status === 'active') this.db.old_device = { ...old, new_signin_push_at: now };
+    return { device: deviceView(this.db.devices[dev.dsid]!), custom_token: this.f10Token(uid, dev.dsid), migrated, server_now: now };
+  }
+
+  private deviceHeartbeatCall(payload: unknown, uid: UserId, dsid: string | null, now: EpochMs): DeviceHeartbeatResponse {
+    const d = this.parse(DeviceHeartbeatRequestSchema, payload);
+    if (!dsid) return fail('device_registration_required');
+    const dev = this.db.devices[dsid];
+    if (!dev || dev.owner_id !== uid) return fail('device_not_found');
+    if (dev.status === 'revoked') return fail('session_revoked');
+    const next = { ...dev, last_seen_at: now, publishing: d.publishing, publishing_at: dev.publishing !== d.publishing ? now : dev.publishing_at };
+    this.db.devices[dsid] = next;
+    return { device: deviceView(next), written: true, server_now: now };
+  }
+
+  private deviceRevokeCall(payload: unknown, uid: UserId, dsid: string | null, now: EpochMs): DeviceRevokeResponse {
+    const d = this.parse(DeviceRevokeRequestSchema, payload);
+    if (!dsid) return fail('device_registration_required');
+    if (d.dsid === dsid) return fail('device_is_current');
+    const me = this.db.devices[dsid];
+    if (!me || me.status !== 'active') return fail('session_revoked');
+    const mine = Object.values(this.db.devices).filter((x) => x.owner_id === uid && x.dsid !== dsid && x.status !== 'revoked');
+    const targets = d.all_others ? mine : mine.filter((x) => x.dsid === d.dsid);
+    if (!d.all_others && targets.length === 0) return fail('device_not_found');
+    for (const t of targets) this.f10Kill(t, d.all_others ? 'all_others' : 'remote', dsid, now);
+    let stopped = 0;
+    if (d.stop_shares) {
+      for (const s of Object.values(this.db.shares)) if (s.sender_id === uid && this.endShare(s, 'stopped_by_sender', now)) stopped++;
+      for (const l of Object.values(this.db.links)) if (l.sender_id === uid && this.endLink(l, 'stopped_by_sender', now)) stopped++;
+    }
+    return { revoked: targets.map((t) => t.dsid), stopped_shares: stopped, server_now: now };
+  }
+
+  private deviceSignOutCall(uid: UserId, dsid: string | null, now: EpochMs): { signed_out: boolean; server_now: EpochMs } {
+    const dev = dsid ? this.db.devices[dsid] : undefined;
+    if (!dev || dev.owner_id !== uid || dev.status === 'revoked') return { signed_out: false, server_now: now };
+    this.f10Kill(dev, 'signed_out', dev.dsid, now);
+    return { signed_out: true, server_now: now };
+  }
+
+  private recoveryStartCall(payload: unknown, uid: UserId, now: EpochMs): ChallengeResponse {
+    const d = this.parse(RecoveryChannelStartRequestSchema, payload);
+    const c = this.f10Recovery(uid);
+    const email = d.channel === 'email' ? normalizeEmail(d.email ?? '') : null;
+    if (d.channel === 'email' && !email) return fail('email_invalid');
+    this.f10RateOk(uid, 'otp_send', SECURITY_LIMITS.otpSendsPerDay, DAY, now);
+    const to = d.channel === 'email' ? email! : c.phone_e164 ?? DEMO_PHONE;
+    const r = this.f10Challenge(uid, d.channel, d.channel === 'email' ? 'link_email' : 'verify_phone', to, null, now);
+    return { challenge: challengeView(r.rec, r.code), server_now: now };
+  }
+
+  private recoveryVerifyCall(payload: unknown, uid: UserId, now: EpochMs): RecoveryResponse {
+    const d = this.parse(RecoveryChannelVerifyRequestSchema, payload);
+    const rec = this.f10Verify(uid, d.challenge_id, d.code, ['link_email', 'verify_phone'], now);
+    const c = this.f10Recovery(uid);
+    if (rec.purpose === 'link_email') this.db.recovery[uid] = { ...c, email: rec.to, email_verified_at: now, updated_at: now };
+    else this.db.recovery[uid] = { ...c, phone_e164: rec.to, sms_verified_at: now, updated_at: now };
+    return { recovery: this.f10Summary(uid), server_now: now };
+  }
+
+  private recoveryRemoveCall(uid: UserId, now: EpochMs): RecoveryResponse {
+    const c = this.f10Recovery(uid);
+    this.db.recovery[uid] = { ...c, email: null, email_verified_at: null, updated_at: now };
+    return { recovery: this.f10Summary(uid), server_now: now };
+  }
+
+  private migrationManifestCall(uid: UserId, now: EpochMs): MigrationManifestResponse {
+    const friends = Object.values(this.db.friendships)
+      .filter((f) => f.status === 'accepted' && f.member_ids.includes(uid))
+      .map((f) => migrationKeys.friendship(f.member_ids.find((m) => m !== uid) ?? ''));
+    const grants = Object.values(this.db.grants)
+      .filter((g) => g.granter_id === uid || g.grantee_id === uid)
+      .map((g) => migrationKeys.grant(g.granter_id, g.grantee_id, Object.entries(g.scopes ?? {}).filter(([, v]) => v != null).map(([k]) => k)))
+      .filter((k) => !k.endsWith(':'));
+    const u = this.db.users[uid];
+    return {
+      manifest: {
+        generated_at: now,
+        items: {
+          friendships: migrationDigest(friends),
+          permission_grants: migrationDigest(grants),
+          favorites: orderedDigest(u?.favorite_ids ?? []),
+          zones: migrationDigest(Object.keys(this.db.zones[uid] ?? {}).map(migrationKeys.zone)),
+          consents: migrationDigest(u?.consent ? [migrationKeys.consent(u.consent.version, u.consent.accepted_at ?? null)] : []),
+        },
+      },
+      server_now: now,
+    };
+  }
+
+  /** Firestore `device_sessions where owner_id == uid` (iptal edilen cihaz da okur). */
+  deviceSessionsOf(uid: UserId): DeviceSessionDoc[] {
+    return Object.values(this.db.devices)
+      .filter((d) => d.owner_id === uid)
+      .sort((a, b) => b.last_seen_at - a.last_seen_at)
+      .map((d) => clone(d));
+  }
+
+  /** `users/{uid}/security/recovery`. */
+  recoverySummaryOf(uid: UserId): RecoverySummary | null {
+    return this.db.recovery[uid] ? this.f10Summary(uid) : null;
+  }
+
+  /** Eski telefon simülasyonu: etkinken her 30 sn konum paketi; kapatılınca yazımı reddedilir, push'la durur. */
+  private sweepPhase10(now: EpochMs): boolean {
+    const old = this.db.old_device;
+    if (!old) return false;
+    const dev = this.db.devices[old.dsid];
+    if (!dev) return false;
+    if (dev.status === 'active') {
+      if (now - (old.last_write_at ?? 0) < 30 * SECOND) return false;
+      this.db.old_device = { ...old, writes_ok: old.writes_ok + 1, last_write_at: now };
+      this.db.devices[old.dsid] = { ...dev, last_seen_at: now, publishing: true };
+      return true;
+    }
+    if (old.stopped_at) return false;
+    if (now - (old.last_write_at ?? 0) >= 30 * SECOND && old.denied === 0) {
+      // İptalden sonraki ilk yazım: kural reddi (PERMISSION_DENIED).
+      this.db.old_device = { ...old, denied: 1, last_write_at: now };
+      return true;
+    }
+    if (old.push_at !== null && now >= old.push_at) {
+      this.db.old_device = { ...old, stopped_at: now };
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Demo paneli "Yeni telefona geç": bu tarayıcıdaki etkin oturum "eski telefon" olur (konum yayını açık, her 30 sn),
+   * kurtarma e-postası yoksa `deniz.kaya@gmail.com` doğrulanmış eklenir (iki adımlı). Ardından kabuk oturumu kapatıp
+   * yeni kurulum kimliğiyle girişe döner: SMS (123456) + e-posta kodu.
+   */
+  prepareNewPhoneSwitch(currentDsid: string | null): { ok: true; email: string; old_model: string } | { ok: false; reason: string } {
+    const now = Date.now();
+    const dev = currentDsid ? this.db.devices[currentDsid] : undefined;
+    if (!dev || dev.status !== 'active') return { ok: false, reason: 'Önce giriş yap (bu cihaz kayıtlı olmalı).' };
+    const old_model = dev.model.includes('eski') ? dev.model : `${dev.model} (eski telefon)`;
+    this.db.devices[dev.dsid] = { ...dev, model: old_model, publishing: true, publishing_at: now, last_seen_at: now };
+    const c = this.f10Recovery(DEMO_ME);
+    if (!c.email || !c.email_verified_at) this.db.recovery[DEMO_ME] = { ...c, email: 'deniz.kaya@gmail.com', email_verified_at: now, updated_at: now };
+    this.db.old_device = { dsid: dev.dsid, model: old_model, writes_ok: 1, last_write_at: now, denied: 0, revoked_at: null, push_at: null, stopped_at: null, new_signin_push_at: null };
+    this.commit();
+    return { ok: true, email: maskEmail(this.db.recovery[DEMO_ME]!.email!), old_model };
+  }
+
+  /**
+   * "Ayşe 40 dk sonrası için buluşma kursun": bugün ~40 dk sonra, Moda Sahili Çay Bahçesi; Mehmet, Zeynep ve ben
+   * "Katılacağım" — doğrudan kesinleşir. 45 dk penceresi hemen açık: "Kim ne kadar uzakta?" şeridi görünür.
+   */
+  botCreateSoonEvent(): { ok: true; event_id: string; starts_at: EpochMs } | { ok: false; code: string } {
+    const now = Date.now();
+    const owner = PEOPLE.ayse.uid;
+    const tz = this.db.users[owner]?.time_zone ?? DEFAULT_TZ;
+    const off = offsetFnForTimeZone(tz);
+    const date = localDateOf(now + 40 * MINUTE, off);
+    const startUtc = Math.ceil((now + 40 * MINUTE) / (5 * MINUTE)) * 5 * MINUTE;
+    const minute = Math.round((startUtc - localDateTimeToEpoch(date, 0, off)) / MINUTE);
+    const members = [owner, DEMO_ME, PEOPLE.mehmet.uid, PEOPLE.zeynep.uid];
+    const names: Record<UserId, string> = {};
+    for (const u of members) names[u] = this.db.users[u]?.display_name ?? '';
+    const r = createEventDoc(
+      `e${randomHex32().slice(0, 19)}`,
+      owner,
+      {
+        title: 'Moda’da akşam çayı',
+        description: 'Sahilde çay ve sohbet. Gelirken haber verin!',
+        date,
+        time_zone: tz,
+        invitee_ids: members.filter((u) => u !== owner),
+        names,
+        venue_options: [AYSE_EVENT_VENUES[0]!].map((v) => ({ name: v.name, address: v.address ?? null, location: v.location ?? null, place_id: v.place_id ?? null })),
+        time_minutes: [minute],
+        vote_window_ms: 2 * HOUR,
+      },
+      { now, offsetAt: off },
+    );
+    if (!r.ok) return { ok: false, code: r.error };
+    const t = r.doc.time_options[0]!;
+    const v = r.doc.venue_options[0]!;
+    const answers: EventDoc['answers'] = {};
+    for (const u of members.filter((x) => x !== owner)) answers[u] = { status: 'going', note: null, venue_option_id: v.option_id, time_option_id: t.option_id, at: now };
+    const doc: EventDoc = {
+      ...r.doc,
+      answers,
+      stage: 'final',
+      respond_by: null,
+      results_at: now,
+      results_reason: 'all_answered',
+      venue_option_id: v.option_id,
+      time_option_id: t.option_id,
+      starts_at: t.starts_at,
+      finalized_at: now,
+      seq: r.doc.seq + 1,
+      version: r.doc.version + 1,
+      updated_at: now,
+    };
+    const plan = eventReminderPlan(doc, now, off);
+    this.commitEvent(doc, [{ type: 'stage', notice: 'final', to: [DEMO_ME] }, { type: 'reminders', items: plan }], now);
+    // Mehmet'in son paketi taze olsun (12 dk'lık nabız; şerit 10 dk'dan eski konumu "~" gösterir).
+    this.refreshBotPacket(PEOPLE.mehmet.uid, now);
+    this.commit();
+    return { ok: true, event_id: doc.event_id, starts_at: doc.starts_at! };
+  }
+
+  /** "Ayşe mekana vardı": Faz 9 hedef alanı `arrived` (mekan adıyla) → şeritte "Ayşe · Vardı". */
+  botArriveAtSoonEvent(bot: UserId): boolean {
+    const now = Date.now();
+    const ev = this.soonEvent();
+    if (!ev) return false;
+    const venue = ev.venue_options.find((o) => o.option_id === ev.venue_option_id);
+    if (!venue) return false;
+    this.db.bot_dest[bot] = { name: venue.name.slice(0, 30), state: 'arrived', eta: null };
+    this.refreshBotPacket(bot, now);
+    this.commit();
+    return true;
+  }
+
+  /** "Buluşma saatini geç (31 dk)": başlangıç 31 dk geriye çekilir → şerit kapanır. */
+  endSoonEvent(): boolean {
+    const ev = this.soonEvent();
+    if (!ev || ev.starts_at === null) return false;
+    const shift = ev.starts_at - Date.now() + 31 * MINUTE;
+    const opt = ev.time_options.map((o) => (o.option_id === ev.time_option_id ? { ...o, starts_at: o.starts_at - shift } : o));
+    this.db.events[ev.event_id] = { ...ev, starts_at: ev.starts_at - shift, time_options: opt, version: ev.version + 1, updated_at: Date.now() };
+    this.commit();
+    return true;
+  }
+
+  private soonEvent(): EventDoc | null {
+    const now = Date.now();
+    return (
+      Object.values(this.db.events)
+        .filter((e) => e.stage === 'final' && e.member_ids.includes(DEMO_ME) && e.starts_at !== null && e.starts_at > now - 2 * HOUR)
+        .sort((a, b) => (a.starts_at ?? 0) - (b.starts_at ?? 0))[0] ?? null
+    );
+  }
+
+  private f10View(): DemoSnapshot['f10'] {
+    const now = Date.now();
+    const old = this.db.old_device;
+    const dev = old ? this.db.devices[old.dsid] : undefined;
+    const ev = this.soonEvent();
+    return {
+      devices: Object.values(this.db.devices).filter((d) => d.owner_id === DEMO_ME).length,
+      activeDevices: Object.values(this.db.devices).filter((d) => d.owner_id === DEMO_ME && d.status === 'active').length,
+      oldPhone: old && dev
+        ? {
+            model: old.model,
+            status: dev.status,
+            writesOk: old.writes_ok,
+            lastWriteAgoS: Math.round((now - old.last_write_at) / 1000),
+            denied: old.denied,
+            stopped: old.stopped_at !== null,
+            newSigninPush: old.new_signin_push_at !== null,
+          }
+        : null,
+      recovery: this.f10Summary(DEMO_ME),
+      lastCode: this.db.f10_outbox[0] ?? null,
+      soonEvent: ev ? { title: ev.title, starts_at: ev.starts_at, venue: ev.venue_options.find((o) => o.option_id === ev.venue_option_id)?.name ?? '' } : null,
+    };
+  }
+
   snapshot(): DemoSnapshot {
     const deliveries: DemoSnapshot['myDeliveries'] = [];
     for (const [receiver, inbox] of Object.entries(this.db.live)) {
@@ -6230,6 +6796,7 @@ export class DemoServer {
       f7: this.f7View(),
       f8: this.f8View(),
       f9: this.f9View(),
+      f10: this.f10View(),
       mapsDown: this.db.maps_down,
       maps: {
         route: q?.route ?? 0,

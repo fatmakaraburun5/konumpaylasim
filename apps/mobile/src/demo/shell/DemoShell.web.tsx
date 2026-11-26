@@ -15,6 +15,8 @@
  *    galerisi, tek tuşla 1 saatlik paylaşım (oturumsuz `widget_quick_share`) ve hata / izin düşüşü senaryoları.
  *  - Faz 7 (Faz7.web.tsx): "FAZ 7 SENARYOLARI" (Ayşe etkinliğe davet etsin, hatırlatmayı şimdi gönder, Mehmet yola
  *    çıksın) ve gizlilik tercihleri.
+ *  - Faz 10 (Faz10.web.tsx): "FAZ 10 SENARYOLARI" (yakın buluşma + "Kim ne kadar uzakta?", Takvime Ekle, yeni
+ *    telefona geç + eski cihazı kapat) ve telefon içi simüle Takvim.
  *  - Faz 9 (Faz9.web.tsx): "FAZ 9 SENARYOLARI" (Ayşe anlık fotoğraf, süreyi ileri sar, Ayşe hedefe yaklaşsın,
  *    Güvenli Dönüş son uyarı / alarm, Ayşe yanıt vermesin, internetsiz SOS → SMS, rehber / SMS sıfırla); telefonun
  *    içinde simüle Mesajlar ekranı ve rehber seçici.
@@ -56,6 +58,7 @@ import { Faz6Section } from './Faz6.web';
 import { Faz7Section } from './Faz7.web';
 import { Faz8Section } from './Faz8.web';
 import { Faz9Hosts, Faz9Section } from './Faz9.web';
+import { Faz10Hosts, Faz10Section } from './Faz10.web';
 
 const WIDE_MIN = 900;
 const SCREEN_W = 390;
@@ -225,6 +228,7 @@ function PhoneFrame({ children, scale }: { children: ReactNode; scale: number })
           <LockScreen />
           <SystemPromptHost />
           <Faz9Hosts />
+          <Faz10Hosts />
           {/* Durum çubuğu en üstte (kilit ekranında da görünür). */}
           <View style={styles.statusLayer} pointerEvents="none">
             <StatusBarMock battery={battery} />
@@ -398,6 +402,7 @@ function DemoPanel({ showNotice, onNavigate, padding, footer }: { showNotice: bo
       <Faz7Section snap={snap} renderRow={renderRow} />
       <Faz8Section snap={snap} renderRow={renderRow} />
       <Faz9Section snap={snap} renderRow={renderRow} />
+      <Faz10Section snap={snap} renderRow={renderRow} />
       <PermissionsSection renderRow={renderRow} />
 
       {showNotice ? (
@@ -502,6 +507,7 @@ export function DemoShell({ children }: { children: ReactNode }) {
       <LockScreen />
       <SystemPromptHost />
       <Faz9Hosts />
+      <Faz10Hosts />
       <Pressable
         accessibilityRole="button"
         accessibilityLabel="Demo kontrollerini aç"

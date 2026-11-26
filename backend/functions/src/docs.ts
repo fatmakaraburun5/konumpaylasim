@@ -470,6 +470,13 @@ export const COL = {
   photoProofs: PATHS.photoProofs,
   approachMarks: PATHS.approachMarks,
   safeReturns: PATHS.safeReturns,
+  // Faz 10
+  deviceSessions: PATHS.deviceSessions,
+  revokedDevices: PATHS.revokedDevices,
+  verificationChallenges: PATHS.verificationChallenges,
+  recoveryChannels: 'recovery_channels',
+  recoveryEmails: 'recovery_emails',
+  security: 'security',
 } as const;
 
 /** Faz 4 RTDB yolları. */
@@ -544,6 +551,14 @@ export const refs = {
   approachMark: (uid: UserId, sessionId: string, destKey: string) => db().doc(PATHS.approachMark(uid, sessionId, destKey)),
   safeReturn: (id: string) => db().doc(PATHS.safeReturn(id)),
   newSafeReturn: () => db().collection(COL.safeReturns).doc(),
+  // Faz 10
+  deviceSession: (dsid: string) => db().doc(PATHS.deviceSession(dsid)),
+  deviceSessionsOf: (uid: UserId) => db().collection(COL.deviceSessions).where('owner_id', '==', uid),
+  revokedDevice: (key: string) => db().doc(PATHS.revokedDevice(key)),
+  recoverySummary: (uid: UserId) => db().doc(PATHS.recoverySummary(uid)),
+  recoveryChannels: (uid: UserId) => db().doc(PATHS.recoveryChannels(uid)),
+  recoveryEmail: (hash: string) => db().doc(PATHS.recoveryEmail(hash)),
+  verificationChallenge: (id: string) => db().doc(PATHS.verificationChallenge(id)),
 } as const;
 
 // ---------------------------------------------------------------------------

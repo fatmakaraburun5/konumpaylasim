@@ -54,6 +54,8 @@ import {
   safeReturnDuePushText,
   safeReturnEndedPushText,
   safeReturnStartedPushText,
+  NOTIFICATION_CHANNELS_F10,
+  newDevicePushText,
 } from '@konum/core';
 import type { DocumentReference, Timestamp } from 'firebase-admin/firestore';
 import type { MulticastMessage } from 'firebase-admin/messaging';
@@ -701,3 +703,46 @@ export function buildSafeReturnDuePush(d: { safe_return_id: string; grace_until:
 
 /** Bildirim gönderici (testler sahte gönderici enjekte eder). */
 export type PushSender = (uid: UserId, message: PushMessage) => Promise<{ sent: number; removed: number }>;
+
+// ---------------------------------------------------------------------------
+// Faz 10: cihaz oturumları (koordinat YOK)
+// ---------------------------------------------------------------------------
+
+/**
+ * İptal edilen cihaza SESSİZ, yüksek öncelikli veri mesajı: istemci arka planda konum görevini durdurur, yerel veriyi
+ * siler ve çıkış yapar. iOS'ta arka plan push'u kısıtlanabilir [Varsayım]; asıl güvence kurallar ve callable kapısıdır
+ * (cihaz açıldığında / konum yazmaya çalıştığında reddedilir ve aynı temizliği yapar).
+ */
+export function buildSessionRevokedPush(dsid: string): PushMessage {
+  return {
+    data: { type: 'session_revoked', dsid },
+    android: { priority: 'high', ttl: 7 * 24 * 3600 * 1000, collapseKey: `session_revoked_${dsid}` },
+    apns: {
+      headers: { 'apns-push-type': 'background', 'apns-priority': '5', 'apns-collapse-id': `session_revoked_${dsid}`.slice(0, 64) },
+      payload: { aps: { contentAvailable: true } },
+    },
+  };
+}
+
+/** Diğer etkin cihazlara görünür: "Hesabına yeni cihazdan girildi · iPhone 15". */
+export function buildNewDeviceSigninPush(dsid: string, model: string): PushMessage {
+  const text = newDevicePushText(model);
+  return {
+    notification: text,
+    data: { type: 'device_new_signin', dsid, model: model.slice(0, 60) },
+    android: { priority: 'high', notification: { channelId: NOTIFICATION_CHANNELS_F10.security, tag: `device_${dsid}` } },
+    apns: { headers: { 'apns-collapse-id': `device_${dsid}`.slice(0, 64) }, payload: { aps: { 'interruption-level': 'time-sensitive' } } },
+  };
+}
+
+/** Yalnızca bir cihaz oturumunun token'larına (`devices/{uid}/tokens/*.dsid == dsid`). */
+export async function sendPushToDevice(uid: UserId, dsid: string, message: PushMessage): Promise<{ sent: number; tokens: DocumentReference[] }> {
+  const snap = await refs.deviceTokens(uid).where('dsid', '==', dsid).get();
+  const tokens = snap.docs.map((d) => ({ ref: d.ref, token: d.get('token') as unknown })).filter((t): t is { ref: DocumentReference; token: string } => typeof t.token === 'string');
+  if (tokens.length === 0 || IS_EMULATOR) {
+    if (tokens.length) logger.info('[emülatör] cihaz push gönderilmedi', { uid, dsid, data: message.data });
+    return { sent: 0, tokens: tokens.map((t) => t.ref) };
+  }
+  const res = await messaging().sendEachForMulticast({ ...message, tokens: tokens.map((t) => t.token) });
+  return { sent: res.successCount, tokens: tokens.map((t) => t.ref) };
+}

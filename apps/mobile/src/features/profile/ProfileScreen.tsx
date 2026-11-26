@@ -325,6 +325,9 @@ export function ProfileScreen() {
         {/* --- Faz 7: İzin & Gizlilik Merkezi (izinler, pil paylaşımı, görünüm) --- */}
         <Button title="İzin ve Gizlilik Merkezi" variant="secondary" onPress={() => router.push('/privacy')} testID="profile-privacy-center" />
 
+        {/* --- Faz 10: Güvenlik (cihaz oturumları + hesap kurtarma) --- */}
+        <Button title="Güvenlik · Aktif Cihazlar ve Oturumlar" variant="secondary" onPress={() => router.push('/security')} testID="profile-security" />
+
         <Button title="Çıkış yap" variant="ghost" onPress={() => void signOut()} />
       </ScrollView>
     </View>

@@ -7,7 +7,7 @@
 import type { CallableName } from '@konum/core';
 import { demoServer, DemoHttpsError } from '../../demo/server';
 import { demoOnline } from '../../demo/web/network';
-import { demoCurrentUid } from '../../demo/web/session';
+import { demoCurrentDsid, demoCurrentUid } from '../../demo/web/session';
 import { ensureFirebase } from './init';
 
 export type CallTransport = (name: CallableName, payload: unknown) => Promise<unknown>;
@@ -21,5 +21,5 @@ export const defaultCallTransport: CallTransport = async (name, payload) => {
     await new Promise((r) => setTimeout(r, OFFLINE_FAIL_MS));
     throw new DemoHttpsError('unavailable', 'Bağlantı yok');
   }
-  return demoServer().call(name, payload, demoCurrentUid());
+  return demoServer().call(name, payload, demoCurrentUid(), demoCurrentDsid());
 };

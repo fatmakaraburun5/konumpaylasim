@@ -6,6 +6,7 @@
  *   signedOut     → telefon / SMS kodu ekranları
  *   bootstrapping → giriş yapıldı, profil bekleniyor (user_bootstrap)
  *   needsProfile  → profil yok (Faz 6: sunucu `gender_required` döndü) ya da görünen ad boş (ad + cinsiyet ekranı)
+ *   needsSecondFactor → Faz 10: yeni telefon; kurtarma e-postasına giden 6 haneli kod bekleniyor (SMS 1. aşamaydı)
  *   ready         → ana uygulama (Faz 6: `profile.gender == null` ise (main) yerleşimi engelleyici GenderGate gösterir)
  *
  * Faz 8: `profile.consent` güncel sürüm değilse (`selectNeedsConsent`) (main) yerleşimi onay kapısını gösterir ve
@@ -15,18 +16,26 @@
  * `gender_required` ile reddedilir → `needsProfile`; ad ekranı ad + cinsiyetle profili oluşturur. Mevcut hesapta
  * çağrı her zamanki gibi idempotent kalp atışıdır.
  */
-import { clientConsentRequired, type Gender, type UserId, type UserProfile } from '@konum/core';
+import { clientConsentRequired, type ChallengeView, type Gender, type UserId, type UserProfile } from '@konum/core';
 import { useStore } from 'zustand';
 import { createStore } from 'zustand/vanilla';
 import { toKonumError } from '../lib/errors';
 import { deviceTimeZone } from '../lib/timeZone';
-import { listenAuthUser, signOutAuth, startPhoneSignIn, type PhoneConfirmation } from '../services/firebase/authClient';
-import { userBootstrap } from '../services/firebase/callables';
+import { listenAuthUser, signInWithCustomToken, signOutAuth, startPhoneSignIn, type PhoneConfirmation } from '../services/firebase/authClient';
+import { deviceSecondFactorSend, deviceSecondFactorVerify, userBootstrap } from '../services/firebase/callables';
+import { ensureDeviceSession } from '../services/security/deviceSession';
 import { ensureFirebase } from '../services/firebase/init';
 import { listenProfile } from '../services/firebase/profileRepo';
 import { unregisterPushToken } from '../services/notifications/push';
 
-export type AuthStatus = 'initializing' | 'signedOut' | 'bootstrapping' | 'needsProfile' | 'ready';
+export type AuthStatus = 'initializing' | 'signedOut' | 'bootstrapping' | 'needsSecondFactor' | 'needsProfile' | 'ready';
+
+/** Faz 10: yeni cihazın bekleyen ikinci aşaması (e-posta kodu). */
+export interface SecondFactorState {
+  dsid: string;
+  model: string;
+  challenge: ChallengeView;
+}
 
 export interface AuthState {
   status: AuthStatus;
@@ -47,6 +56,15 @@ export interface AuthState {
   updateProfile: (patch: ProfilePatch) => Promise<{ ok: true } | { ok: false; message: string; code: string }>;
   retryBootstrap: () => Promise<void>;
   signOut: () => Promise<void>;
+  /** Faz 10: yeni cihaz ikinci aşaması. */
+  secondFactor: SecondFactorState | null;
+  /** Faz 10: hesap bu telefona taşındı (ikinci aşamadan sonra Aktif Cihazlar ekranı bir kez açılır). */
+  migratedPending: boolean;
+  verifySecondFactor: (code: string) => Promise<boolean>;
+  resendSecondFactor: () => Promise<boolean>;
+  clearMigrated: () => void;
+  /** Faz 10: `device_registration_required` sonrası yeniden kayıt (ör. çevrimdışı girişten sonra). */
+  reRegisterDevice: () => Promise<void>;
   /** Faz 8: callable yanıtını (görünmez / onay) dinleyici yetişmeden profile işler; sonraki anlık görüntü doğrudur. */
   patchProfileLocal: (patch: Partial<Pick<UserProfile, 'invisible' | 'consent' | 'privacy'>>) => void;
 }
@@ -69,6 +87,8 @@ export function onSignedOut(l: SignOutListener): () => void {
 }
 
 let profileUnsub: (() => void) | null = null;
+/** Faz 10: cihaz oturumu akışı bu uid için başladı (aynı uid'in yeniden bildirimi yok sayılır). */
+let deviceFlowUid: string | null = null;
 /** Faz 6: sunucu profili oluşturmak için cinsiyet istedi; profil dinleyicisinin `null`'u ad ekranını geri almasın. */
 let awaitingCreate = false;
 
@@ -125,6 +145,9 @@ export const authStore = createStore<AuthState>()((set, get) => {
   }
 
   async function handleUser(user: { uid: string; phoneNumber: string | null } | null) {
+    // Faz 10: aynı hesap yeniden bildirildi (custom token ile oturum el değiştirdi): akış zaten sürüyor.
+    if (user && user.uid === deviceFlowUid && get().uid === user.uid && get().status !== 'signedOut') return;
+    if (!user) deviceFlowUid = null;
     profileUnsub?.();
     profileUnsub = null;
     awaitingCreate = false;
@@ -134,8 +157,25 @@ export const authStore = createStore<AuthState>()((set, get) => {
       if (wasSignedIn) for (const l of signOutListeners) await Promise.resolve(l()).catch(() => undefined);
       return;
     }
-    set({ uid: user.uid, phoneE164: user.phoneNumber, status: 'bootstrapping', confirmation: null, pendingPhone: null });
-    profileUnsub = listenProfile(user.uid, applyProfile, () => undefined);
+    set({ uid: user.uid, phoneE164: user.phoneNumber, status: 'bootstrapping', confirmation: null, pendingPhone: null, secondFactor: null });
+    // Faz 10: cihaz oturumu (custom token el değiştirmesi aynı uid'i yeniden bildirir: `deviceFlowUid` tekrarı keser).
+    deviceFlowUid = user.uid;
+    const dev = await ensureDeviceSession();
+    if (get().uid !== user.uid) return;
+    if (dev.kind === 'revoked') {
+      await signOutAuth().catch(() => undefined);
+      return;
+    }
+    if (dev.kind === 'second_factor') {
+      set({ status: 'needsSecondFactor', secondFactor: { dsid: dev.dsid, model: dev.model, challenge: dev.challenge } });
+      return;
+    }
+    startProfile(user.uid);
+  }
+
+  function startProfile(uid: UserId) {
+    profileUnsub?.();
+    profileUnsub = listenProfile(uid, applyProfile, () => undefined);
     void bootstrap();
   }
 
@@ -226,6 +266,53 @@ export const authStore = createStore<AuthState>()((set, get) => {
         await unregisterPushToken(uid);
       }
       await signOutAuth();
+    },
+
+    secondFactor: null,
+    migratedPending: false,
+
+    verifySecondFactor: async (code) => {
+      const sf = get().secondFactor;
+      const uid = get().uid;
+      if (!sf || !uid) return false;
+      set({ busy: true, error: null });
+      try {
+        const r = await deviceSecondFactorVerify({ dsid: sf.dsid, challenge_id: sf.challenge.challenge_id, code: code.trim() });
+        await signInWithCustomToken(r.custom_token);
+        if (get().uid !== uid) return false;
+        set({ busy: false, secondFactor: null, status: 'bootstrapping', migratedPending: r.migrated });
+        startProfile(uid);
+        return true;
+      } catch (e) {
+        const err = toKonumError(e);
+        set({ busy: false, error: err.message });
+        return false;
+      }
+    },
+
+    resendSecondFactor: async () => {
+      const sf = get().secondFactor;
+      if (!sf) return false;
+      set({ busy: true, error: null });
+      try {
+        const r = await deviceSecondFactorSend({ dsid: sf.dsid });
+        set({ busy: false, secondFactor: { ...sf, challenge: r.challenge } });
+        return true;
+      } catch (e) {
+        set({ busy: false, error: toKonumError(e).message });
+        return false;
+      }
+    },
+
+    clearMigrated: () => set({ migratedPending: false }),
+
+    reRegisterDevice: async () => {
+      const uid = get().uid;
+      if (!uid || get().status !== 'ready') return;
+      const dev = await ensureDeviceSession();
+      if (get().uid !== uid) return;
+      if (dev.kind === 'revoked') await signOutAuth().catch(() => undefined);
+      else if (dev.kind === 'second_factor') set({ status: 'needsSecondFactor', secondFactor: { dsid: dev.dsid, model: dev.model, challenge: dev.challenge } });
     },
 
     patchProfileLocal: (patch) => {

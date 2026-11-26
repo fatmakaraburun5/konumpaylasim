@@ -6,6 +6,7 @@
  * Uygulama her açılışta (oturum durumu değişince) `user_bootstrap` çağırır: bu çağrı aynı zamanda etkinlik
  * kalp atışıdır (`users.last_active_at`).
  */
+import { deleteSecurityOf } from './devices';
 import {
   AVATAR_FILE_RE,
   CALLABLES,
@@ -632,6 +633,8 @@ export async function accountDelete(ctx: CallCtx, _data: z.output<typeof Account
     deleteProofsOf(uid),
     deleteApproachMarksOf(uid),
     deleteSafeReturnsOf(uid),
+    // Faz 10: cihaz oturumları, kara liste, kurtarma kanalları, doğrulama kayıtları.
+    deleteSecurityOf(uid),
   ]);
 
   // 5. ACL düğümleri (mezar taşları dahil): uid çifti RTDB'de kalmaz.
@@ -671,7 +674,7 @@ export async function accountDelete(ctx: CallCtx, _data: z.output<typeof Account
     if (phoneSnap?.exists && (phoneSnap.data() as IndexDoc).user_id === uid) tx.delete(phoneSnap.ref);
     tx.delete(refs.user(uid));
     tx.delete(refs.userPrivate(uid));
-    for (const key of ['friend_request', 'location_request', 'invite_regenerate', 'link_create', 'battery_low', 'ping', 'sos_send', 'zone_event', 'meetup_share', 'meetup_respond', 'widget_token', 'permission_request', 'event_create', 'event_action', 'privacy_set', 'movement_report', 'proof_create', 'proof_get', 'approach_report', 'safe_return_start']) tx.delete(refs.rateLimit(uid, key));
+    for (const key of ['friend_request', 'location_request', 'invite_regenerate', 'link_create', 'battery_low', 'ping', 'sos_send', 'zone_event', 'meetup_share', 'meetup_respond', 'widget_token', 'permission_request', 'event_create', 'event_action', 'privacy_set', 'movement_report', 'proof_create', 'proof_get', 'approach_report', 'safe_return_start', 'device_register', 'otp_send', 'otp_fail']) tx.delete(refs.rateLimit(uid, key));
   });
 
   try {

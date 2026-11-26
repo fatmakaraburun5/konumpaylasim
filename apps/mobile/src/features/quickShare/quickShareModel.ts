@@ -68,7 +68,7 @@ export type QuickLinkPlan =
 
 /** Widget'tan gelen `konum://quick-share?to=…` için ilk karar (izin akışı ve çağrı bundan sonra). */
 export function planQuickShareLink(s: {
-  authStatus: 'initializing' | 'signedOut' | 'bootstrapping' | 'needsProfile' | 'ready';
+  authStatus: 'initializing' | 'signedOut' | 'bootstrapping' | 'needsSecondFactor' | 'needsProfile' | 'ready';
   friendsLoaded: boolean;
   isFriend: boolean;
 }): QuickLinkPlan {

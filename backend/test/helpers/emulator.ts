@@ -145,6 +145,13 @@ export async function signInWithPhone(phone: string): Promise<{ uid: string; idT
   return { uid: r.localId, idToken: r.idToken };
 }
 
+/** Faz 10: `device_register` / ikinci aşamanın döndürdüğü custom token ile giriş (`dsid` iddialı ID token). */
+export async function signInWithCustomToken(token: string): Promise<{ uid: string; idToken: string }> {
+  const r = await authPost<{ localId?: string; idToken: string }>('accounts:signInWithCustomToken', { token, returnSecureToken: true });
+  const payload = JSON.parse(Buffer.from(r.idToken.split('.')[1]!, 'base64url').toString('utf8')) as { user_id: string };
+  return { uid: r.localId ?? payload.user_id, idToken: r.idToken };
+}
+
 /**
  * Telefonla giriş + user_bootstrap. Faz 6: profil oluşturulurken cinsiyet zorunlu (varsayılan 'female').
  * Faz 8: varsayılan olarak güncel Güvenlik Sözleşmesi / KVKK sürümü de onaylanır (`consent_accept`); onay kapısını

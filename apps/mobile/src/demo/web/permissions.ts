@@ -14,7 +14,7 @@
 import { safeStorage } from '../server/storage';
 
 export type DemoPermStatus = 'undetermined' | 'granted' | 'denied';
-export type DemoPermKind = 'foreground' | 'background' | 'notifications' | 'motion' | 'contacts';
+export type DemoPermKind = 'foreground' | 'background' | 'notifications' | 'motion' | 'contacts' | 'calendar';
 
 export interface DemoPerms {
   foreground: DemoPermStatus;
@@ -24,6 +24,8 @@ export interface DemoPerms {
   motion: DemoPermStatus;
   /** Faz 9: Rehber (yalnızca SMS acil numarası seçmek için). Varsayılan "sorulmadı" (ilk açılış adımı görünsün). */
   contacts: DemoPermStatus;
+  /** Faz 10: Takvim (iOS 17+ yalnızca ekleme izni). Varsayılan "sorulmadı" (ilk ekleme onay sayfası görünsün). */
+  calendar: DemoPermStatus;
   /** Tam (kesin) konum. */
   precise: boolean;
   /** Sistem penceresi bu izin için bir kez gösterildi mi (iOS: sonrası yalnızca Ayarlar). */
@@ -38,12 +40,13 @@ const ALL_GRANTED: DemoPerms = {
   notifications: 'granted',
   motion: 'granted',
   contacts: 'granted',
+  calendar: 'granted',
   precise: true,
-  asked: { foreground: true, background: true, notifications: true, motion: true, contacts: true },
+  asked: { foreground: true, background: true, notifications: true, motion: true, contacts: true, calendar: true },
 };
 
 /** Demo açılış varsayılanı: Faz 1–8 izinleri verilmiş, rehber sorulmamış (Faz 9 ilk açılış adımı görünsün). */
-const DEFAULT_PERMS: DemoPerms = { ...ALL_GRANTED, contacts: 'undetermined', asked: { foreground: true, background: true, notifications: true, motion: true } };
+const DEFAULT_PERMS: DemoPerms = { ...ALL_GRANTED, contacts: 'undetermined', calendar: 'undetermined', asked: { foreground: true, background: true, notifications: true, motion: true } };
 
 const FIRST_RUN: DemoPerms = {
   foreground: 'undetermined',
@@ -51,6 +54,7 @@ const FIRST_RUN: DemoPerms = {
   notifications: 'undetermined',
   motion: 'undetermined',
   contacts: 'undetermined',
+  calendar: 'undetermined',
   precise: true,
   asked: {},
 };
@@ -69,6 +73,7 @@ function load(): DemoPerms {
       notifications: pick(v.notifications, 'granted'),
       motion: pick(v.motion, 'granted'),
       contacts: pick(v.contacts, 'undetermined'),
+      calendar: pick(v.calendar, 'undetermined'),
       precise: v.precise !== false,
       asked: typeof v.asked === 'object' && v.asked ? v.asked : {},
     };
@@ -182,6 +187,10 @@ const MOTION_TEXT = 'Telefonun masadayken GPS’i kapatıp pil tasarrufu yapmak 
 const CONTACTS_TEXT =
   'İnternet yokken SOS mesajını SMS ile gönderebilmen için acil durum numaralarını rehberinden seçmene izin veriyoruz. Rehberin sunucuya yüklenmez ve taranmaz; yalnızca seçtiğin numaralar bu telefonda saklanır.';
 
+/** app.config `NSCalendarsWriteOnlyAccessUsageDescription` (expo-calendar eklentisi) ile aynı. */
+export const CALENDAR_TEXT_IOS =
+  'Kesinleşen buluşmaları (başlık, saat, mekan, harita bağlantısı) takvimine eklemek için. Takvimindeki diğer etkinlikler okunmaz ve sunucuya gönderilmez.';
+
 /**
  * Sistem izin penceresi (izin zaten verilmiş/reddedilmişse ya da iOS bir daha sormuyorsa pencere açmadan döner).
  */
@@ -227,6 +236,14 @@ export async function requestDemoPermission(kind: DemoPermKind): Promise<DemoPer
       const b = await ask('alert', '“Konum” Kişilerinize Erişmek İstiyor', CONTACTS_TEXT, [
         { id: 'deny', label: 'İzin Verme' },
         { id: 'allow', label: 'Tamam', bold: true },
+      ]);
+      next = b === 'allow' ? 'granted' : 'denied';
+      break;
+    }
+    case 'calendar': {
+      const b = await ask('alert', '“Konum” uygulamasının Takvim’e etkinlik eklemesine izin verilsin mi?', CALENDAR_TEXT_IOS, [
+        { id: 'deny', label: 'İzin Verme' },
+        { id: 'allow', label: 'Etkinlik Eklemeye İzin Ver', bold: true },
       ]);
       next = b === 'allow' ? 'granted' : 'denied';
       break;

@@ -24,8 +24,14 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    // Faz 10: iptal edilen cihazın (ya da ilk cihaz kaydından sonra `dsid`'siz belirtecin) HİÇBİR okuması geçmez.
+    // Kara liste revoked_devices/{uid}_{dsid|legacy} yalnızca sunucu yazar (device_revoke / device_register).
+    function deviceOk() {
+      return !exists(/databases/$(database)/documents/revoked_devices/$(request.auth.uid + '_' + request.auth.token.get('dsid', 'legacy')));
+    }
+
     function signedIn() {
-      return request.auth != null;
+      return request.auth != null && deviceOk();
     }
 
     function isSelf(uid) {
@@ -36,6 +42,12 @@ service cloud.firestore {
     match /users/{uid} {
       allow read: if isSelf(uid);
       allow write: if false;
+
+      // Faz 10: maskeli kurtarma özeti (users/{uid}/security/recovery): yalnızca sahibi okur, sunucu yazar.
+      match /security/{docId} {
+        allow read: if isSelf(uid);
+        allow write: if false;
+      }
 
       // Giden arkadaşlık istekleri: yalnızca sahibi okur. Hedef kayıtlı olsun olmasın, engelli olsun olmasın
       // aynı kayıt yazılır ve hedefin uid'ini İÇERMEZ (maskeli telefon / davet kodu).
@@ -112,11 +124,14 @@ service cloud.firestore {
     // [Varsayım: doğrulanmalı]. Sahiplik sunucuda çözülür (aynı token iki uid altında olabilir, bkz. push.ts).
     match /devices/{uid}/tokens/{tokenId} {
       function validToken(d) {
-        return d.keys().hasOnly(['token', 'platform', 'updated_at'])
+        // Faz 10: `dsid` (isteğe bağlı) = bu token'ı yazan cihaz oturumu; yalnızca belirtecin kendi dsid'i yazılabilir
+        // (iptal push'u yalnızca o cihaza gitsin, başka cihazı hedef gösteremesin).
+        return d.keys().hasOnly(['token', 'platform', 'updated_at', 'dsid'])
           && d.keys().hasAll(['token', 'platform', 'updated_at'])
           && d.token is string && d.token.size() > 0 && d.token.size() <= 4096
           && d.platform in ['ios', 'android']
-          && d.updated_at is number && d.updated_at > 0;
+          && d.updated_at is number && d.updated_at > 0
+          && (!('dsid' in d) || d.dsid == request.auth.token.get('dsid', null));
       }
       allow read: if isSelf(uid);
       allow create, update: if isSelf(uid) && validToken(request.resource.data);
@@ -201,6 +216,27 @@ service cloud.firestore {
       allow read, write: if false;
     }
     match /approach_marks/{markId} {
+      allow read, write: if false;
+    }
+
+    // Faz 10: cihaz oturumları. Sahibi okur (sorgu owner_id == ben); iptal edilen cihaz da KENDİ kaydını okuyabilsin
+    // diye kara liste denetimi YOK (oturumunun kapatıldığını görüp çıkış yapsın). Yalnızca sunucu yazar.
+    match /device_sessions/{dsid} {
+      allow read: if request.auth != null && resource.data.owner_id == request.auth.uid;
+      allow write: if false;
+    }
+    // Faz 10: kara liste, kurtarma kanalları (düz e-posta / telefon), e-posta dizini ve doğrulama kodları
+    // (yalnızca HMAC özeti) istemciye TAMAMEN kapalı.
+    match /revoked_devices/{key} {
+      allow read, write: if false;
+    }
+    match /recovery_channels/{uid} {
+      allow read, write: if false;
+    }
+    match /recovery_emails/{hash} {
+      allow read, write: if false;
+    }
+    match /verification_challenges/{id} {
       allow read, write: if false;
     }
 

@@ -363,3 +363,13 @@ süresi doldu") → "Neredeyse vardım" → Güvenli Dönüş son uyarı + "Güv
 - [ ] KVKK metninin Rehber / SMS / anlık fotoğraf maddeleri hukuk incelemesinden geçsin.
 - [ ] Cihazda doğrulanacaklar: [`PHASE9.md`](PHASE9.md) §8 (kamera, arka planda yaklaşma, uygulama öldürülmüşken
       Güvenli Dönüş alarmı ve bildirim eylemleri, iOS Mesajlar / Android SMS, rehber izni reddi / sınırlı erişim).
+
+## Faz 10 (uygulandı)
+
+Ayrıntılar [`PHASE10.md`](PHASE10.md) dosyasındadır. Özet:
+
+| Parça | Ne yapıldı |
+| --- | --- |
+| Ortak Takvim | Kesin etkinlik kartında "Takvime Ekle": başlık, başlangıç–bitiş, mekan + adres, Google Haritalar bağlantısı, katılımcı özeti. Resmi onay adımı + iOS yalnızca yazma / Android takvim izni (`expo-calendar`); izin yoksa sistem formu ya da Google Takvim. İzin Merkezi ve ilk açılışta Takvim satırı. |
+| Kim Ne Kadar Uzakta? | Başlangıçtan 45 dk önce açılır, buluşmadan sonra kapanır. Yalnızca "Katılacağım" + konumunu açık paylaşanlar; vardı → en yakın → en uzak (`Ayşe · 6 dk`). Etkinlik kartında ve haritada şerit. |
+| İki aşamalı kurtarma, çoklu cihaz | SMS + e-posta kodu (mock sağlayıcılar), cihaz oturumları (`dsid`'li özel token), yeni telefonda veriler taşınır, Güvenlik → Aktif Cihazlar, "Eski Cihazdaki Oturumu ve Konum Yayınını Kapat" (kurallarla anında yazım reddi + sessiz push). |

@@ -287,6 +287,23 @@ export const demoControls = {
   },
 
   /** Demoyu baştan başlatır: sunucu + uygulamanın kalıcı anahtarları silinir, sayfa yeniden yüklenir. */
+  // --- Faz 10 --------------------------------------------------------------------------------------
+  /** "Ayşe 40 dk sonrası için buluşma kursun": kesin etkinlik; Mehmet, Zeynep ve ben katılıyoruz (45 dk penceresi açık). */
+  ayseCreatesSoonEvent(): ReturnType<DemoServer['botCreateSoonEvent']> {
+    return demoServer().botCreateSoonEvent();
+  },
+  /** "Ayşe mekana vardı": şeritte "Ayşe · Vardı". */
+  ayseArrivesAtEvent(): boolean {
+    return demoServer().botArriveAtSoonEvent(PEOPLE.ayse.uid);
+  },
+  /** "Buluşma saatini 31 dk geçir": şerit kapanır. */
+  endSoonEvent(): boolean {
+    return demoServer().endSoonEvent();
+  },
+  /** "Yeni telefona geç" hazırlığı: bu oturum eski telefon olur, kurtarma e-postası doğrulanır. */
+  prepareNewPhone(currentDsid: string | null): ReturnType<DemoServer['prepareNewPhoneSwitch']> {
+    return demoServer().prepareNewPhoneSwitch(currentDsid);
+  },
   reset(): void {
     demoServer().reset();
     safeStorage.removePrefix(APP_KEY_PREFIX);

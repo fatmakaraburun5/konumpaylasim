@@ -345,12 +345,12 @@ export async function permissionSet(ctx: CallCtx, data: z.output<typeof Permissi
 // Ortak: giden etkin paylaşımlar ve bağlantılar (görünmez ol, onayı geri çek)
 // ---------------------------------------------------------------------------
 
-interface OutgoingActive {
+export interface OutgoingActive {
   shares: ShareDoc[];
   links: { ref: FirebaseFirestore.DocumentReference; doc: LinkShareDoc }[];
 }
 
-async function readOutgoingActive(tx: Transaction, uid: UserId): Promise<OutgoingActive> {
+export async function readOutgoingActive(tx: Transaction, uid: UserId): Promise<OutgoingActive> {
   const [s, l] = await Promise.all([
     tx.get(db().collection(COL.shares).where('sender_id', '==', uid).where('status', '==', 'active')),
     tx.get(db().collection(COL.linkShares).where('sender_id', '==', uid).where('status', '==', 'active')),
@@ -362,7 +362,7 @@ async function readOutgoingActive(tx: Transaction, uid: UserId): Promise<Outgoin
 }
 
 /** Yazma aşaması: hepsini `stopped_by_sender` ile bitirir (bağlantı ACL işaretiyle birlikte). */
-function endOutgoing(tx: Transaction, o: OutgoingActive, now: EpochMs): { shares: ShareDoc[]; links: LinkShareDoc[] } {
+export function endOutgoing(tx: Transaction, o: OutgoingActive, now: EpochMs): { shares: ShareDoc[]; links: LinkShareDoc[] } {
   const shares: ShareDoc[] = [];
   const links: LinkShareDoc[] = [];
   for (const s of o.shares) {
@@ -382,7 +382,7 @@ function endOutgoing(tx: Transaction, o: OutgoingActive, now: EpochMs): { shares
 }
 
 /** Commit sonrası bağlantı aynası (link_acl mezar taşı → link_live silinir). Hata: istemci aynı op_id ile yineler. */
-async function applyEndedLinks(op: string, links: readonly LinkShareDoc[]): Promise<void> {
+export async function applyEndedLinks(op: string, links: readonly LinkShareDoc[]): Promise<void> {
   if (links.length === 0) return;
   try {
     await applyLinkEffects(links);
