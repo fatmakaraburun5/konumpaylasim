@@ -83,6 +83,8 @@ export default function MainLayout() {
         <Stack.Screen name="sms-fallback" />
         {/* Faz 10 */}
         <Stack.Screen name="security" />
+        {/* Faz 11 */}
+        <Stack.Screen name="appearance" />
       </Stack>
       <QuickShareSheet />
       <InvisibleRestoreSheet />

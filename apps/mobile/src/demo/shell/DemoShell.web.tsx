@@ -59,6 +59,7 @@ import { Faz7Section } from './Faz7.web';
 import { Faz8Section } from './Faz8.web';
 import { Faz9Hosts, Faz9Section } from './Faz9.web';
 import { Faz10Hosts, Faz10Section } from './Faz10.web';
+import { Faz11Section } from './Faz11.web';
 
 const WIDE_MIN = 900;
 const SCREEN_W = 390;
@@ -403,6 +404,7 @@ function DemoPanel({ showNotice, onNavigate, padding, footer }: { showNotice: bo
       <Faz8Section snap={snap} renderRow={renderRow} />
       <Faz9Section snap={snap} renderRow={renderRow} />
       <Faz10Section snap={snap} renderRow={renderRow} />
+      <Faz11Section renderRow={renderRow} />
       <PermissionsSection renderRow={renderRow} />
 
       {showNotice ? (
@@ -477,13 +479,14 @@ function DemoPanel({ showNotice, onNavigate, padding, footer }: { showNotice: bo
 export function DemoShell({ children }: { children: ReactNode }) {
   useDocumentMeta();
   const { width, height } = useWindowDimensions();
-  const { colors, scheme } = useTheme();
+  const { colors, scheme, id } = useTheme();
   const [sheetOpen, setSheetOpen] = useState(false);
   const wide = width >= WIDE_MIN;
 
   if (wide) {
     const scale = Math.min(1, (height - 32) / (SCREEN_H + BEZEL * 2));
-    const pageBg = scheme === 'dark' ? '#070C16' : '#E7EBF0';
+    // Faz 11: telefon çevresi zemin tonu temayla uyumlu.
+    const pageBg = id === 'nude' ? '#E8DFD3' : id === 'blush' ? '#EEE3E5' : id === 'charcoal' ? '#0B0C0E' : scheme === 'dark' ? '#070C16' : '#E7EBF0';
     return (
       <View style={[styles.page, { backgroundColor: pageBg }]}>
         <PhoneFrame scale={scale}>

@@ -388,7 +388,8 @@ function Deck({ items, idx, names, nowOf, trackingError, actions, onFocus, onCol
                     left: i * DECK_INSET,
                     right: i * DECK_INSET,
                     borderRadius: radius.xl,
-                    backgroundColor: colors.surface,
+                    // Faz 11: katman başına ayrı ton (Siyah/Gri'de kademeli açılan grafit, Nude'da taş, Pudra'da gül).
+                    backgroundColor: i === 1 ? colors.deckLayer1 : colors.deckLayer2,
                     borderColor: warn ? colors.warning : colors.border,
                     borderWidth: warn ? 1.5 : StyleSheet.hairlineWidth,
                     opacity: i === 1 ? 0.96 : 0.88,

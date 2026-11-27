@@ -120,7 +120,7 @@ export function FriendMarker({
   }, [freshness, batteryPct, name, selected, colors, dim, note, pulse, photoUrl, av.gender, photoReady, photo, dest, destNear]);
 
   const sos = pulse === 'sos';
-  const outline = sos ? lightColors.danger : selected ? colors.primary : colors.surface;
+  const outline = sos ? lightColors.danger : selected ? colors.primary : colors.ringGap;
   const ring = genderRingColor(av.gender);
   const tailColor = sos ? lightColors.danger : selected ? colors.primary : ring;
   const anchor = friendMarkerAnchor({ pulse: pulse !== null, note: !!note, dest: !!dest });

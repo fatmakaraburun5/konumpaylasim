@@ -1,23 +1,27 @@
 /**
- * Faz 7: harita üstündeki görünüm düğmesi — tek dokunuşla Sistem → Açık → Koyu → Sistem (core `nextThemePref`).
- * Tercih anında uygulanır: harita stili (customMapStyle JSON) ve uygulama teması aynı karede değişir. Aynı tercih
- * İzin & Gizlilik Merkezi'ndeki "Görünüm" bölümünden de seçilir.
+ * Harita üstündeki görünüm düğmesi. Faz 7: tek dokunuşla Sistem → Açık → Koyu döngüsüydü.
+ * Faz 11: dokunuş "Tema ve Harita" ekranını açar (önizleme kartları + saat kuralı); UZUN BASIŞ eski hızlı
+ * döngüyü korur (Sistem → Açık → Koyu). Tercih anında uygulanır: harita stili ve uygulama teması aynı karede değişir.
  */
-import { nextThemePref, THEME_PREF_TEXT, type ThemePref } from '@konum/core';
-import { IconButton, setThemePref, useThemePref, type IconName } from '../../ui';
-
-const ICON: Record<ThemePref, IconName> = { system: 'themeAuto', light: 'sun', dark: 'moon' };
+import { nextThemePref, THEME_NAME, THEME_PREF_TEXT, type ThemePref } from '@konum/core';
+import { useRouter } from 'expo-router';
+import { IconButton, setThemePref, useThemeId, useThemePref } from '../../ui';
 
 export function MapThemeButton() {
+  const router = useRouter();
   const pref = useThemePref();
-  const next = nextThemePref(pref);
+  const active = useThemeId();
+  const legacy: ThemePref = pref === 'light' || pref === 'dark' ? pref : 'system';
+  const next = nextThemePref(legacy);
   return (
     <IconButton
-      icon={ICON[pref]}
+      icon="palette"
       variant="floating"
       size={48}
-      accessibilityLabel={`Harita görünümü: ${THEME_PREF_TEXT[pref]}. ${THEME_PREF_TEXT[next]} yapmak için dokun.`}
-      onPress={() => setThemePref(next)}
+      accessibilityLabel={`Tema: ${THEME_NAME[active]}. Tema ve harita ayarları için dokun; ${THEME_PREF_TEXT[next]} yapmak için uzun bas.`}
+      onPress={() => router.push('/appearance')}
+      onLongPress={() => setThemePref(next)}
+      testID="map-theme-button"
     />
   );
 }

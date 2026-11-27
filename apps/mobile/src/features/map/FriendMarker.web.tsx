@@ -106,7 +106,7 @@ export function FriendMarker({
   const statusColor = selected ? colors.onPrimary : warn ? colors.warning : freshness === 'live' ? colors.live : freshness === 'recent' ? colors.primary : colors.stale;
   const width = warn ? WARN_WIDTH : WIDTH;
   const sos = pulse === 'sos';
-  const ring = sos ? lightColors.danger : selected ? colors.primary : colors.surface;
+  const ring = sos ? lightColors.danger : selected ? colors.primary : colors.ringGap;
   const tailColor = sos ? lightColors.danger : selected ? colors.primary : genderRingColor(av.gender);
   // Ekran kenarındaki pinin etiketi içeri kayar (pin yerinde kalır).
   const EDGE = 6;

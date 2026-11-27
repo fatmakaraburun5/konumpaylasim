@@ -373,3 +373,18 @@ Ayrıntılar [`PHASE10.md`](PHASE10.md) dosyasındadır. Özet:
 | Ortak Takvim | Kesin etkinlik kartında "Takvime Ekle": başlık, başlangıç–bitiş, mekan + adres, Google Haritalar bağlantısı, katılımcı özeti. Resmi onay adımı + iOS yalnızca yazma / Android takvim izni (`expo-calendar`); izin yoksa sistem formu ya da Google Takvim. İzin Merkezi ve ilk açılışta Takvim satırı. |
 | Kim Ne Kadar Uzakta? | Başlangıçtan 45 dk önce açılır, buluşmadan sonra kapanır. Yalnızca "Katılacağım" + konumunu açık paylaşanlar; vardı → en yakın → en uzak (`Ayşe · 6 dk`). Etkinlik kartında ve haritada şerit. |
 | İki aşamalı kurtarma, çoklu cihaz | SMS + e-posta kodu (mock sağlayıcılar), cihaz oturumları (`dsid`'li özel token), yeni telefonda veriler taşınır, Güvenlik → Aktif Cihazlar, "Eski Cihazdaki Oturumu ve Konum Yayınını Kapat" (kurallarla anında yazım reddi + sessiz push). |
+
+## Faz 11 (uygulandı)
+
+Ayrıntılar [`PHASE11.md`](PHASE11.md) dosyasındadır. Özet:
+
+| Parça | Ne yapıldı |
+| --- | --- |
+| Tema paketi | Nude (krem / sütlü kahve / tarçın-espresso / koyu kahve), Pudra Pembesi (kırık beyaz / toz pembe / mürdüm-vişne / koyu gri), Siyah / Gri (#121417 / #1C1F24, kademeli gri katmanlar, kırık beyaz metin). Tüm belirteçler + WCAG kontrast değerleri. |
+| Google Maps stilleri | Beş tema için önceden üretilmiş `customMapStyle` dizileri; JSON kopyaları `docs/map-styles/`. Sokak < cadde < otoyol kademesi. |
+| Anlık geçiş + saat kuralı | Tema ve harita stili aynı karede, yeniden başlatmasız. "Saate göre": gündüz / gece teması + iki saat; tek zamanlayıcı + ön plana dönüşte yeniden okuma. |
+| Tema seçici | "Tema ve Harita" ekranı: mini harita + pembe/mavi pin + mini kitapçık içeren canlı önizleme kartları. Haritadaki palet düğmesi (uzun bas: Faz 7 hızlı döngü). |
+| Kontrast halkası | Pudra Pembesi'nde beyaz boşluk + beyaz dış halka + mürdüm gölge; Nude ve Siyah / Gri'de kendi halkası. Pin ölçüleri değişmez. |
+
+Geçiş listesi:
+- [ ] Cihazda: halka gölgesinin Android pin bit eşleminde kırpılmadığı, tema geçişinde haritanın yeniden yüklenmediği, saat kuralının uygulama arka plandayken kaçırdığı geçişi ön plana dönünce uyguladığı.

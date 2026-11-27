@@ -3,7 +3,10 @@
  *
  * Faz 6:
  *  - Çerçeve şeridi (3 px) cinsiyete göre renklenir: kadın pembe, erkek mavi, bilinmiyorsa (eski hesap, bekleyen
- *    istek) nötr gri (core `genderRingColor`). Şerit ile fotoğraf arasında beyaz (yüzey rengi) 2 px boşluk.
+ *    istek) nötr gri (core `genderRingColor`). Şerit ile fotoğraf arasında 2 px boşluk (`ringGap`).
+ *  - Faz 11: temanın `ringHalo` / `ringShadow` belirteçleri varsa çerçevenin DIŞINA 1,5 px kontrast halka + yumuşak
+ *    gölge çizilir (boxShadow yayılımı: dış çap ve pin bit eşlem ölçüsü değişmez). Pudra Pembesi'nde beyaz boşluk +
+ *    beyaz halka + mürdüm gölge, pembe çerçevenin pembe zemine / kartlara karışmasını önler.
  *  - Tazelik (Faz 1–5'te halkaydı) artık küçük DURUM NOKTASIDIR: canlı yeşil, yakın zamanda birincil, eski gri.
  *  - Pil rozeti aynen kalır (%15 ve altı uyarı renginde).
  *  - Fotoğraf yoksa ya da yüklenemezse baş harflere düşer. `recyclingKey` = avatar sürümü: liste / pin yeniden
@@ -116,7 +119,8 @@ export function Avatar({
             borderRadius: outer / 2,
             borderWidth: RING,
             borderColor: genderRingColor(gender),
-            backgroundColor: colors.surface,
+            backgroundColor: colors.ringGap,
+            boxShadow: colors.ringHalo === 'transparent' ? undefined : `0px 0px 0px 1.5px ${colors.ringHalo}, 0px 1px 4px 0px ${colors.ringShadow}`,
             alignItems: 'center',
             justifyContent: 'center',
           }}
