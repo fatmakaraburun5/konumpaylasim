@@ -80,3 +80,21 @@ describe('SOS arayüzü', () => {
     expect(isEarlyRelease('holding', s.phase)).toBe(false);
   });
 });
+
+describe('SOS basılı tutma motoru', () => {
+  const { canStartHold, COOLDOWN_MS, HOLD_MS, holdProgressAt, resumeStart, rewindProgressAt } = jest.requireActual('../src/features/sos/holdModel') as typeof import('../src/features/sos/holdModel');
+
+  it('ilerleme zamana bağlı; geri sarma orantılı; kalan yerden devam', () => {
+    expect(holdProgressAt(1000, 1000 + HOLD_MS / 2)).toBeCloseTo(0.5);
+    expect(holdProgressAt(1000, 1000 + HOLD_MS * 2)).toBe(1);
+    expect(rewindProgressAt(0.5, 0, 75)).toBeCloseTo(0.25);
+    expect(rewindProgressAt(0.5, 0, 10_000)).toBe(0);
+    expect(holdProgressAt(resumeStart(0.4, 5000), 5000)).toBeCloseTo(0.4);
+  });
+
+  it('tek tetikleme kilidi: akış kilitliyken ve bekleme süresinde yeni basış yok', () => {
+    expect(canStartHold({ locked: true, lastTriggerAt: null, now: 0 })).toBe(false);
+    expect(canStartHold({ locked: false, lastTriggerAt: 1000, now: 1000 + COOLDOWN_MS - 1 })).toBe(false);
+    expect(canStartHold({ locked: false, lastTriggerAt: 1000, now: 1000 + COOLDOWN_MS })).toBe(true);
+  });
+});

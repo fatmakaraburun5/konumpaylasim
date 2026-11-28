@@ -19,9 +19,8 @@ import {
   permissionCenterRows,
   permissionCenterSummary,
   PRIVACY_TEXT,
-  THEME_PREF_HINT,
-  THEME_PREF_TEXT,
-  THEME_PREFS,
+  THEME_NAME,
+  THEME_PREF_V2_TEXT,
   type CenterRow,
 } from '@konum/core';
 import { useRouter } from 'expo-router';
@@ -33,7 +32,7 @@ import { useAuthStore } from '../../state/authStore';
 import { onboardingStore } from '../../state/onboardingStore';
 import { effectivePrivacy, privacyStore, usePrivacyStore } from '../../state/privacyStore';
 import { useSmsSummary } from '../../state/smsFallbackStore';
-import { Button, cardShadow, IconButton, MIN_TOUCH, setThemePref, Text, useTheme, useThemePref } from '../../ui';
+import { Button, cardShadow, IconButton, MIN_TOUCH, Text, useTheme, useThemePref, useThemeSettings } from '../../ui';
 import { usePermissionSnapshot } from './usePermissionSnapshot';
 
 export function PrivacyCenterScreen() {
@@ -46,6 +45,7 @@ export function PrivacyCenterScreen() {
   const privacyError = usePrivacyStore((s) => s.error);
   const privacy = useMemo(() => effectivePrivacy(parsePrivacy(rawPrivacy), pending), [rawPrivacy, pending]);
   const themePref = useThemePref();
+  const themeSchedule = useThemeSettings().schedule;
   const [working, setWorking] = useState<string | null>(null);
 
   const sms = useSmsSummary();
@@ -156,29 +156,12 @@ export function PrivacyCenterScreen() {
 
         <View style={card} testID="privacy-appearance">
           <Text variant="heading">Görünüm</Text>
-          <View style={[styles.segment, { backgroundColor: colors.surfaceAlt, borderRadius: radius.pill }]} accessibilityRole="radiogroup">
-            {THEME_PREFS.map((p) => {
-              const selected = p === themePref;
-              return (
-                <Pressable
-                  key={p}
-                  accessibilityRole="radio"
-                  accessibilityState={{ checked: selected }}
-                  accessibilityLabel={`${THEME_PREF_TEXT[p]}: ${THEME_PREF_HINT[p]}`}
-                  onPress={() => setThemePref(p)}
-                  testID={`privacy-theme-${p}`}
-                  style={[styles.segmentItem, { borderRadius: radius.pill, backgroundColor: selected ? colors.surface : 'transparent' }, selected ? cardShadow : null]}
-                >
-                  <Text variant="label" color={selected ? 'text' : 'textSecondary'}>
-                    {THEME_PREF_TEXT[p]}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </View>
           <Text variant="caption" color="textSecondary">
-            {`${THEME_PREF_HINT[themePref]}. Haritadaki görünüm düğmesiyle de değiştirebilirsin.`}
+            {themePref === 'schedule'
+              ? `Saate göre: gündüz ${THEME_NAME[themeSchedule.day]}, gece ${THEME_NAME[themeSchedule.night]}`
+              : `${THEME_PREF_V2_TEXT[themePref]} teması. Nude, Pudra Pembesi ve Siyah / Gri önizlemeli seçilir; harita da aynı anda değişir.`}
           </Text>
+          <Button title="Tema ve Harita" variant="secondary" onPress={() => router.push('/appearance')} testID="privacy-open-appearance" />
         </View>
 
         <View style={card}>

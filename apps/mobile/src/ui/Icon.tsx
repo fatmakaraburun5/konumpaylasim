@@ -40,7 +40,9 @@ export type IconName =
   // Faz 9
   | 'message'
   | 'flag'
-  | 'flip';
+  | 'flip'
+  // Faz 11
+  | 'palette';
 
 export interface IconProps {
   name: IconName;
@@ -87,6 +89,14 @@ export function Icon({ name, size = 22, color, strokeWidth = 2 }: IconProps) {
         <>
           <Circle cx={12} cy={12} r={8.5} {...common} />
           <Path d="M12 7.5V12l3 2" {...common} />
+        </>
+      )}
+      {name === 'palette' && (
+        <>
+          <Path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.8-.8 1.8-1.7 0-.5-.2-.9-.5-1.2-.3-.3-.5-.7-.5-1.2 0-.9.8-1.7 1.7-1.7H16a5 5 0 0 0 5-5c0-4-4-7.2-9-7.2z" {...common} />
+          <Circle cx={7.5} cy={11} r={1.3} fill={color} />
+          <Circle cx={10} cy={7} r={1.3} fill={color} />
+          <Circle cx={15} cy={7.5} r={1.3} fill={color} />
         </>
       )}
       {name === 'chevronLeft' && <Path d="M15 5l-7 7 7 7" {...common} />}

@@ -139,6 +139,7 @@ function ActiveCard({ card }: { card: StyleProp<ViewStyle> }) {
 
 function StartForm({ card }: { card: StyleProp<ViewStyle> }) {
   const { colors, spacing } = useTheme();
+  const router = useRouter();
   const busy = useSafeReturnStore((s) => s.busy);
   const error = useSafeReturnStore((s) => s.error);
   const ended = useSafeReturnStore((s) => s.ended);
@@ -196,7 +197,17 @@ function StartForm({ card }: { card: StyleProp<ViewStyle> }) {
     });
   };
 
+  // Eksik ön koşul varken düğme sessizce pasif kalmaz: neyin eksik olduğunu söyler, dokununca o adımı açar.
+  const missing: string[] = [];
+  if (!dest) missing.push('bir hedef seç (ör. Ev bölgesi)');
+  if (selected.size === 0) missing.push(contacts.length === 0 ? 'en az bir acil durum kişisi ekle' : 'en az bir acil durum kişisi işaretle');
+  const openMissing = () => {
+    if (!dest) router.push('/zone-edit');
+    else if (contacts.length === 0) contactsSheet.current?.present(false);
+  };
+
   const start = async () => {
+    if (missing.length > 0) return openMissing();
     if (!dest) return;
     safeReturnStore.getState().clearError();
     await safeReturnStore.getState().start({ duration_min: duration, destination: dest.input, contact_ids: [...selected], shareLive });
@@ -236,9 +247,12 @@ function StartForm({ card }: { card: StyleProp<ViewStyle> }) {
       <View style={card}>
         <Text variant="heading">{SAFE_RETURN_TEXT.destinationLabel}</Text>
         {choices.length === 0 ? (
-          <Text variant="label" color="textSecondary">
-            Önce Ev gibi bir bölge kaydet (Menü › Bölgelerim) ya da paylaşımda haritadan bir hedef seç.
-          </Text>
+          <>
+            <Text variant="label" color="textSecondary">
+              Henüz hedef yok. Ev gibi bir bölge kaydet ya da paylaşımda haritadan bir hedef seç.
+            </Text>
+            <Button title="Ev bölgesi ekle" variant="secondary" onPress={() => router.push('/zone-edit')} testID="safe-return-add-zone" />
+          </>
         ) : (
           <View style={[styles.wrap, { gap: spacing.xs }]}>
             {choices.map((c) => (
@@ -257,7 +271,12 @@ function StartForm({ card }: { card: StyleProp<ViewStyle> }) {
         ) : (
           contacts.map((uid) => <CheckRow key={uid} checked={selected.has(uid)} onPress={() => toggle(uid)} title={names[uid] ?? 'Arkadaş'} testID={`safe-return-contact-${uid}`} />)
         )}
-        <Button title="Acil durum kişilerini düzenle" variant="ghost" onPress={() => contactsSheet.current?.present(false)} />
+        <Button
+          title={contacts.length === 0 ? 'Acil durum kişisi ekle' : 'Acil durum kişilerini düzenle'}
+          variant={contacts.length === 0 ? 'secondary' : 'ghost'}
+          onPress={() => contactsSheet.current?.present(false)}
+          testID="safe-return-edit-contacts"
+        />
         <View style={[styles.row, { gap: spacing.sm, minHeight: MIN_TOUCH }]}>
           <View style={styles.flex}>
             <Text variant="body">Yolculuk boyunca canlı konumumu da paylaş</Text>
@@ -274,12 +293,18 @@ function StartForm({ card }: { card: StyleProp<ViewStyle> }) {
           {error.message}
         </Text>
       ) : null}
+      {missing.length > 0 ? (
+        <Text variant="label" style={{ color: colors.warning }} accessibilityLiveRegion="polite" testID="safe-return-missing">
+          {`Başlatmak için önce: ${missing.join(' ve ')}.`}
+        </Text>
+      ) : null}
       <Button
         title={SAFE_RETURN_TEXT.start}
         size="lg"
+        variant={missing.length > 0 ? 'secondary' : 'primary'}
         onPress={() => void start()}
         loading={busy === 'start'}
-        disabled={busy !== null || !dest || selected.size === 0}
+        disabled={busy !== null}
         testID="safe-return-start"
       />
       <EmergencyContactsSheet ref={contactsSheet} />

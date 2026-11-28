@@ -114,7 +114,7 @@ async function walkOnboarding(p, { onStep } = {}) {
     await p.waitForTimeout(500);
     // Simüle sistem izin istemi: "İzin Ver" / "Uygulamayı Kullanırken İzin Ver" / "Tüm Kişilere İzin Ver" ...
     for (let k = 0; k < 3; k++) {
-      const allow = phone(p).getByText(/^(İzin Ver|Uygulamayı Kullanırken İzin Ver|Tüm Kişilere İzin Ver|Her Zaman İzin Ver|Her Zaman Kullan|Tamam)$/).filter({ visible: true }).last();
+      const allow = phone(p).getByText(/^(İzin Ver|Uygulamayı Kullanırken İzin Ver|Tüm Kişilere İzin Ver|Her Zaman İzin Ver|Her Zaman Kullan|Etkinlik Eklemeye İzin Ver|Tamam)$/).filter({ visible: true }).last();
       if (await allow.isVisible().catch(() => false)) {
         await allow.click().catch(() => undefined);
         await p.waitForTimeout(400);
@@ -220,7 +220,7 @@ async function main() {
     await tapPhoneLabel(p, 'Güvenli Dönüş');
     await p.getByTestId('safe-return-screen').waitFor({ timeout: 8000 });
     await p.getByTestId('safe-return-duration-15').click().catch(() => undefined);
-    await tapPhone(p, 'Acil durum kişilerini düzenle');
+    await p.getByTestId('safe-return-edit-contacts').filter({ visible: true }).first().click();
     await p.waitForTimeout(600);
     await tapPhone(p, 'Ayşe Yılmaz', { exact: false });
     await tapPhone(p, 'Kaydet');

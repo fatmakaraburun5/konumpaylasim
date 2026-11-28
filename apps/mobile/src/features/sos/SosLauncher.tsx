@@ -2,7 +2,7 @@
  * Faz 4: SOS tetikleme akışının kapsayıcısı (MapHome sağ alt). Yanlış basmayı azaltan ama acil anda hız
  * kaybettirmeyen akış (core `sosFlowReduce`):
  *
- *   SosHoldButton (basılı tut `holdMs`, halka dolar; erken bırakma → idle + ipucu)
+ *   SosHoldButton (basılı tut `holdMs`, halka dolar; erken bırakma → akıcı geri sarma + ipucu; %100 → TEK tetikleme)
  *     → acil kişi yoksa EmergencyContactsSheet (kaydet → doğrudan geri sayım)
  *     → SosCountdown (5 → 1; "İptal" / "Hemen gönder"; bu sırada `sosStore.prepare()` taze ölçümü başlatır)
  *     → `sosStore.send({ route })` (tam konum, adres, pil, varsa rota)
@@ -13,7 +13,7 @@
  * Faz 9: internet yoksa geri sayım / hata ekranında "SMS ile gönder (N kişi)" (sosStore `offline`); SOS arka planda
  * yeniden denenir, sonradan giderse "Uyarı gönderildi" ekranı kendiliğinden açılır.
  */
-import { isSosActive, sosCountdownLeft, sosFlowReduce, sosHoldProgress, type SosFlowEvent, type SosFlowState, type SosRoute } from '@konum/core';
+import { isSosActive, sosCountdownLeft, sosFlowReduce, type SosFlowEvent, type SosFlowState, type SosRoute } from '@konum/core';
 import { useRouter } from 'expo-router';
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import { Pressable, StyleSheet, View } from 'react-native';
@@ -25,7 +25,7 @@ import { EmergencyContactsSheet, type EmergencyContactsSheetHandle } from './Eme
 import { SosActiveScreen } from './SosActiveScreen';
 import { SosCountdown } from './SosCountdown';
 import { SosHoldButton } from './SosHoldButton';
-import { isEarlyRelease, SOS_FG } from './sosModel';
+import { SOS_FG } from './sosModel';
 
 export interface SosLauncherProps {
   /** Haritada açık rota (varsa SOS paketine eklenir). */
@@ -55,17 +55,32 @@ export function SosLauncher({ route }: SosLauncherProps) {
   const accuracy = useLocationStore((s) => s.myPosition?.accuracy ?? null);
   const sosActive = outgoing !== null && isSosActive(outgoing);
 
+  // Tek tetikleme kilidi: geri sayım / gönderim / aktif SOS sürerken yeni tetikleme yok (sosStore.send de tek uçuşlu).
+  const triggering = useRef(false);
+  const locked = flow.phase !== 'idle' && flow.phase !== 'error';
+  useEffect(() => {
+    if (!locked) triggering.current = false;
+  }, [locked]);
+
   const send = useCallback((e: SosFlowEvent) => {
     if (e.type === 'press_in' || e.type === 'press_out' || e.type === 'a11y_activate' || e.type === 'tick') setNow(e.at);
     dispatch(e);
   }, []);
 
-  // Basılı tutma ve geri sayım saati (yerel saat; akış süreleri cihazda ölçülür).
+  // Geri sayım saati (yerel saat). Basılı tutma ilerlemesi düğmenin içinde (rAF), burada değil: harita / üst
+  // bileşen yeniden çizilse de ilerleme sıfırlanmaz.
   useEffect(() => {
-    if (flow.phase !== 'holding' && flow.phase !== 'countdown') return;
-    const id = setInterval(() => send({ type: 'tick', at: Date.now() }), flow.phase === 'holding' ? 32 : 200);
+    if (flow.phase !== 'countdown') return;
+    const id = setInterval(() => send({ type: 'tick', at: Date.now() }), 200);
     return () => clearInterval(id);
   }, [flow.phase, send]);
+
+  const onTrigger = useCallback(() => {
+    if (triggering.current) return;
+    triggering.current = true;
+    send({ type: 'a11y_activate', at: Date.now() });
+  }, [send]);
+  const onEarlyRelease = useCallback(() => setHint(true), []);
 
   // Evre geçişlerinin yan etkileri.
   const prevPhase = useRef<SosFlowState['phase']>(flow.phase);
@@ -73,7 +88,6 @@ export function SosLauncher({ route }: SosLauncherProps) {
     const prev = prevPhase.current;
     prevPhase.current = flow.phase;
     if (prev === flow.phase) return;
-    if (isEarlyRelease(prev, flow.phase)) setHint(true);
     if (flow.phase === 'countdown') {
       setHint(false);
       const st = sosStore.getState();
@@ -150,12 +164,12 @@ export function SosLauncher({ route }: SosLauncherProps) {
           ]}
         >
           <View style={[styles.dot, { backgroundColor: SOS_FG }]} />
-          <Text variant="heading" style={{ color: SOS_FG }} numberOfLines={1}>
+          <Text variant="heading" selectable={false} style={{ color: SOS_FG }} numberOfLines={1}>
             SOS aktif
           </Text>
         </Pressable>
       ) : (
-        <SosHoldButton progress={sosHoldProgress(flow, now)} onEvent={send} hint={hint} />
+        <SosHoldButton onTrigger={onTrigger} onEarlyRelease={onEarlyRelease} locked={locked} hint={hint} />
       )}
 
       <SosCountdown

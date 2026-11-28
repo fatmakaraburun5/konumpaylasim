@@ -1,21 +1,35 @@
-import { resolveColorScheme, type ColorScheme } from '@konum/core';
+import { resolveThemeId, THEME_IDS, type ColorScheme, type ThemeId } from '@konum/core';
 import { useColorScheme } from 'react-native';
-import { useThemePref } from './themePref';
-import { darkTheme, lightTheme, type Theme } from './tokens';
+import { useStore } from 'zustand';
+import { hydrateThemePref, themePrefStore } from './themePref';
+import { darkTheme, lightTheme, THEMES, type Theme } from './tokens';
 
-export { hydrateThemePref, setThemePref, themePrefStore, useThemePref } from './themePref';
+export { hydrateThemePref, setThemePref, setThemeSchedule, themePrefStore, useThemePref, useThemeSettings } from './themePref';
+
+let hydrateStarted = false;
+
+/** Etkin tema kimliği (tercih + cihaz şeması + saat kuralı). */
+export function useThemeId(): ThemeId {
+  if (!hydrateStarted) {
+    hydrateStarted = true;
+    void hydrateThemePref();
+  }
+  const system = useColorScheme();
+  const sys = system === 'dark' ? 'dark' : system === 'light' ? 'light' : null;
+  // Seçici skaler döndürür: saat ilerlese de tema aynıysa yeniden çizim yok.
+  return useStore(themePrefStore, (s) => resolveThemeId(s, sys, new Date(s.clock)));
+}
 
 /**
- * Etkin tema: Faz 7 görünüm tercihi (Açık / Koyu / Sistem). `system` cihaz ayarını (useColorScheme) izler; cihaz
- * ayarı ya da tercih değişince aynı karede yeniden çizilir.
+ * Etkin tema. Faz 7: Açık / Koyu / Sistem; Faz 11: + Nude / Pudra Pembesi / Siyah-Gri ve saat kuralı. Tercih,
+ * cihaz ayarı ya da kural sınırı değişince aynı karede yeniden çizilir (THEMES sabit nesneler).
  */
 export function useTheme(): Theme {
-  const system = useColorScheme();
-  const pref = useThemePref();
-  return resolveColorScheme(pref, system === 'dark' ? 'dark' : system === 'light' ? 'light' : null) === 'dark' ? darkTheme : lightTheme;
+  return THEMES[useThemeId()];
 }
 
 export const themeFor = (scheme: ColorScheme): Theme => (scheme === 'dark' ? darkTheme : lightTheme);
+export const themeById = (id: ThemeId): Theme => THEMES[id];
 
 /**
  * Google Haritalar özel stili (customMapStyle JSON): belirteçlerdeki harita renkleri.
@@ -27,17 +41,17 @@ export const themeFor = (scheme: ColorScheme): Theme => (scheme === 'dark' ? dar
  */
 export type MapStyle = ReturnType<typeof buildMapStyle>;
 
-export function mapStyleFor(theme: Pick<Theme, 'scheme'>): MapStyle {
-  return MAP_STYLES[theme.scheme];
+export function mapStyleFor(theme: Pick<Theme, 'id'>): MapStyle {
+  return MAP_STYLES[theme.id];
 }
 
 function buildMapStyle(theme: Theme) {
   const c = theme.colors;
   return [
     { elementType: 'geometry', stylers: [{ color: c.mapLand }] },
-    { elementType: 'labels.text.fill', stylers: [{ color: c.textSecondary }] },
+    { elementType: 'labels.text.fill', stylers: [{ color: c.mapLabel }] },
     { elementType: 'labels.text.stroke', stylers: [{ color: c.mapLand }] },
-    { featureType: 'administrative', elementType: 'geometry.stroke', stylers: [{ color: c.border }] },
+    { featureType: 'administrative', elementType: 'geometry.stroke', stylers: [{ color: c.mapRoadStroke }] },
     { featureType: 'administrative.locality', elementType: 'labels.text.fill', stylers: [{ color: c.text }] },
     { featureType: 'administrative.land_parcel', stylers: [{ visibility: 'off' }] },
     { featureType: 'landscape.man_made', elementType: 'geometry', stylers: [{ color: c.mapLand }] },
@@ -46,25 +60,31 @@ function buildMapStyle(theme: Theme) {
     { featureType: 'poi', elementType: 'labels.icon', stylers: [{ visibility: 'off' }] },
     { featureType: 'poi.business', stylers: [{ visibility: 'off' }] },
     { featureType: 'poi.park', elementType: 'geometry', stylers: [{ color: c.mapPark }] },
-    { featureType: 'poi.park', elementType: 'labels.text.fill', stylers: [{ color: c.textSecondary }] },
+    { featureType: 'poi.park', elementType: 'labels.text.fill', stylers: [{ color: c.mapLabel }] },
     { featureType: 'road', elementType: 'geometry', stylers: [{ color: c.mapRoad }] },
-    { featureType: 'road', elementType: 'geometry.stroke', stylers: [{ color: c.border }] },
-    { featureType: 'road', elementType: 'labels.text.fill', stylers: [{ color: c.textSecondary }] },
+    { featureType: 'road', elementType: 'geometry.stroke', stylers: [{ color: c.mapRoadStroke }] },
+    { featureType: 'road', elementType: 'labels.text.fill', stylers: [{ color: c.mapLabel }] },
     { featureType: 'road', elementType: 'labels.text.stroke', stylers: [{ color: c.mapRoad }] },
-    { featureType: 'road.highway', elementType: 'geometry', stylers: [{ color: c.surfaceAlt }] },
-    { featureType: 'road.highway', elementType: 'geometry.stroke', stylers: [{ color: c.border }] },
+    // Faz 11: sokak < cadde < otoyol kademesi (Siyah/Gri'de üç ayrı gri, Nude'da krem → kum).
+    { featureType: 'road.local', elementType: 'geometry', stylers: [{ color: c.mapRoadMinor }] },
+    { featureType: 'road.highway', elementType: 'geometry', stylers: [{ color: c.mapHighway }] },
+    { featureType: 'road.highway', elementType: 'geometry.stroke', stylers: [{ color: c.mapRoadStroke }] },
     { featureType: 'road.highway', elementType: 'labels.text.fill', stylers: [{ color: c.text }] },
     { featureType: 'transit', elementType: 'labels.icon', stylers: [{ visibility: 'off' }] },
-    { featureType: 'transit.line', elementType: 'geometry', stylers: [{ color: c.border }] },
-    { featureType: 'transit.station', elementType: 'labels.text.fill', stylers: [{ color: c.textSecondary }] },
+    { featureType: 'transit.line', elementType: 'geometry', stylers: [{ color: c.mapTransit }] },
+    { featureType: 'transit.station', elementType: 'labels.text.fill', stylers: [{ color: c.mapLabel }] },
     { featureType: 'water', elementType: 'geometry', stylers: [{ color: c.mapWater }] },
-    { featureType: 'water', elementType: 'labels.text.fill', stylers: [{ color: c.textSecondary }] },
+    { featureType: 'water', elementType: 'labels.text.fill', stylers: [{ color: c.mapLabel }] },
     { featureType: 'water', elementType: 'labels.text.stroke', stylers: [{ color: c.mapWater }] },
   ];
 }
 
-/** Açık ve koyu harita stilleri (sabit diziler: referans eşitliği → gereksiz yeniden uygulama yok). */
-export const MAP_STYLES: Readonly<Record<ColorScheme, ReturnType<typeof buildMapStyle>>> = Object.freeze({
-  light: buildMapStyle(lightTheme),
-  dark: buildMapStyle(darkTheme),
-});
+/**
+ * Tüm temaların harita stilleri (Faz 11: beş tema). Modül yüklenirken BİR KEZ üretilen sabit diziler: tema
+ * değişince MapView yalnızca `customMapStyle` referansını değiştirir → native SDK yeni stili haritayı yeniden
+ * oluşturmadan, aynı karede uygular (Android `MapStyleOptions`, iOS `GMSMapStyle`). JSON kopyaları
+ * docs/map-styles/*.json (Cloud Console / Map ID'ye yapıştırmak için; test eşitliği denetler).
+ */
+export const MAP_STYLES: Readonly<Record<ThemeId, MapStyle>> = Object.freeze(
+  Object.fromEntries(THEME_IDS.map((id) => [id, buildMapStyle(THEMES[id])])) as Record<ThemeId, MapStyle>,
+);

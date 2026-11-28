@@ -421,15 +421,21 @@ export function PreviewMap({ padding, route, onLongPress, onUserPan, onCameraCha
   const grow = Math.pow(s, 0.6);
   const sw = (px: number) => (px * grow) / s;
 
+  // Faz 7 açık/koyu görünümü birebir korunur; Faz 11 paketleri (nude/blush/charcoal) native stille aynı belirteçleri
+  // kullanır: cadde = mapRoad, ana yol = mapHighway, sokak = mapRoadMinor.
+  const legacy = theme.id === 'light' || theme.id === 'dark';
   const palette = {
     land: colors.mapLand,
     water: colors.mapWater,
     park: colors.mapPark,
     road: colors.mapRoad,
-    casing: dark ? '#2A3A57' : colors.border,
-    minor: dark ? '#1A263C' : '#FFFFFF',
-    minorCasing: dark ? '#152033' : '#E7ECF2',
-    shore: dark ? '#173659' : '#B9D4EE',
+    highway: legacy ? colors.mapRoad : colors.mapHighway,
+    casing: legacy ? (dark ? '#2A3A57' : colors.border) : colors.mapRoadStroke,
+    minor: legacy ? (dark ? '#1A263C' : '#FFFFFF') : colors.mapRoadMinor,
+    minorCasing: legacy ? (dark ? '#152033' : '#E7ECF2') : colors.mapRoadStroke,
+    shore: colors.mapShore,
+    waterLabel: legacy ? (dark ? '#5B86B5' : '#5E8DBD') : colors.mapLabel,
+    parkLabel: legacy ? (dark ? '#4C9A6A' : '#3F8A55') : colors.live,
   };
 
   // Örnek başına kimlik: ana harita yığında (gizli) dururken izleyicinin haritası aynı kimliğe başvurursa tarayıcı
@@ -465,10 +471,10 @@ export function PreviewMap({ padding, route, onLongPress, onUserPan, onCameraCha
           <Path d={geo.secondary} stroke={palette.casing} strokeWidth={sw(7)} strokeLinecap="round" strokeLinejoin="round" fill="none" />
           <Path d={geo.major} stroke={palette.casing} strokeWidth={sw(10)} strokeLinecap="round" strokeLinejoin="round" fill="none" />
           <Path d={geo.secondary} stroke={palette.road} strokeWidth={sw(5)} strokeLinecap="round" strokeLinejoin="round" fill="none" />
-          <Path d={geo.major} stroke={palette.road} strokeWidth={sw(7.5)} strokeLinecap="round" strokeLinejoin="round" fill="none" />
+          <Path d={geo.major} stroke={palette.highway} strokeWidth={sw(7.5)} strokeLinecap="round" strokeLinejoin="round" fill="none" />
           {routeD ? (
             <>
-              <Path d={routeD} stroke={dark ? '#0B1220' : '#FFFFFF'} strokeWidth={sw(10)} strokeLinecap="round" strokeLinejoin="round" fill="none" opacity={0.95} />
+              <Path d={routeD} stroke={legacy ? (dark ? '#0B1220' : '#FFFFFF') : colors.ringGap} strokeWidth={sw(10)} strokeLinecap="round" strokeLinejoin="round" fill="none" opacity={0.95} />
               <Path d={routeD} stroke={colors.primary} strokeWidth={sw(6)} strokeLinecap="round" strokeLinejoin="round" fill="none" />
             </>
           ) : null}
@@ -482,8 +488,8 @@ export function PreviewMap({ padding, route, onLongPress, onUserPan, onCameraCha
           l.kind === 'district'
             ? { color: colors.textSecondary, opacity: dark ? 0.75 : 0.62, letterSpacing: 2, fontSize: 11, fontWeight: '700' as const }
             : l.kind === 'water'
-              ? { color: dark ? '#5B86B5' : '#5E8DBD', fontStyle: 'italic' as const, fontSize: 12 }
-              : { color: dark ? '#4C9A6A' : '#3F8A55', fontSize: 11 };
+              ? { color: palette.waterLabel, fontStyle: 'italic' as const, fontSize: 12 }
+              : { color: palette.parkLabel, fontSize: 11 };
         return (
           <View key={l.text} pointerEvents="none" style={[styles.label, { left: p.x - 80, top: p.y - 8 }]}>
             <Text variant="caption" numberOfLines={1} style={style} maxFontSizeMultiplier={1}>
@@ -493,7 +499,7 @@ export function PreviewMap({ padding, route, onLongPress, onUserPan, onCameraCha
         );
       })}
 
-      {dimmed ? <View pointerEvents="none" style={[StyleSheet.absoluteFill, { backgroundColor: dark ? 'rgba(11, 18, 32, 0.45)' : 'rgba(246, 247, 249, 0.5)' }]} /> : null}
+      {dimmed ? <View pointerEvents="none" style={[StyleSheet.absoluteFill, { backgroundColor: legacy ? (dark ? 'rgba(11, 18, 32, 0.45)' : 'rgba(246, 247, 249, 0.5)') : `${colors.bg}80` }]} /> : null}
 
       <MapProjectionContext.Provider value={project}>
         <MapSizeContext.Provider value={size}>{children}</MapSizeContext.Provider>
