@@ -119,6 +119,7 @@ import { resetF6State, startF6Services } from './f6Services';
 import { installF7Guards, resetF7State, startF7Services } from './f7Services';
 import { installF8Guards, onF8Connected, resetF8State, startF8Services } from './f8Services';
 import { onF9Connected, resetF9State, startF9Services } from './f9Services';
+import { resetF12State, startF12Services } from './f12Services';
 import { resetF10State, startF10Services } from './f10Services';
 import { resetLocationRequestState, startLocationRequestServices } from './locationRequestServices';
 import { grantsStore, isLocationRevoked } from '../state/grantsStore';
@@ -434,6 +435,19 @@ export function startSessionServices(uid: UserId): () => void {
   unsubs.push(startLocationRequestServices(uid));
   // Faz 10: cihaz oturumları + kurtarma özeti, heartbeat (konum yayını durumu), "bu cihaz kapatıldı" algısı, takvim.
   unsubs.push(startF10Services(uid, { isPublishing: () => hasLiveTargets() }));
+  // Faz 12: kilit ekranı canlı sayacı, mola, cihazdaki paylaşım geçmişi (sık kişi kısayolları).
+  unsubs.push(
+    startF12Services(uid, {
+      publishNow: () => {
+        void locationEngine
+          .getCurrentSample()
+          .then((raw) => {
+            if (raw && !disposed && hasLiveTargets()) void handleSamples([raw], 'heartbeat');
+          })
+          .catch(() => undefined);
+      },
+    }),
+  );
 
   unsubs.push(
     listenConnected((c) => {
@@ -792,6 +806,7 @@ onSignedOut(async () => {
   await resetF8State();
   // Faz 9: fotoğraf önbelleği, hedef, Güvenli Dönüş (yerel bildirimler dahil), SMS yedeği tercihi.
   await resetF9State();
+  await resetF12State().catch(() => undefined);
   await resetF10State().catch(() => undefined);
   resetLocationRequestState();
 });

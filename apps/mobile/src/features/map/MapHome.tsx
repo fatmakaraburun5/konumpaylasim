@@ -108,6 +108,9 @@ import { selectUnreadNotices, useEventsStore } from '../../state/eventsStore';
 import { ShareButton } from './ShareButton';
 import { ShareDeck, type ShareDeckActions } from './ShareDeck';
 import { TopBar } from './TopBar';
+import { ShortcutStrip } from '../shortcuts/ShortcutStrip';
+import { liveEtaStore } from '../../state/liveEtaStore';
+import { now as serverNow } from '../../lib/clock';
 import { useAddress, useRouteEta, type EtaTarget } from './useEta';
 // Faz 9
 import { ApproachToast } from '../approach/ApproachToast';
@@ -307,6 +310,16 @@ export function MapHome() {
   const address = useAddress(target, target !== null && meetupTarget === null);
   const routePoints = eta.entry && !eta.entry.error ? (eta.entry.result?.points ?? null) : null;
   const etaResult = eta.entry && !eta.entry.error ? (eta.entry.result ?? null) : null;
+  // Faz 12: açık rotanın ETA'sı kilit ekranı canlı sayacına (mutlak varış saati; kart kapanınca kalkar).
+  useEffect(() => {
+    if (!target || meetupTarget || !etaResult || !Number.isFinite(etaResult.duration_s)) {
+      liveEtaStore.getState().set(null);
+      return;
+    }
+    const t = serverNow();
+    liveEtaStore.getState().set({ label: target.kind === 'friend' ? target.title.split(' ')[0] || target.title : target.title, kind: target.kind === 'friend' ? 'friend' : 'destination', arrive_at: t + etaResult.duration_s * 1000, computed_at: t });
+  }, [target, meetupTarget, etaResult]);
+  useEffect(() => () => liveEtaStore.getState().set(null), []);
   // Faz 4: SOS anında haritada açık rota (varsa) pakete eklenir.
   const sosRoute = useMemo(() => (routeTarget ? sosRouteFrom(routeTarget.title, etaResult) : null), [routeTarget, etaResult]);
   const friendSubtitle = selectedFriend
@@ -708,7 +721,9 @@ export function MapHome() {
                 trackingError={trackingError}
                 actions={deckActions}
               />
-              <ShareButton onPress={() => openShare()} compact={anyRunning} />
+              {/* Faz 12: sık paylaştıkların → tek dokunuşla 15 dk / 1 saat; paylaşım sürerken "＋ Paylaş" ile aynı satırda. */}
+              <ShortcutStrip onShare={() => openShare()} compact={anyRunning} />
+              {!anyRunning ? <ShareButton onPress={() => openShare()} /> : null}
             </>
           )}
         </View>

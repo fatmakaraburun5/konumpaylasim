@@ -45,6 +45,8 @@ export default function RootLayout() {
             <Stack.Screen name="s/[token]" options={{ animation: 'fade' }} />
             {/* Faz 6: widget derin bağlantısı; isteği bırakıp hemen geri döner (bkz. app/quick-share.tsx). */}
             <Stack.Screen name="quick-share" options={{ animation: 'none' }} />
+            {/* Faz 12: kilit ekranı canlı sayacı eylemleri (Mola / Devam et / Durdur). */}
+            <Stack.Screen name="live" options={{ animation: 'none' }} />
           </Stack>
         </BottomSheetModalProvider>
       </SafeAreaProvider>

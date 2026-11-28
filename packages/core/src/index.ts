@@ -54,3 +54,7 @@ export * from './smsFallback';
 export * from './calendar';
 export * from './etaBoard';
 export * from './accountSecurity';
+// Faz 12
+export * from './breakMode';
+export * from './frequentContacts';
+export * from './liveActivity';

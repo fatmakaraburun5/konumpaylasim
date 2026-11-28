@@ -20,7 +20,7 @@ module.exports = (config) => {
     displayName: 'Konum',
     bundleIdentifier: '.widgets',
     deploymentTarget: '17.0',
-    frameworks: ['SwiftUI', 'WidgetKit', 'AppIntents', 'Security'],
+    frameworks: ['SwiftUI', 'WidgetKit', 'AppIntents', 'Security', 'ActivityKit'],
     colors: {
       $accent: '#2563EB',
       $widgetBackground: { light: '#FFFFFF', dark: '#111827' },

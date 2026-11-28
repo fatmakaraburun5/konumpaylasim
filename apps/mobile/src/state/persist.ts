@@ -87,6 +87,9 @@ const SAFE_RETURN_KEY = 'konum.bg.safeReturn.v1';
 const LAST_FIX_KEY = 'konum.bg.lastFix.v1';
 /** Güvenli Dönüş'ün kendi başlattığı canlı paylaşım oturumu (check-in / iptalde durdurulur; kayıt silinse de kalır). */
 const SAFE_RETURN_SHARE_KEY = 'konum.safeReturn.liveShare.v1';
+/** Faz 12: mola (başsız konum hattı da okur) ve cihazdaki paylaşım geçmişi (sık kişiler). */
+const BREAK_KEY = 'konum.bg.break.v1';
+const SHARE_HISTORY_KEY = 'konum.f12.shareHistory.v1';
 
 /**
  * Yayın hedefi + sunucunun onayladığı oturum özeti. Özet, açılışta sunucu dinleyicisi henüz
@@ -462,10 +465,13 @@ export async function clearBackgroundState(): Promise<void> {
       SAFE_RETURN_KEY,
       LAST_FIX_KEY,
       SAFE_RETURN_SHARE_KEY,
+      BREAK_KEY,
+      SHARE_HISTORY_KEY,
     ]),
   );
   statusNoteCache = null;
   privacyCache = null;
+  breakCache = null;
   for (const r of F9_RECORDS) r.forget(null);
 }
 
@@ -865,3 +871,39 @@ export function __resetF9CacheForTests(): void {
 
 /** Yaklaşma raporu en çok bu kadar bekletilir (core `APPROACH_LIMITS.maxReportAgeMs`; sunucu daha eskisini `stale` sayar). */
 export const APPROACH_PENDING_MAX_AGE_MS = APPROACH_LIMITS.maxReportAgeMs;
+
+// --- Faz 12: mola + paylaşım geçmişi ---------------------------------------------------------------
+
+export interface PersistedBreak {
+  uid: UserId;
+  started_at: EpochMs;
+  until: EpochMs;
+}
+const BreakSchema = z.object({ uid: z.string().min(1), started_at: z.number(), until: z.number() });
+let breakCache: PersistedBreak | null | undefined;
+
+/** Bellek ön belleğiyle (konum hattı her örnekte sorar). */
+export async function loadBreak(): Promise<PersistedBreak | null> {
+  if (breakCache !== undefined) return breakCache;
+  breakCache = await read(BREAK_KEY, BreakSchema.nullable(), null);
+  return breakCache;
+}
+export async function saveBreak(v: PersistedBreak | null): Promise<void> {
+  breakCache = v;
+  if (v) await AsyncStorage.setItem(BREAK_KEY, JSON.stringify(v));
+  else await AsyncStorage.removeItem(BREAK_KEY);
+}
+export function __resetBreakCacheForTests(): void {
+  breakCache = undefined;
+}
+
+export interface PersistedShareHistory {
+  uid: UserId;
+  entries: unknown[];
+}
+const HistorySchema = z.object({ uid: z.string().min(1), entries: z.array(z.unknown()) });
+export const loadShareHistory = (): Promise<PersistedShareHistory | null> => read(SHARE_HISTORY_KEY, HistorySchema.nullable(), null);
+export async function saveShareHistory(v: PersistedShareHistory | null): Promise<void> {
+  if (v) await AsyncStorage.setItem(SHARE_HISTORY_KEY, JSON.stringify(v));
+  else await AsyncStorage.removeItem(SHARE_HISTORY_KEY);
+}

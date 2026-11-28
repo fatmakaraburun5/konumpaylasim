@@ -11,6 +11,7 @@
  * `selectTrackingPlan` ile o anki matris satırını hesaplar; yani panel uygulamanın kararını GÖSTERİR, kendisi
  * karar vermez.
  */
+import { LiveLockCard } from './Faz12.web';
 import {
   HOUR,
   lastVerifiedLocation,
@@ -799,6 +800,8 @@ export function LockScreen() {
         </Text>
       </View>
       <View style={styles.lockList}>
+        {/* Faz 12: canlı sayaç (iOS Live Activity / Android canlı bildirim) listenin en üstünde. */}
+        <LiveLockCard />
         {d.engine.running && n ? <NoticeCard testID="lock-service-notice" title={n.title} body={n.body} at={null} dark /> : null}
         {pushes.map((p) =>
           isRoutedPush(p) ? (

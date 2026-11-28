@@ -107,6 +107,7 @@ import {
 } from '../../state/persist';
 import { hydrateLinkStops, isLinkBlocked } from '../../state/linkStops';
 import { hydratePublishHold, isPublishHeld } from '../../state/publishHold';
+import { breakHoldsPublishing } from '../../state/breakHold';
 import { hydrateStopIntents, isShareBlocked } from '../../state/stopIntents';
 import { lastActivityEvent } from './adaptive/activitySource';
 import { createAdaptiveController, type AdaptiveController, type ObserveResult } from './adaptive/adaptiveController';
@@ -194,6 +195,11 @@ export interface PipelineDeps {
   recordFix: (raw: RawLocationSample, offsetMs: number, uid: UserId | null) => Promise<unknown>;
   /** Faz 9: fotoğraf / hedef paket alanları, yaklaşma raporu, Güvenli Dönüş tazeleme ve varış. */
   f9: Pick<F9Hooks, 'onSample'>;
+  /**
+   * Faz 12: mola sürüyor mu (cihazdaki kayıt, bu hesap). Sürüyorsa örnek YAYINLANMAZ ve kuyruğa da girmez (mola
+   * boyunca konum izi oluşmaz); takip ve hedefler olduğu gibi kalır, mola bitince ilk örnek yayınlanır.
+   */
+  onBreak: (uid: UserId, now: EpochMs) => Promise<boolean>;
 }
 
 /** "Yola çıktı" çağrısı konum hattını en çok bu kadar bekletir. */
@@ -306,6 +312,7 @@ const defaultDeps = (getDeps: () => PipelineDeps): PipelineDeps => ({
   },
   isHeld: isPublishHeld,
   hydrateHold: hydratePublishHold,
+  onBreak: breakHoldsPublishing,
   batteryShare: batteryShareAllowed,
   lastDepartureAt: async (uid) => {
     const m = await loadMovement();
@@ -652,6 +659,8 @@ async function processSamples(
     return;
   }
   const uid = auth.uid;
+  // Faz 12: molada yeni konum gitmez (kuyruğa da girmez); takip sürer, mola bitince ilk örnek yayınlanır.
+  if (await d.onBreak(uid, now).catch(() => false)) return;
 
   const sorted = [...raws].sort((a, b) => a.timestamp - b.timestamp);
   const latest = sorted[sorted.length - 1];

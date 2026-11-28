@@ -22,5 +22,7 @@ struct KonumFavoritesWidget: Widget {
 struct KonumWidgetsBundle: WidgetBundle {
   var body: some Widget {
     KonumFavoritesWidget()
+    // Faz 12: kilit ekranı canlı sayacı + Dynamic Island (ActivityKit).
+    KonumShareLiveActivity()
   }
 }

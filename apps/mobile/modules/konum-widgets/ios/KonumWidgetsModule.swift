@@ -197,6 +197,23 @@ public class KonumWidgetsModule: Module {
       return KonumWidgetShared.consumeEvents()
     }
 
+    // Faz 12: kilit ekranı canlı sayacı (LiveShareBridge.swift).
+    AsyncFunction("liveStart") { (attributesJson: String, contentJson: String) async -> Bool in
+      return await LiveShareBridge.start(attributesJson, contentJson)
+    }
+
+    AsyncFunction("liveUpdate") { (contentJson: String) async in
+      await LiveShareBridge.update(contentJson)
+    }
+
+    AsyncFunction("liveEnd") { (contentJson: String?, dismissAtMs: Double?) async in
+      await LiveShareBridge.end(contentJson, dismissAtMs)
+    }
+
+    Function("liveEnabled") { () -> Bool in
+      return LiveShareBridge.enabled()
+    }
+
     Function("capabilities") { () -> [String: Any] in
       var interactive = false
       if #available(iOS 17.0, *) {
