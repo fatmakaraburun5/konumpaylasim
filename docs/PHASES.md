@@ -388,3 +388,18 @@ Ayrıntılar [`PHASE11.md`](PHASE11.md) dosyasındadır. Özet:
 
 Geçiş listesi:
 - [ ] Cihazda: halka gölgesinin Android pin bit eşleminde kırpılmadığı, tema geçişinde haritanın yeniden yüklenmediği, saat kuralının uygulama arka plandayken kaçırdığı geçişi ön plana dönünce uyguladığı.
+
+## Faz 12 (uygulandı)
+
+Ayrıntılar [`PHASE12.md`](PHASE12.md) dosyasındadır. Özet:
+
+| Parça | Ne yapıldı |
+| --- | --- |
+| Kilit ekranı canlı sayaç | Tek model (core `liveActivity.ts`): iOS Live Activity + Dynamic Island (ActivityKit), Android süren canlı bildirim (Chronometer + ilerleme, Android 16 promoted ongoing). Kalan süre, ETA, pembe/mavi çerçeveli avatar, mola durumu; Mola / Devam et / Durdur eylemleri. |
+| Yaşam döngüsü | İçerik değişince güncelleme (sayaç yerelde akar); süre / durdurma → 4 dk "sona erdi" kartı; Görünmez Ol ve çıkış → hemen kalkar. |
+| Mola | 15 / 30 dk: "☕ Moladayım" notu gider, sonra yeni konum yayınlanmaz ve kuyruğa girmez; süre işler; kendiliğinden biter. |
+| Sık paylaştıkların | Cihazdaki geçmişten (14 gün yarı ömür, favori +0,75) en çok 4 kişi; haritada ve kitapçık altında "＋ Paylaş" ile aynı satırda; tek dokunuşla 15 dk / 1 saat. |
+| Ön kontroller | Görünmez → "Görünür ol"; sözleşme; `location_view` yoksa "İzin ver ve paylaş"; zaten açıksa kısaltma yok; mola biter; OS izin akışı. |
+
+Geçiş listesi:
+- [ ] Cihazda: iOS 16.2+ Live Activity + Dynamic Island, Android 13+ canlı bildirim (izinli / izinsiz), mola sonrası kendiliğinden yayın, Görünmez Ol'da kartın anında kalkması.

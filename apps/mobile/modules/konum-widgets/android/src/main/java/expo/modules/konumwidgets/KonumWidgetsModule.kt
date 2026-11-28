@@ -43,6 +43,26 @@ class KonumWidgetsModule : Module() {
       WidgetStore.consumeEvents(context)
     }
 
+    // Faz 12: kilit ekranı canlı sayacı (LiveShareNotification.kt). start/update aynı bildirimi yeniden yazar.
+    AsyncFunction("liveStart") { _attributesJson: String, contentJson: String ->
+      LiveShareNotification.show(context, contentJson)
+    }
+
+    AsyncFunction("liveUpdate") { contentJson: String ->
+      LiveShareNotification.show(context, contentJson)
+      Unit
+    }
+
+    AsyncFunction("liveEnd") { contentJson: String?, dismissAtMs: Double? ->
+      if (contentJson != null && dismissAtMs != null) LiveShareNotification.show(context, contentJson, dismissAtMs.toLong())
+      else LiveShareNotification.cancel(context)
+      Unit
+    }
+
+    Function("liveEnabled") {
+      LiveShareNotification.enabled(context)
+    }
+
     Function("capabilities") {
       mapOf(
         "platform" to "android",

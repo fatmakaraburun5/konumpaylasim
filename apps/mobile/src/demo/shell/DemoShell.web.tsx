@@ -60,6 +60,7 @@ import { Faz8Section } from './Faz8.web';
 import { Faz9Hosts, Faz9Section } from './Faz9.web';
 import { Faz10Hosts, Faz10Section } from './Faz10.web';
 import { Faz11Section } from './Faz11.web';
+import { Faz12Section, LiveIsland } from './Faz12.web';
 
 const WIDE_MIN = 900;
 const SCREEN_W = 390;
@@ -234,6 +235,8 @@ function PhoneFrame({ children, scale }: { children: ReactNode; scale: number })
           <View style={styles.statusLayer} pointerEvents="none">
             <StatusBarMock battery={battery} />
           </View>
+          {/* Faz 12: Dynamic Island canlı sayacı (kilit açıkken, iOS görünümü). */}
+          {!locked ? <LiveIsland /> : null}
           <View style={[styles.homeIndicator, { backgroundColor: locked ? '#FFFFFF' : colors.text }]} pointerEvents="none" />
         </View>
       </View>
@@ -405,6 +408,7 @@ function DemoPanel({ showNotice, onNavigate, padding, footer }: { showNotice: bo
       <Faz9Section snap={snap} renderRow={renderRow} />
       <Faz10Section snap={snap} renderRow={renderRow} />
       <Faz11Section renderRow={renderRow} />
+      <Faz12Section renderRow={renderRow} />
       <PermissionsSection renderRow={renderRow} />
 
       {showNotice ? (

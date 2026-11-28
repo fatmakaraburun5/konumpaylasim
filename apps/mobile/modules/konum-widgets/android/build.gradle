@@ -24,4 +24,6 @@ dependencies {
   // (tek kopya). Belirteç şifrelemesi için ek bağımlılık yok: AndroidKeyStore AES-GCM (security-crypto 1.1.0'da
   // EncryptedSharedPreferences kullanımdan kaldırıldı).
   implementation 'androidx.work:work-runtime:2.9.1'
+  // Faz 12: canlı bildirim (NotificationCompat); uygulama zaten aynı kütüphaneyi getirir.
+  implementation 'androidx.core:core:1.13.1'
 }

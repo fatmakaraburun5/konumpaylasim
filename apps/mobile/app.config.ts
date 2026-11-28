@@ -142,6 +142,9 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       // location: arka plan konum oturumu (mavi gösterge); remote-notification: `resume_tracking` sessiz push.
       UIBackgroundModes: ['location', 'remote-notification'],
       ITSAppUsesNonExemptEncryption: false,
+      // Faz 12: kilit ekranı canlı sayacı (Live Activity / Dynamic Island). Sık güncelleme gerekmez: sayaç yerelde akar.
+      NSSupportsLiveActivities: true,
+      NSSupportsLiveActivitiesFrequentUpdates: false,
       // Faz 9: SMS yedeği (expo-sms kendisi gerektirmez; `Linking.canOpenURL('sms:')` yedek yolu için).
       LSApplicationQueriesSchemes: ['sms'],
     },
